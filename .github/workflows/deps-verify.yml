@@ -104,6 +104,14 @@ jobs:
 
       - id: steps
         continue-on-error: true
+        env:
+          # Job-scoped package caches. On a persistent self-hosted runner the
+          # default caches are shared between jobs, and a half-written entry
+          # poisons later runs — `Fail extracting tarball for "next"`, which
+          # re-runs do NOT clear. Isolating costs a cold install and buys
+          # determinism, which is the whole point of a verification job.
+          BUN_INSTALL_CACHE_DIR: ${{ runner.temp }}/bun-cache
+          GRADLE_USER_HOME: ${{ runner.temp }}/gradle-home
         run: |
           set -x
           fail=""
@@ -119,8 +127,15 @@ jobs:
       - id: result
         run: |
           f="${{ steps.steps.outputs.failed }}"
-          if [ -z "$f" ]; then echo "verdict=green" >> "$GITHUB_OUTPUT"
-          else echo "verdict=red:$f" >> "$GITHUB_OUTPUT"; fi
+          if [ -z "$f" ]; then
+            echo "verdict=green" >> "$GITHUB_OUTPUT"
+          else
+            echo "verdict=red:$f" >> "$GITHUB_OUTPUT"
+            # The steps are continue-on-error so the agent still gets to explain
+            # the failure, which means this job goes green regardless. Annotate,
+            # or the run summary claims a build passed when it did not.
+            echo "::warning title=Dependency build failed::Failed steps:$f — see the verdict comment on the PR."
+          fi
 
   review:
     needs: [gate, pick-runner, build]
@@ -137,6 +152,11 @@ jobs:
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           use_sticky_comment: true
+          # Without this the action aborts: "Workflow initiated by non-human
+          # actor: renovate (type: Bot)". Every run here is bot-initiated, so the
+          # default makes the workflow impossible. Named explicitly rather than
+          # '*' — the point is to trust these two bots, not all of them.
+          allowed_bots: "renovate[bot],dependabot[bot],app/renovate"
           claude_args: '--allowed-tools Bash(gh pr:*),Bash(gh api:*),Bash(gh label:*),WebFetch'
           prompt: |
             Verify dependency PR #${{ github.event.pull_request.number }} in

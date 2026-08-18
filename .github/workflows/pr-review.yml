@@ -57,11 +57,17 @@ concurrency:
 jobs:
   gate:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 8
+    permissions:
+      contents: read
+      checks: read
+      actions: read
+      pull-requests: read
     outputs:
       proceed: ${{ steps.c.outputs.proceed }}
       level:   ${{ steps.c.outputs.level }}
       reason:  ${{ steps.c.outputs.reason }}
+      ci:      ${{ steps.ci.outputs.summary }}
     steps:
       - uses: actions/checkout@v7
         with: { fetch-depth: 0 }
@@ -113,6 +119,56 @@ jobs:
           echo "reason=$reason"   >> "$GITHUB_OUTPUT"
           echo "decision: proceed=$proceed level=$level ${reason:+($reason)}"
 
+      # Why CI failed, gathered deterministically and handed to the reviewer.
+      # A reviewer that can see the failing check reviews the actual problem
+      # instead of the diff in the abstract. Annotations carry file, line and
+      # message, which is far more usable than scraping raw logs.
+      #
+      # Kept to ONE LINE on purpose: this value is interpolated into
+      # claude_args, which is a shell-style argument string. A multi-line or
+      # quote-bearing value would break the quoting and take the whole step with it.
+      - id: ci
+        if: steps.c.outputs.proceed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO:     ${{ github.repository }}
+          SHA:      ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -uo pipefail
+          runs=$(gh api "/repos/$REPO/commits/$SHA/check-runs?per_page=100" \
+                 --jq '[.check_runs[] | {name, conclusion, id}]' 2>/dev/null || echo '[]')
+          failed=$(jq -c '[.[] | select(.conclusion == "failure" or .conclusion == "timed_out")]' <<<"$runs")
+          n=$(jq 'length' <<<"$failed" 2>/dev/null || echo 0)
+
+          if [ "${n:-0}" = "0" ]; then
+            echo "summary=CI on this PR is green." >> "$GITHUB_OUTPUT"
+            echo "no failing checks"; exit 0
+          fi
+
+          out="CI on this PR is FAILING ($n check(s))."
+          for id in $(jq -r '.[].id' <<<"$failed"); do
+            name=$(jq -r --argjson i "$id" '.[]|select(.id==$i)|.name' <<<"$failed")
+            # The run id is the useful handle: annotations are often just
+            # "Process completed with exit code 1", which explains nothing. Give
+            # the reviewer the id so it can fetch the real log with the tools it
+            # has been allowed.
+            runid=$(gh api "/repos/$REPO/check-runs/$id" \
+                    --jq '.details_url | capture("/runs/(?<r>[0-9]+)") | .r' 2>/dev/null || echo "")
+            out="$out  ||  CHECK '$name'"
+            [ -n "$runid" ] && out="$out (run $runid)"
+            out="$out:"
+            ann=$(gh api "/repos/$REPO/check-runs/$id/annotations" \
+                  --jq '.[] | "\(.path):\(.start_line) \(.annotation_level) \(.message)"' 2>/dev/null \
+                  | head -8 | tr '\n' ' ' | tr -d '"' | cut -c1-700)
+            [ -n "$ann" ] && out="$out $ann"
+          done
+          out="$out  ||  Annotations are often just 'Process completed with exit code 1'. Fetch the real output with: gh run view <run id> --log-failed"
+
+          # Collapse to one line and drop quotes, so it survives interpolation.
+          out=$(printf '%s' "$out" | tr '\n' ' ' | tr -d '"\r' | cut -c1-3000)
+          echo "summary=$out" >> "$GITHUB_OUTPUT"
+          echo "collected $n failing check(s)"
+
   pick-runner:
     needs: [gate]
     if: needs.gate.outputs.proceed == 'true'
@@ -144,4 +200,12 @@ jobs:
             actions: read
           plugin_marketplaces: 'https://github.com/anthropics/claude-code.git'
           plugins: 'code-review@claude-code-plugins'
+          # The CI context goes in via --append-system-prompt rather than the
+          # prompt, so the plugin's slash command stays exactly as the plugin
+          # expects it. Tools are allowed so the reviewer can pull a full log
+          # when the annotations are not enough.
+          claude_args: >-
+            --allowed-tools Bash(gh run:*),Bash(gh pr checks:*),Bash(gh api:*)
+            --append-system-prompt "${{ needs.gate.outputs.ci }}
+            When CI is failing, diagnose the cause and say which change caused it and how to fix it. Lead with that — it is more useful than anything else you could report. Do not repeat a failure the annotations already state verbatim; explain it."
           prompt: '/code-review:code-review ${{ github.repository }}/pull/${{ github.event.pull_request.number }} ${{ needs.gate.outputs.level }}'

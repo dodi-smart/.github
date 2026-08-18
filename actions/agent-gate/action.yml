@@ -40,6 +40,16 @@ inputs:
   commands:
     description: 'Space-separated comment verbs that request this workflow, e.g. "triage plan". Matched as `@claude <verb>`.'
     default: ''
+  mention:
+    description: >-
+      For the general assistant: the mention that requests it, e.g. "@claude".
+      When set, a body without it stops the run.
+    default: ''
+  exclude-commands:
+    description: >-
+      Verbs another workflow owns, declined here. The counterpart to `commands`,
+      and the reason both lists live in this action instead of in every repo.
+    default: ''
   bots:
     description: 'How to treat bot authors: reject (default) | only | allow'
     default: 'reject'
@@ -76,6 +86,8 @@ runs:
         DRAFT:    ${{ inputs.draft }}
         COMMENT:  ${{ inputs.comment }}
         COMMANDS: ${{ inputs.commands }}
+        MENTION:  ${{ inputs.mention }}
+        EXCLUDE:  ${{ inputs.exclude-commands }}
         BOTS:     ${{ inputs.bots }}
         SKIPDRAFT: ${{ inputs.skip-draft }}
         FILES:    ${{ inputs.changed-files }}

@@ -11,6 +11,7 @@ on:
     paths:
       - 'actions/**'
       - '.github/workflows/**'
+      - 'default.json5'
   push:
     branches: [main]
   workflow_dispatch:
@@ -47,6 +48,18 @@ jobs:
                   print('FAIL ' + f + ': ' + str(e)); bad += 1
           sys.exit(bad)
           "
+
+      # A JSON5 object literal is also a valid JavaScript expression, so this
+      # catches a malformed preset without pulling in a JSON5 parser. A broken
+      # preset silently disables Renovate config in every repo extending it.
+      - name: Renovate preset parses
+        run: |
+          node -e '
+            const o = eval("(" + require("fs").readFileSync("default.json5","utf8") + ")");
+            if (!Array.isArray(o.packageRules)) throw new Error("packageRules missing");
+            if (!o.labels.includes("deps:update")) throw new Error("deps:update label missing");
+            console.log("preset OK:", Object.keys(o).join(", "));
+          '
 
       - name: Shell scripts pass shellcheck
         run: |

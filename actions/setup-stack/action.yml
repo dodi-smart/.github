@@ -51,21 +51,33 @@ inputs:
     description: 'Restore and save the package cache'
     default: 'true'
 
+  # Command overrides. The sentinel "@stack" means "use this stack's
+  # conventional command"; an explicit empty string means "this repo has no such
+  # step". Those are different intentions and a plain default cannot express
+  # both — a Gradle repo genuinely has no install step. Resolving them HERE
+  # means callers read `steps.setup.outputs.install` and never reimplement the
+  # precedence rule; three workflows had started to.
+  install:   { description: 'Override the install command',   default: '@stack' }
+  lint:      { description: 'Override the lint command',      default: '@stack' }
+  typecheck: { description: 'Override the typecheck command', default: '@stack' }
+  test:      { description: 'Override the test command',      default: '@stack' }
+  build:     { description: 'Override the build command',     default: '@stack' }
+
 outputs:
   install:
-    description: 'The conventional install command for this stack, or empty when it resolves on demand'
+    description: 'Resolved install command — the override, or the stack default. Empty means skip.'
     value: ${{ steps.defaults.outputs.install }}
   lint:
-    description: 'The conventional lint command for this stack'
+    description: 'Resolved lint command. Empty means skip.'
     value: ${{ steps.defaults.outputs.lint }}
   typecheck:
-    description: 'The conventional typecheck command, or empty where the compiler already does it'
+    description: 'Resolved typecheck command. Empty means skip.'
     value: ${{ steps.defaults.outputs.typecheck }}
   test:
-    description: 'The conventional test command for this stack'
+    description: 'Resolved test command. Empty means skip.'
     value: ${{ steps.defaults.outputs.test }}
   build:
-    description: 'The conventional build command for this stack'
+    description: 'Resolved build command. Empty means skip.'
     value: ${{ steps.defaults.outputs.build }}
 
 runs:
@@ -147,7 +159,12 @@ runs:
     - id: defaults
       shell: bash
       env:
-        STACK: ${{ inputs.stack }}
+        STACK:       ${{ inputs.stack }}
+        O_INSTALL:   ${{ inputs.install }}
+        O_LINT:      ${{ inputs.lint }}
+        O_TYPECHECK: ${{ inputs.typecheck }}
+        O_TEST:      ${{ inputs.test }}
+        O_BUILD:     ${{ inputs.build }}
       run: |
         set -euo pipefail
         install=""; lint=""; typecheck=""; test=""; build=""
@@ -178,10 +195,13 @@ runs:
             build="xcodebuild build -scheme \"\$SCHEME\"" ;;
           none) : ;;
         esac
+        # "@stack" -> the conventional command above. Anything else, empty
+        # string included, is taken literally.
+        pick() { if [ "$1" = "@stack" ]; then printf '%s' "$2"; else printf '%s' "$1"; fi; }
         {
-          echo "install=$install"
-          echo "lint=$lint"
-          echo "typecheck=$typecheck"
-          echo "test=$test"
-          echo "build=$build"
+          echo "install=$(pick "$O_INSTALL" "$install")"
+          echo "lint=$(pick "$O_LINT" "$lint")"
+          echo "typecheck=$(pick "$O_TYPECHECK" "$typecheck")"
+          echo "test=$(pick "$O_TEST" "$test")"
+          echo "build=$(pick "$O_BUILD" "$build")"
         } >> "$GITHUB_OUTPUT"

@@ -120,9 +120,11 @@ jobs:
             fi
           fi
 
-          echo "proceed=$proceed" >> "$GITHUB_OUTPUT"
-          echo "level=$level"     >> "$GITHUB_OUTPUT"
-          echo "reason=$reason"   >> "$GITHUB_OUTPUT"
+          {
+            echo "proceed=$proceed"
+            echo "level=$level"
+            echo "reason=$reason"
+          } >> "$GITHUB_OUTPUT"
           echo "decision: proceed=$proceed level=$level ${reason:+($reason)}"
 
       # Why CI failed, gathered deterministically and handed to the reviewer.

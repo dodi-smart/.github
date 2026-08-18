@@ -119,41 +119,25 @@ jobs:
         uses: dodi-smart/.github/actions/setup-stack@main
         with:
           stack:           ${{ needs.gate.outputs.stack }}
+          install:         ${{ inputs.install }}
+          build:           ${{ inputs.build }}
+          typecheck:       ${{ inputs.typecheck }}
+          test:            ${{ inputs.test }}
           java-version:    ${{ inputs.java-version }}
           node-version:    ${{ inputs.node-version }}
           bun-version:     ${{ inputs.bun-version }}
           flutter-version: ${{ inputs.flutter-version }}
           rust-toolchain:  ${{ inputs.rust-toolchain }}
 
-      - id: cmd
-        env:
-          IN_INSTALL:   ${{ inputs.install }}
-          IN_BUILD:     ${{ inputs.build }}
-          IN_TYPECHECK: ${{ inputs.typecheck }}
-          IN_TEST:      ${{ inputs.test }}
-          D_INSTALL:    ${{ steps.setup.outputs.install }}
-          D_BUILD:      ${{ steps.setup.outputs.build }}
-          D_TYPECHECK:  ${{ steps.setup.outputs.typecheck }}
-          D_TEST:       ${{ steps.setup.outputs.test }}
-        run: |
-          set -euo pipefail
-          # "@stack" -> the stack's conventional command. Anything else, empty
-          # string included, is taken literally.
-          pick() { if [ "$1" = "@stack" ]; then printf '%s' "$2"; else printf '%s' "$1"; fi; }
-          {
-            echo "install=$(pick "$IN_INSTALL" "$D_INSTALL")"
-            echo "build=$(pick "$IN_BUILD" "$D_BUILD")"
-            echo "typecheck=$(pick "$IN_TYPECHECK" "$D_TYPECHECK")"
-            echo "test=$(pick "$IN_TEST" "$D_TEST")"
-          } >> "$GITHUB_OUTPUT"
-
+      # Every step runs even after one fails, so the agent below can explain the
+      # whole picture rather than only the first thing that broke.
       - id: steps
         continue-on-error: true
         env:
-          INSTALL:   ${{ steps.cmd.outputs.install }}
-          BUILD:     ${{ steps.cmd.outputs.build }}
-          TYPECHECK: ${{ steps.cmd.outputs.typecheck }}
-          TEST:      ${{ steps.cmd.outputs.test }}
+          INSTALL:   ${{ steps.setup.outputs.install }}
+          BUILD:     ${{ steps.setup.outputs.build }}
+          TYPECHECK: ${{ steps.setup.outputs.typecheck }}
+          TEST:      ${{ steps.setup.outputs.test }}
           SMOKE:     ${{ inputs.smoke }}
         run: |
           set -x

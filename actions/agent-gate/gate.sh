@@ -72,7 +72,25 @@ if [ "$ACTION" = "labeled" ]; then
   stop "labeled '$LABEL' — only $REQUEST requests this workflow"
 fi
 
-# RULE 5 — comment commands, as `@claude <verb>`. The verb list is an
+# RULE 5 — the general assistant. Proceeds on a bare mention, and DECLINES
+# the verbs another workflow owns.
+#
+# This is the inverse of RULE 6 and the reason both live here. Every repo used
+# to hand-maintain this exclusion in its own claude.yml — twice, once per job —
+# and keep it in sync with the triage caller's verb list by hand. It had already
+# drifted: one repo guarded pull_request_review_comment and the other did not.
+# One list, one place; adding a verb is one commit instead of one per repo.
+if [ -n "${MENTION:-}" ]; then
+  printf '%s' "$COMMENT" | grep -qF "$MENTION" || stop "no $MENTION in the body"
+  for verb in ${EXCLUDE:-}; do
+    if printf '%s' "$COMMENT" | grep -qiE "${MENTION}[[:space:]]+${verb}\b"; then
+      stop "reserved command '$verb' — another workflow owns it"
+    fi
+  done
+  go "mentioned: $MENTION"
+fi
+
+# RULE 6 — comment commands, as `@claude <verb>`. The verb list is an
 # input so it lives in ONE place; it used to be hand-copied into every
 # repo's claude.yml and had already drifted between two of them.
 if [ "$EVENT" = "issue_comment" ] && [ -n "${COMMANDS:-}" ]; then

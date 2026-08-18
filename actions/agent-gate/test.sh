@@ -22,6 +22,7 @@ case_() {
   export GITHUB_OUTPUT="$TMP/out"; : > "$GITHUB_OUTPUT"
   LABELS="$3" EVENT="$4" ACTION="$5" LABEL="$6" REQUEST="$7" AUTHOR="$8" DRAFT="$9" \
   COMMENT="${10}" COMMANDS="${11}" BOTS="${12}" SKIPDRAFT="${13}" FILES="${14}" \
+  MENTION="${15:-}" EXCLUDE="${16:-}" \
     bash "$HERE/gate.sh" >"$TMP/log" 2>&1
   local got reason mark
   got=$(grep '^proceed=' "$GITHUB_OUTPUT" | tail -1 | cut -d= -f2)
@@ -62,6 +63,15 @@ case_ false "human PR"                          '[]' pull_request opened '' agen
 case_ true  "dependabot PR"                     '[]' pull_request synchronize '' agent:review 'dependabot[bot]' false '' '' only true ''
 case_ true  "renovate + labeled agent:review"   '[]' pull_request labeled agent:review agent:review 'renovate[bot]' false '' '' only true ''
 case_ false "renovate + labeled deps:major"     '[]' pull_request labeled deps:major agent:review 'renovate[bot]' false '' '' only true ''
+
+echo "== claude-assist (mention, minus the verbs other workflows own) =="
+assist() { case_ "$1" "$2" '[]' issue_comment created '' '' alice false "$3" '' allow false '' '@claude' 'triage plan implement'; }
+assist true  "@claude <free-form question>"     '@claude what does this function do?'
+assist false "@claude triage  (triage owns it)" '@claude triage this please'
+assist false "@claude plan    (triage owns it)" 'hey @claude plan it out'
+assist false "@claude implement (implement owns it)" '@claude implement the plan'
+assist false "comment with no mention"          'just a normal comment'
+case_ false "no-touch + @claude free-form"      '["agent:no-touch"]' issue_comment created '' '' alice false '@claude help' '' allow false '' '@claude' 'triage plan implement'
 
 echo
 echo "pass=$pass fail=$fail"

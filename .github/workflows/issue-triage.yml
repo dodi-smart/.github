@@ -1,0 +1,222 @@
+# Reusable: classify an incoming issue, then either plan it or ask what is missing.
+#
+# Called by a thin wrapper in each repo:
+#   jobs:
+#     triage:
+#       uses: dodi-smart/.github/.github/workflows/issue-triage.yml@main
+#       secrets: inherit
+name: Issue Triage
+
+on:
+  workflow_call:
+    inputs:
+      primary-runner:
+        type: string
+        default: "self-hosted,Linux,ARM64"
+      fallback-runner:
+        type: string
+        default: "ubuntu-latest"
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN: { required: true }
+      GH_APP_CLIENT_ID:        { required: false }
+      GH_APP_PRIVATE_KEY:      { required: false }
+
+# One triage per issue. A second /triage supersedes the first rather than racing it.
+concurrency:
+  group: triage-${{ github.repository }}-${{ github.event.issue.number }}
+  cancel-in-progress: true
+
+jobs:
+  # Gate BEFORE picking a runner: the picker itself costs a hosted minute, so it
+  # must never run for an event that will not proceed.
+  gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      proceed: ${{ steps.check.outputs.proceed }}
+      mode:    ${{ steps.check.outputs.mode }}
+    steps:
+      - id: check
+        env:
+          EVENT:   ${{ github.event_name }}
+          ACTION:  ${{ github.event.action }}
+          AUTHOR:  ${{ github.event.issue.user.login }}
+          COMMENT: ${{ github.event.comment.body }}
+          LABELS:  ${{ toJson(github.event.issue.labels.*.name) }}
+          TITLE:   ${{ github.event.issue.title }}
+        run: |
+          set -euo pipefail
+          proceed=false; mode=triage
+
+          # agent:no-touch is absolute and evaluated before anything else (DODI-00008).
+          if printf '%s' "$LABELS" | grep -q '"agent:no-touch"'; then
+            echo "agent:no-touch present — stopping."
+            echo "proceed=false" >> "$GITHUB_OUTPUT"; echo "mode=$mode" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+
+          case "$EVENT" in
+            issues)
+              # Bots open issues at machine volume. The Renovate Dependency
+              # Dashboard is the one bot issue worth reading, and it is a
+              # standing issue, so triage it once on open and never again.
+              if printf '%s' "$AUTHOR" | grep -qiE 'renovate|dependabot|\[bot\]$'; then
+                if printf '%s' "$TITLE" | grep -qi 'dependency dashboard' && [ "$ACTION" = "opened" ]; then
+                  proceed=true
+                fi
+              else
+                proceed=true
+              fi
+              ;;
+            issue_comment)
+              case "$COMMENT" in
+                */triage*) proceed=true; mode=triage ;;
+                */plan*)   proceed=true; mode=plan ;;
+              esac
+              ;;
+            workflow_dispatch) proceed=true ;;
+          esac
+
+          echo "proceed=$proceed" >> "$GITHUB_OUTPUT"
+          echo "mode=$mode"       >> "$GITHUB_OUTPUT"
+
+  pick-runner:
+    needs: [gate]
+    if: needs.gate.outputs.proceed == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      runner: ${{ steps.set.outputs.use-runner || '["ubuntu-latest"]' }}
+    steps:
+      # The `secrets` context is not available in a step-level `if:`, so the
+      # presence check is hoisted into an env var first.
+      # Self-hosted is unavailable AND unsafe on public repos: the Default runner
+      # group sets allows_public_repositories=false, and a fork PR on a public repo
+      # would otherwise run attacker-authored code on our own hardware with a
+      # cache that persists into the next job. Decide before consulting the picker.
+      - id: hosted-only
+        env:
+          PRIVATE: ${{ github.event.repository.private }}
+          FORK:    ${{ github.event.pull_request.head.repo.fork }}
+        run: |
+          if [ "$PRIVATE" != "true" ] || [ "$FORK" = "true" ]; then
+            echo "public repo or fork PR -> hosted runner only"
+            echo "yes=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "yes=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - id: have-app
+        env:
+          CLIENT_ID: ${{ secrets.GH_APP_CLIENT_ID }}
+        run: |
+          if [ -n "${CLIENT_ID:-}" ]; then echo "yes=true" >> "$GITHUB_OUTPUT";
+          else echo "yes=false" >> "$GITHUB_OUTPUT"; fi
+      - name: Generate GitHub App token
+        id: app-token
+        if: steps.have-app.outputs.yes == 'true'
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id:   ${{ secrets.GH_APP_CLIENT_ID }}
+          private-key: ${{ secrets.GH_APP_PRIVATE_KEY }}
+          owner:       ${{ github.repository_owner }}
+      - name: Check runner availability
+        id: set
+        if: steps.hosted-only.outputs.yes == 'false'
+        uses: dodi-smart/runner-fallback-action@v2
+        with:
+          organization: ${{ github.repository_owner }}
+          # Linux+ARM64 is the Pi 5 pool: right for reading a diff, wrong for a
+          # build. Linux excludes the macmini runners, whose shared
+          # ~/.bun/install/cache poisons `bun install`.
+          primary-runner:  ${{ inputs.primary-runner }}
+          fallback-runner: ${{ inputs.fallback-runner }}
+          github-token: ${{ steps.app-token.outputs.token || github.token }}
+          fallback-on-error: true
+
+  triage:
+    needs: [gate, pick-runner]
+    if: needs.gate.outputs.proceed == 'true'
+    runs-on: ${{ fromJson(needs.pick-runner.outputs.runner) }}
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      issues: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@v7
+        with: { fetch-depth: 1 }
+
+      - name: Load repo area vocabulary
+        id: areas
+        run: |
+          if [ -f .github/areas.yml ]; then
+            { echo 'areas<<__EOF__'; cat .github/areas.yml; echo '__EOF__'; } >> "$GITHUB_OUTPUT"
+          else
+            { echo 'areas<<__EOF__'; echo '(no .github/areas.yml — do NOT invent area labels;'; \
+              echo ' say it is missing and apply none)'; echo '__EOF__'; } >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          claude_args: '--allowed-tools Bash(gh issue:*),Bash(gh api:*),Bash(gh label:*)'
+          prompt: |
+            Triage issue #${{ github.event.issue.number }} in ${{ github.repository }}.
+            Mode: ${{ needs.gate.outputs.mode }}
+
+            The repo's area vocabulary (each area lists the paths that define it,
+            plus disambiguation rules that exist because some paths mislead):
+            ---
+            ${{ steps.areas.outputs.areas }}
+            ---
+
+            ## Always do
+
+            1. Read the issue and anything it links to.
+            2. Explore the code enough to know where the work lands. Map changed or
+               relevant files to areas using the paths above. Follow the
+               disambiguation rules literally — they exist because the obvious
+               guess is wrong.
+            3. Apply the `area:*` labels. Several is normal. If areas.yml was
+               missing, apply none and say so.
+            4. Set the issue type:
+               gh api -X PATCH /repos/${{ github.repository }}/issues/${{ github.event.issue.number }} -f type='<Type>'
+               Bug only for a real regression or a violated spec — not for
+               something that never worked and was never specified.
+
+            ## Then decide, and be honest about which
+
+            Ask yourself: could a competent engineer start implementing this today
+            without asking anyone anything?
+
+            **If yes** — post an implementation plan: the files to change, the
+            approach, the test plan, the risks, and a rough effort. Reference real
+            paths you actually opened. Then set:
+              Triage state = Plan ready
+            and add the `agent:plan` label.
+
+            **If no** — do NOT write a speculative plan. Post numbered blocking
+            questions in exactly two groups:
+              ### Questions for the team
+              ### Questions to ask the customer
+            The second group must be phrased so it can be pasted into an email
+            verbatim. Omit a group entirely if it would be empty. Then set:
+              Triage state = Needs info
+            and add the most specific `needs:*` label
+            (needs:info, needs:repro, needs:decision, needs:design, needs:customer, needs:spec).
+
+            Prefer questions over a guessed plan. A confident plan built on an
+            assumption you never checked costs far more than one extra round-trip.
+
+            ## Fields
+
+            Set Priority, Effort and Risk only where you can justify them from what
+            you read. Leave a field unset rather than guessing — triage output is
+            read as evidence, and an unjustified value is worse than an empty one.
+            Risk is at least High for auth, payments, RLS, migrations, or anything
+            that loses data.
+
+            Set fields with the GraphQL setIssueFieldValue mutation; ids come from
+            /orgs/${{ github.repository_owner }}/issue-fields.
+
+            Keep the comment tight. No preamble, no restating the issue back.

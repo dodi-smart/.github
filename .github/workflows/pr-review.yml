@@ -1,0 +1,154 @@
+# Reusable: second-opinion review on a pull request.
+#
+# Triggers are deliberately narrow. Reviewing on every push is what gets a review
+# bot muted, and a muted bot reviews nothing (DODI-00005). The caller should fire
+# this on `ready_for_review` and on the `agent:review` label — not on `synchronize`.
+name: PR Review
+
+on:
+  workflow_call:
+    inputs:
+      primary-runner:  { type: string, default: "self-hosted,Linux,ARM64" }
+      fallback-runner: { type: string, default: "ubuntu-latest" }
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN: { required: true }
+      GH_APP_CLIENT_ID:        { required: false }
+      GH_APP_PRIVATE_KEY:      { required: false }
+
+concurrency:
+  group: review-${{ github.repository }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      proceed: ${{ steps.c.outputs.proceed }}
+      depth:   ${{ steps.c.outputs.depth }}
+    steps:
+      - uses: actions/checkout@v7
+        with: { fetch-depth: 0 }
+      - id: c
+        env:
+          DRAFT:  ${{ github.event.pull_request.draft }}
+          AUTHOR: ${{ github.event.pull_request.user.login }}
+          LABELS: ${{ toJson(github.event.pull_request.labels.*.name) }}
+          BASE:   ${{ github.event.pull_request.base.sha }}
+          HEAD:   ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          proceed=true; depth=standard
+
+          if printf '%s' "$LABELS" | grep -q '"agent:no-touch"'; then
+            proceed=false
+          elif [ "$DRAFT" = "true" ]; then
+            proceed=false                      # never review a draft
+          elif printf '%s' "$AUTHOR" | grep -qiE 'renovate|dependabot'; then
+            proceed=false                      # deps-verify owns these; no double coverage
+          fi
+
+          if [ "$proceed" = "true" ]; then
+            files=$(git diff --name-only "$BASE" "$HEAD" || true)
+            # Docs-only diffs get nothing. Nothing to review, so do not pay for it.
+            if [ -n "$files" ] && ! printf '%s\n' "$files" | grep -qvE '(\.md$|^docs/)'; then
+              proceed=false
+            fi
+            # Sensitive surfaces earn a deeper pass without anyone asking.
+            if printf '%s\n' "$files" | grep -qE '(auth|payment|stripe|billing|rls|migrations?/|middleware|proxy)'; then
+              depth=security
+            fi
+            printf '%s' "$LABELS" | grep -q '"sec:' && depth=security
+          fi
+
+          echo "proceed=$proceed" >> "$GITHUB_OUTPUT"
+          echo "depth=$depth"     >> "$GITHUB_OUTPUT"
+
+  pick-runner:
+    needs: [gate]
+    if: needs.gate.outputs.proceed == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      runner: ${{ steps.set.outputs.use-runner || '["ubuntu-latest"]' }}
+    steps:
+      # Self-hosted is unavailable AND unsafe on public repos: the Default runner
+      # group sets allows_public_repositories=false, and a fork PR on a public repo
+      # would otherwise run attacker-authored code on our own hardware with a
+      # cache that persists into the next job. Decide before consulting the picker.
+      - id: hosted-only
+        env:
+          PRIVATE: ${{ github.event.repository.private }}
+          FORK:    ${{ github.event.pull_request.head.repo.fork }}
+        run: |
+          if [ "$PRIVATE" != "true" ] || [ "$FORK" = "true" ]; then
+            echo "public repo or fork PR -> hosted runner only"
+            echo "yes=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "yes=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - id: have-app
+        env: { CLIENT_ID: "${{ secrets.GH_APP_CLIENT_ID }}" }
+        run: |
+          if [ -n "${CLIENT_ID:-}" ]; then echo "yes=true" >> "$GITHUB_OUTPUT";
+          else echo "yes=false" >> "$GITHUB_OUTPUT"; fi
+      - id: app-token
+        if: steps.have-app.outputs.yes == 'true'
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id:   ${{ secrets.GH_APP_CLIENT_ID }}
+          private-key: ${{ secrets.GH_APP_PRIVATE_KEY }}
+          owner:       ${{ github.repository_owner }}
+      - id: set
+        if: steps.hosted-only.outputs.yes == 'false'
+        uses: dodi-smart/runner-fallback-action@v2
+        with:
+          organization:    ${{ github.repository_owner }}
+          primary-runner:  ${{ inputs.primary-runner }}
+          fallback-runner: ${{ inputs.fallback-runner }}
+          github-token:    ${{ steps.app-token.outputs.token || github.token }}
+          fallback-on-error: true
+
+  review:
+    needs: [gate, pick-runner]
+    if: needs.gate.outputs.proceed == 'true'
+    runs-on: ${{ fromJson(needs.pick-runner.outputs.runner) }}
+    timeout-minutes: 25
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: read
+      id-token: write
+      actions: read
+    steps:
+      - uses: actions/checkout@v7
+        with: { fetch-depth: 0 }
+      - uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          sticky_comment: true
+          additional_permissions: |
+            actions: read
+          prompt: |
+            Review PR #${{ github.event.pull_request.number }} in ${{ github.repository }}.
+            Depth: ${{ needs.gate.outputs.depth }}
+
+            Cover correctness first: logic errors, unhandled cases, broken
+            invariants, race conditions, anything that fails on real input. Then
+            reuse and simplification where it genuinely matters.
+
+            If depth is `security`, add a dedicated pass over authentication and
+            authorization, tenant isolation and RLS, secret handling, input
+            validation at trust boundaries, and injection. This PR touches a
+            sensitive surface, which is why the deeper pass was selected.
+
+            Rules:
+            - Report only what you can point at. Every finding names a file and
+              line and states how it actually fails. Speculation is noise.
+            - Do not restate the diff or praise it. If it is clean, say so and stop.
+            - Do not comment on formatting the linter already owns.
+            - Rank by severity. A long list of trivia buries the one real bug.
+
+            If this repo records decisions in `.zavet/`, check whether the change
+            contradicts one and cite the id if so.

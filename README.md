@@ -2,15 +2,19 @@
 
 Org-wide GitHub defaults for `dodi-smart`.
 
-This repo holds **only** what GitHub requires to live at a fixed path:
+**This repo is an add-on to [`dodi-smart/agent-skills`](https://github.com/dodi-smart/agent-skills), not a separate project.**
+Think of it as that repo's GitHub-mandated mount point. It holds only what has to
+live at a fixed path:
 
 - `.github/ISSUE_TEMPLATE/` — issue templates, inherited by every repo in the org
   that does not define its own
 - `.github/workflows/` — reusable workflows called by thin callers in each repo
 
-Everything else — the skills, the label manifest, the scripts, and the reasoning —
-lives in **[`dodi-smart/agent-skills`](https://github.com/dodi-smart/agent-skills)**.
-The split follows what GitHub forces rather than topic; see `DODI-00009` there.
+Everything else — the skills, the label manifest, the scripts, and all the
+reasoning — lives in **[`dodi-smart/agent-skills`](https://github.com/dodi-smart/agent-skills)**.
+There is one knowledge layer and it is over there; see `AGENTS.md` in this repo
+for which decisions govern these workflows, and `DODI-00011` for why the split is
+drawn here.
 
 ## Issue templates
 
@@ -37,7 +41,7 @@ Called from a repo as:
 ```yaml
 jobs:
   triage:
-    uses: dodi-smart/agent-skills/.github/workflows/issue-triage.yml@main
+    uses: dodi-smart/.github/.github/workflows/issue-triage.yml@main
     secrets: inherit
 ```
 

@@ -1,0 +1,184 @@
+# Reusable: verify a Renovate/Dependabot PR by actually building it and reading
+# what upstream changed.
+#
+# This job REPORTS. It never merges and never changes mergeability — Renovate's
+# own automerge rules stay the sole merge policy (DODI-00004). Adding evidence to
+# a PR is useful; quietly acquiring merge authority is not.
+name: Dependency Verification
+
+on:
+  workflow_call:
+    inputs:
+      primary-runner:  { type: string, default: "self-hosted,Linux,X64" }
+      fallback-runner: { type: string, default: "ubuntu-latest" }
+      install:   { type: string, default: "bun install --frozen-lockfile" }
+      build:     { type: string, default: "bun run build" }
+      typecheck: { type: string, default: "bun run typecheck" }
+      test:      { type: string, default: "bun run test:run" }
+      smoke:     { type: string, default: "" }
+      setup:     { type: string, default: "bun" }   # bun | node | none
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN: { required: true }
+      GH_APP_CLIENT_ID:        { required: false }
+      GH_APP_PRIVATE_KEY:      { required: false }
+
+concurrency:
+  group: deps-${{ github.repository }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      proceed: ${{ steps.c.outputs.proceed }}
+    steps:
+      - id: c
+        env:
+          AUTHOR: ${{ github.event.pull_request.user.login }}
+          DRAFT:  ${{ github.event.pull_request.draft }}
+          LABELS: ${{ toJson(github.event.pull_request.labels.*.name) }}
+        run: |
+          set -euo pipefail
+          proceed=false
+          if printf '%s' "$LABELS" | grep -q '"agent:no-touch"'; then
+            echo "agent:no-touch — stopping"
+          elif [ "$DRAFT" = "true" ]; then
+            echo "draft — stopping"
+          elif printf '%s' "$AUTHOR" | grep -qiE 'renovate|dependabot'; then
+            proceed=true
+          else
+            echo "not a bot dependency PR — stopping"
+          fi
+          echo "proceed=$proceed" >> "$GITHUB_OUTPUT"
+
+  pick-runner:
+    needs: [gate]
+    if: needs.gate.outputs.proceed == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      runner: ${{ steps.set.outputs.use-runner || '["ubuntu-latest"]' }}
+    steps:
+      # Self-hosted is unavailable AND unsafe on public repos: the Default runner
+      # group sets allows_public_repositories=false, and a fork PR would otherwise
+      # run attacker-authored code on our own hardware with a persistent cache.
+      - id: hosted-only
+        env:
+          PRIVATE: ${{ github.event.repository.private }}
+          FORK:    ${{ github.event.pull_request.head.repo.fork }}
+        run: |
+          if [ "$PRIVATE" != "true" ] || [ "$FORK" = "true" ]; then
+            echo "yes=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "yes=false" >> "$GITHUB_OUTPUT"
+          fi
+      - id: have-app
+        env:
+          CLIENT_ID: ${{ secrets.GH_APP_CLIENT_ID }}
+        run: |
+          if [ -n "${CLIENT_ID:-}" ]; then echo "yes=true" >> "$GITHUB_OUTPUT";
+          else echo "yes=false" >> "$GITHUB_OUTPUT"; fi
+      - id: app-token
+        if: steps.have-app.outputs.yes == 'true'
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id:   ${{ secrets.GH_APP_CLIENT_ID }}
+          private-key: ${{ secrets.GH_APP_PRIVATE_KEY }}
+          owner:       ${{ github.repository_owner }}
+      - id: set
+        if: steps.hosted-only.outputs.yes == 'false'
+        uses: dodi-smart/runner-fallback-action@v2
+        with:
+          organization:    ${{ github.repository_owner }}
+          # Linux+X64 is the 64 GB pool. A dependency PR runs a full install,
+          # build and test suite, which the 8 GB ARM64 pool cannot hold.
+          primary-runner:  ${{ inputs.primary-runner }}
+          fallback-runner: ${{ inputs.fallback-runner }}
+          github-token:    ${{ steps.app-token.outputs.token || github.token }}
+          fallback-on-error: true
+
+  # Deterministic gates FIRST. If the build is red, the compiler has already
+  # explained why and an agent adds nothing but cost.
+  build:
+    needs: [gate, pick-runner]
+    if: needs.gate.outputs.proceed == 'true'
+    runs-on: ${{ fromJson(needs.pick-runner.outputs.runner) }}
+    timeout-minutes: 25
+    outputs:
+      verdict: ${{ steps.result.outputs.verdict }}
+    steps:
+      - uses: actions/checkout@v7
+      - if: inputs.setup == 'bun'
+        uses: oven-sh/setup-bun@v2
+      - if: inputs.setup == 'node'
+        uses: actions/setup-node@v4
+        with: { node-version: '24' }
+
+      - id: steps
+        continue-on-error: true
+        run: |
+          set -x
+          fail=""
+          run() { [ -z "$2" ] && return 0; eval "$2" || fail="$fail $1"; }
+          run install   "${{ inputs.install }}"
+          run build     "${{ inputs.build }}"
+          run typecheck "${{ inputs.typecheck }}"
+          run test      "${{ inputs.test }}"
+          run smoke     "${{ inputs.smoke }}"
+          echo "failed=${fail# }" >> "$GITHUB_OUTPUT"
+          [ -z "$fail" ]
+
+      - id: result
+        run: |
+          f="${{ steps.steps.outputs.failed }}"
+          if [ -z "$f" ]; then echo "verdict=green" >> "$GITHUB_OUTPUT"
+          else echo "verdict=red:$f" >> "$GITHUB_OUTPUT"; fi
+
+  review:
+    needs: [gate, pick-runner, build]
+    if: needs.gate.outputs.proceed == 'true'
+    runs-on: ${{ fromJson(needs.pick-runner.outputs.runner) }}
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      pull-requests: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@v7
+      - uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          sticky_comment: true
+          claude_args: '--allowed-tools Bash(gh pr:*),Bash(gh api:*),Bash(gh label:*),WebFetch'
+          prompt: |
+            Verify dependency PR #${{ github.event.pull_request.number }} in
+            ${{ github.repository }}.
+
+            Deterministic result already in hand: `${{ needs.build.outputs.verdict }}`
+            (`green` = install/build/typecheck/test/smoke all passed; `red:<steps>`
+            = those steps failed).
+
+            Do this:
+
+            1. Read the manifest and lockfile diff. List every package whose version
+               changed, with the old and new version.
+            2. For each one, find what actually changed upstream — release notes,
+               CHANGELOG, or the GitHub compare view between the two tags. Do not
+               speculate about a package you could not find notes for; say you could
+               not find them.
+            3. For each breaking or deprecating change, grep this repo for real
+               usage of the affected API. A breaking change the code never touches
+               is not a risk here — say so explicitly rather than alarming.
+            4. Post one table: package | old -> new | upstream changes | used here? | verdict.
+
+            Then apply exactly one label:
+              deps:verified      build green AND no breaking change reaches our usage
+              deps:breaking      a breaking change demonstrably reaches our usage
+              deps:needs-manual  build red, or you could not establish what changed
+
+            Do NOT merge, approve, or change mergeability. Reporting is the whole
+            job; the repo's existing automerge rules decide what lands.
+
+            Be brief. If everything is clean, say so in two lines and stop — a long
+            report on a boring patch bump trains people to ignore the report.

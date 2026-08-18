@@ -59,6 +59,25 @@ be verified rather than asserted.
   allowlist — the action refuses to run for an actor without write access, so
   untrusted content only reaches the agent when someone trusted invokes it.
 
+## Known follow-up: the internal self-references still say `@main`
+
+The workflows here call each other — and their composite actions — at `@main`,
+while callers outside are told to pin `@v1`. That is inconsistent, and it means a
+`@v1`-pinned caller still picks up `main`'s `pick-runner` and actions. It
+undercuts what pinning is for, so it is a gap to close, not a design.
+
+It is deliberate only in its ORDER. Repos that have not migrated still pin
+`@main`, so flipping the internal references to `@v1` before they move would
+break them in the window between merge and migration. The sequence is:
+
+1. Merge with internal references at `@main` — existing `@main` callers keep working.
+2. Cut `v1`.
+3. Migrate every repo to `@v1`.
+4. **Then** flip the internal references to `@v1` and move the tag.
+
+Step 4 is the one that gets forgotten. Until it is done, `@v1` pins the workflow
+bodies but not what they call.
+
 ## If you add a workflow
 
 1. Gate it with `actions/agent-gate` so `agent:no-touch` is checked first.

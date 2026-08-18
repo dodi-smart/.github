@@ -21,7 +21,7 @@ on:
 
       # ORDERED list of semantic-release configs, as a JSON array. Each is run in
       # turn with `--extends`. Order is the dependency order between modules.
-      #   modules: '["./.releaserc.probe.js", "./.releaserc.prevention.js"]'
+      #   modules: '["./.releaserc.core.js", "./.releaserc.app.js"]'
       # Leave empty for a single-package repo.
       modules:
         type: string

@@ -5,9 +5,9 @@
 # The old shape was a thin-caller file per stack (deps-verify.yml,
 # deps-verify.gradle.yml, ...). Five stacks across three workflows is fifteen
 # files that must be kept in agreement, and the Gradle one had already grown a
-# hardcoded `assembleInfrasensingDebug` — one product's task name sitting in a
-# template every other Gradle repo was meant to copy. Stack is a VALUE, so it
-# belongs in an input.
+# hardcoded product-specific Gradle task name — sitting in a template every other
+# Gradle repo was meant to copy, where it produces a build failure whose cause is
+# a different product. Stack is a VALUE, so it belongs in an input.
 #
 # WHY THE CACHE DIRS ARE JOB-SCOPED
 #

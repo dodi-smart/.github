@@ -23,7 +23,8 @@ on:
       typecheck: { type: string, default: "bun run typecheck" }
       test:      { type: string, default: "bun run test:run" }
       smoke:     { type: string, default: "" }
-      setup:     { type: string, default: "bun" }   # bun | node | none
+      setup:        { type: string, default: "bun" }   # bun | node | java | none
+      java-version: { type: string, default: "21" }
     secrets:
       CLAUDE_CODE_OAUTH_TOKEN: { required: true }
       GH_APP_CLIENT_ID:        { required: false }
@@ -93,6 +94,13 @@ jobs:
       - if: inputs.setup == 'node'
         uses: actions/setup-node@v4
         with: { node-version: '24' }
+      - if: inputs.setup == 'java'
+        uses: actions/setup-java@v5
+        with:
+          java-version: ${{ inputs.java-version }}
+          distribution: temurin
+      - if: inputs.setup == 'java'
+        uses: gradle/actions/setup-gradle@v4
 
       - id: steps
         continue-on-error: true

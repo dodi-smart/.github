@@ -117,11 +117,15 @@ jobs:
       - uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          # No --allowed-tools. Two attempts at an allowlist both failed: the
-          # first (gh commands only) left the agent unable to open a file; the
-          # second still produced permission_denials_count: 5. The action ships a
-          # considered default set for agent mode, including its own GitHub MCP
-          # tools — an allowlist written from the outside keeps fighting it.
+          # `--allowed-tools <tools...>` is VARIADIC — space-separated, each
+          # quoted. A comma-joined list is parsed as one meaningless token, so
+          # nothing matches and every Bash call is denied with "This command
+          # requires approval". That cost three runs that all reported success
+          # while doing nothing.
+          claude_args: >-
+            --allowed-tools
+            "Bash(gh issue:*)" "Bash(gh api:*)" "Bash(gh label:*)"
+            "Bash(gh search:*)" Read Grep Glob
           # Without this the agent's output never reaches the log, and a run that
           # did nothing is indistinguishable from one that worked.
           display_report: true

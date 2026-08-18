@@ -9,8 +9,15 @@ name: Dependency Verification
 on:
   workflow_call:
     inputs:
-      primary-runner:  { type: string, default: "self-hosted,Linux,X64" }
-      fallback-runner: { type: string, default: "ubuntu-latest" }
+      # Runner selection, passed through to the shared picker. Override per repo
+      # when the preset does not fit this stack — e.g. an Android build needing an
+      # SDK-bearing image, or a job needing the `docker` label.
+      runner-weight:
+        type: string
+        default: "heavy"     # light | heavy | apple | hosted
+      runner-labels:
+        type: string
+        default: ""       # explicit selector; wins over runner-weight
       install:   { type: string, default: "bun install --frozen-lockfile" }
       build:     { type: string, default: "bun run build" }
       typecheck: { type: string, default: "bun run typecheck" }
@@ -55,48 +62,11 @@ jobs:
   pick-runner:
     needs: [gate]
     if: needs.gate.outputs.proceed == 'true'
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    outputs:
-      runner: ${{ steps.set.outputs.use-runner || '["ubuntu-latest"]' }}
-    steps:
-      # Self-hosted is unavailable AND unsafe on public repos: the Default runner
-      # group sets allows_public_repositories=false, and a fork PR would otherwise
-      # run attacker-authored code on our own hardware with a persistent cache.
-      - id: hosted-only
-        env:
-          PRIVATE: ${{ github.event.repository.private }}
-          FORK:    ${{ github.event.pull_request.head.repo.fork }}
-        run: |
-          if [ "$PRIVATE" != "true" ] || [ "$FORK" = "true" ]; then
-            echo "yes=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "yes=false" >> "$GITHUB_OUTPUT"
-          fi
-      - id: have-app
-        env:
-          CLIENT_ID: ${{ secrets.GH_APP_CLIENT_ID }}
-        run: |
-          if [ -n "${CLIENT_ID:-}" ]; then echo "yes=true" >> "$GITHUB_OUTPUT";
-          else echo "yes=false" >> "$GITHUB_OUTPUT"; fi
-      - id: app-token
-        if: steps.have-app.outputs.yes == 'true'
-        uses: actions/create-github-app-token@v3
-        with:
-          client-id:   ${{ secrets.GH_APP_CLIENT_ID }}
-          private-key: ${{ secrets.GH_APP_PRIVATE_KEY }}
-          owner:       ${{ github.repository_owner }}
-      - id: set
-        if: steps.hosted-only.outputs.yes == 'false'
-        uses: dodi-smart/runner-fallback-action@v2
-        with:
-          organization:    ${{ github.repository_owner }}
-          # Linux+X64 is the 64 GB pool. A dependency PR runs a full install,
-          # build and test suite, which the 8 GB ARM64 pool cannot hold.
-          primary-runner:  ${{ inputs.primary-runner }}
-          fallback-runner: ${{ inputs.fallback-runner }}
-          github-token:    ${{ steps.app-token.outputs.token || github.token }}
-          fallback-on-error: true
+    uses: dodi-smart/.github/.github/workflows/pick-runner.yml@main
+    with:
+      weight: ${{ inputs.runner-weight }}
+      labels: ${{ inputs.runner-labels }}
+    secrets: inherit
 
   # Deterministic gates FIRST. If the build is red, the compiler has already
   # explained why and an agent adds nothing but cost.

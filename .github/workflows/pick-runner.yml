@@ -1,0 +1,194 @@
+# Reusable: choose a runner, and say so out loud when the choice is wrong.
+#
+#   jobs:
+#     pick-light:
+#       uses: dodi-smart/.github/.github/workflows/pick-runner.yml@main
+#       with: { weight: light }
+#       secrets: inherit
+#     lint:
+#       needs: [pick-light]
+#       runs-on: ${{ fromJson(needs.pick-light.outputs.runner) }}
+#
+# Why this is shared: the org spent months with every workflow asking for
+# `self-hosted,Linux,build`, a label no runner carries. Because the fallback is
+# configured to swallow errors, a selector matching nothing and a busy fleet look
+# identical — a successful run on hosted. Centralising the selector means the next
+# hardware change or lost label is one commit, not one per workflow per repo. And
+# this job now VALIDATES the selector against the live fleet and annotates the run
+# when it matches nothing, so the same bug cannot hide again (DODI-00010).
+name: Pick runner
+
+on:
+  workflow_call:
+    inputs:
+      # Semantic preset. Prefer this over `labels` — it keeps every repo on the
+      # same vocabulary, so re-tiering the fleet is one edit here.
+      #   light   Pi 5, 8 GB      lint, typecheck, checks, releases, crons, reading a diff
+      #   heavy   Ryzen 7, 64 GB  Next.js / Rust / Gradle builds, Docker, full suites
+      #   apple   M4 Pro, 24 GB   Xcode, iOS, Swift, signing
+      #   hosted  force GitHub-hosted, skip self-hosted entirely
+      weight:
+        type: string
+        default: light
+
+      # Escape hatch for a stack the presets do not describe — e.g. a job needing
+      # the `docker` label, or an Android build needing an SDK-bearing image.
+      # Wins over `weight` when non-empty. Validated like any other selector, so a
+      # typo here is reported rather than silently downgraded to hosted.
+      labels:
+        type: string
+        default: ""
+
+      fallback:
+        type: string
+        default: "ubuntu-latest"
+
+      # Self-hosted is refused on public repos by org policy and is unsafe for
+      # fork PRs. Leave this on unless you know exactly why not.
+      guard-public:
+        type: boolean
+        default: true
+
+    outputs:
+      runner:
+        description: "JSON array of labels for runs-on, via fromJson()"
+        value: ${{ jobs.pick.outputs.runner }}
+      selector:
+        description: "The resolved selector, for logging"
+        value: ${{ jobs.pick.outputs.selector }}
+
+    secrets:
+      GH_APP_CLIENT_ID:   { required: false }
+      GH_APP_PRIVATE_KEY: { required: false }
+
+jobs:
+  pick:
+    name: Pick runner
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      runner:   ${{ steps.out.outputs.runner }}
+      selector: ${{ steps.resolve.outputs.selector }}
+    steps:
+      - id: resolve
+        env:
+          WEIGHT:  ${{ inputs.weight }}
+          LABELS:  ${{ inputs.labels }}
+          PRIVATE: ${{ github.event.repository.private }}
+          FORK:    ${{ github.event.pull_request.head.repo.fork }}
+          GUARD:   ${{ inputs.guard-public }}
+        run: |
+          set -euo pipefail
+
+          # Public repos and fork PRs never touch self-hosted. The Default runner
+          # group sets allows_public_repositories=false, and a fork PR would
+          # otherwise run attacker-authored code on our own hardware with a cache
+          # that persists into the next job.
+          if [ "$GUARD" = "true" ] && { [ "$PRIVATE" != "true" ] || [ "$FORK" = "true" ]; }; then
+            echo "public repo or fork PR — hosted only"
+            echo "selector=" >> "$GITHUB_OUTPUT"
+            echo "hosted=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if [ -n "${LABELS:-}" ]; then
+            sel="$LABELS"
+          else
+            case "$WEIGHT" in
+              light)  sel="self-hosted,Linux,ARM64" ;;
+              heavy)  sel="self-hosted,Linux,X64" ;;
+              apple)  sel="self-hosted,macOS,ARM64" ;;
+              hosted) sel="" ;;
+              *)
+                echo "::error::unknown weight '$WEIGHT' (expected light|heavy|apple|hosted, or set the labels input)"
+                exit 1 ;;
+            esac
+          fi
+
+          if [ -z "$sel" ]; then
+            echo "selector=" >> "$GITHUB_OUTPUT"; echo "hosted=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "selector=$sel" >> "$GITHUB_OUTPUT"; echo "hosted=false" >> "$GITHUB_OUTPUT"
+            echo "resolved selector: $sel"
+          fi
+
+      - id: have-app
+        if: steps.resolve.outputs.hosted == 'false'
+        env:
+          CLIENT_ID: ${{ secrets.GH_APP_CLIENT_ID }}
+        run: |
+          if [ -n "${CLIENT_ID:-}" ]; then echo "yes=true" >> "$GITHUB_OUTPUT";
+          else echo "yes=false" >> "$GITHUB_OUTPUT"; fi
+
+      - id: app-token
+        if: steps.have-app.outputs.yes == 'true'
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id:   ${{ secrets.GH_APP_CLIENT_ID }}
+          private-key: ${{ secrets.GH_APP_PRIVATE_KEY }}
+          owner:       ${{ github.repository_owner }}
+
+      # The check that would have caught the `build` label. Reports rather than
+      # fails: a selector matching nothing still runs fine on hosted, and breaking
+      # CI over it would be worse than the bug. But it is now VISIBLE.
+      - id: validate
+        if: steps.resolve.outputs.hosted == 'false'
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token || github.token }}
+          SEL:      ${{ steps.resolve.outputs.selector }}
+          ORG:      ${{ github.repository_owner }}
+        run: |
+          set -uo pipefail
+          runners=$(gh api "/orgs/$ORG/actions/runners" --paginate \
+            --jq '.runners[] | {name,labels:[.labels[].name]}' 2>/dev/null | jq -s '.' || echo '[]')
+          if [ "$(jq 'length' <<<"$runners")" = "0" ]; then
+            echo "::notice::could not read the org runner list; skipping selector validation"
+            exit 0
+          fi
+
+          missing=""
+          IFS=',' read -ra want <<<"$SEL"
+          for l in "${want[@]}"; do
+            l="$(echo "$l" | xargs)"
+            jq -e --arg l "$l" 'any(.[]; .labels|index($l))' >/dev/null <<<"$runners" || missing="$missing $l"
+          done
+
+          if [ -n "$missing" ]; then
+            all=$(jq -r '[.[].labels[]]|unique|join(" ")' <<<"$runners")
+            echo "::warning title=Runner selector matches nothing::'$SEL' asks for label(s):$missing, which no runner carries. This job will run on hosted and report success — the same silent failure that hid for months. Fleet labels: $all"
+            exit 0
+          fi
+
+          n=$(jq --arg s "$SEL" '
+            ($s | split(",") | map(gsub("^\\s+|\\s+$"; ""))) as $want
+            | [ .[] | . as $r | select( all($want[]; . as $l | ($r.labels|index($l)) != null) ) ]
+            | length' <<<"$runners")
+          if [ "$n" = "0" ]; then
+            echo "::warning title=Runner selector matches nothing::Every label in '$SEL' exists, but no single runner carries them together. Falling back to hosted."
+          else
+            echo "selector '$SEL' matches $n runner(s)"
+          fi
+
+      - id: fallback
+        if: steps.resolve.outputs.hosted == 'false'
+        uses: dodi-smart/runner-fallback-action@v2
+        with:
+          organization:      ${{ github.repository_owner }}
+          primary-runner:    ${{ steps.resolve.outputs.selector }}
+          fallback-runner:   ${{ inputs.fallback }}
+          github-token:      ${{ steps.app-token.outputs.token || github.token }}
+          fallback-on-error: true
+
+      - id: out
+        env:
+          PICKED:   ${{ steps.fallback.outputs.use-runner }}
+          FALLBACK: ${{ inputs.fallback }}
+        run: |
+          set -euo pipefail
+          if [ -n "${PICKED:-}" ]; then
+            echo "runner=$PICKED" >> "$GITHUB_OUTPUT"
+          else
+            # hosted-only path, or the picker was skipped: emit valid JSON so
+            # fromJson() in the caller does not fail the job.
+            printf 'runner=["%s"]\n' "$FALLBACK" >> "$GITHUB_OUTPUT"
+          fi

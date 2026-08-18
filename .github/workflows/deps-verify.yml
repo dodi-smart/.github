@@ -45,6 +45,8 @@ jobs:
           AUTHOR: ${{ github.event.pull_request.user.login }}
           DRAFT:  ${{ github.event.pull_request.draft }}
           LABELS: ${{ toJson(github.event.pull_request.labels.*.name) }}
+          ACTION: ${{ github.event.action }}
+          LABEL:  ${{ github.event.label.name }}
         run: |
           set -euo pipefail
           proceed=false
@@ -56,6 +58,13 @@ jobs:
             proceed=true
           else
             echo "not a bot dependency PR — stopping"
+          fi
+
+          # A `labeled` event only proceeds for the re-run label. Without this,
+          # ANY label added to a Renovate PR would re-run the whole build.
+          if [ "$ACTION" = "labeled" ] && [ "$LABEL" != "agent:review" ]; then
+            proceed=false
+            echo "labeled '$LABEL' — only agent:review re-runs verification"
           fi
           echo "proceed=$proceed" >> "$GITHUB_OUTPUT"
 

@@ -1,0 +1,49 @@
+name: Bug
+description: Something behaves incorrectly
+title: "bug: "
+type: Bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Fill in what you can. A triage agent will classify this, set the area
+        labels, and either attach an implementation plan or ask you the specific
+        questions it needs. Partial reports are fine — vague ones just take an
+        extra round-trip.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: The actual behaviour, as observed.
+    validations: { required: true }
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected instead
+    validations: { required: true }
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      description: Numbered steps. If you cannot reproduce it reliably, say so — that is itself useful.
+      placeholder: |
+        1. Go to …
+        2. Click …
+        3. Observe …
+    validations: { required: false }
+  - type: input
+    id: where
+    attributes:
+      label: Where
+      description: URL, screen, endpoint, or module.
+  - type: dropdown
+    id: environment
+    attributes:
+      label: Environment
+      options: [Production, Staging, Local, Unknown]
+    validations: { required: true }
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Evidence
+      description: Logs, stack traces, screenshots, PostHog links, request ids. Paste freely — an agent will read it.

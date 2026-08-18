@@ -157,13 +157,23 @@ jobs:
           # default makes the workflow impossible. Named explicitly rather than
           # '*' — the point is to trust these two bots, not all of them.
           allowed_bots: "renovate[bot],dependabot[bot],app/renovate"
-          # Variadic and space-separated — a comma-joined list matches nothing
-          # and every call is denied as "requires approval".
+          # `--allowed-tools <tools...>` is VARIADIC — space-separated, each
+          # entry quoted if it contains parentheses. A comma-joined list parses
+          # as one meaningless token: nothing matches, every Bash call is denied
+          # with "This command requires approval", and the job still reports
+          # SUCCESS. That cost three runs before show_full_output revealed it.
+          #
+          # Bash is allowed broadly, and `gh` with it. The bound that makes this
+          # reasonable is not the allowlist — the action refuses to run for an
+          # actor without write access ("Actor has write access"), so untrusted
+          # issue or PR content only reaches the agent when someone trusted
+          # invokes it. Same profile as running a review agent on a PR.
+          #
+          # Two guards still apply and must not be removed: `agent:no-touch` is
+          # checked before every other condition (DODI-00008), and public repos
+          # and fork PRs never touch a self-hosted runner (DODI-00010).
           claude_args: >-
-            --allowed-tools
-            "Bash(gh pr:*)" "Bash(gh api:*)" "Bash(gh label:*)"
-            "Bash(cat:*)" "Bash(head:*)" "Bash(grep:*)" "Bash(rg:*)" "Bash(jq:*)"
-            Read Grep Glob WebFetch
+            --allowed-tools Bash "Bash(gh:*)" Read Grep Glob WebFetch
           display_report: true
           prompt: |
             Verify dependency PR #${{ github.event.pull_request.number }} in

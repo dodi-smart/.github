@@ -206,7 +206,7 @@ jobs:
           # expects it. Tools are allowed so the reviewer can pull a full log
           # when the annotations are not enough.
           claude_args: >-
-            --allowed-tools "Bash(gh run:*)" "Bash(gh pr:*)" "Bash(gh api:*)" "Bash(cat:*)" "Bash(grep:*)" "Bash(rg:*)" Read Grep Glob
+            --allowed-tools Bash "Bash(gh:*)" Read Grep Glob
             --append-system-prompt "${{ needs.gate.outputs.ci }}
             When CI is failing, diagnose the cause and say which change caused it and how to fix it. Lead with that — it is more useful than anything else you could report. Do not repeat a failure the annotations already state verbatim; explain it."
           prompt: '/code-review:code-review ${{ github.repository }}/pull/${{ github.event.pull_request.number }} ${{ needs.gate.outputs.level }}'

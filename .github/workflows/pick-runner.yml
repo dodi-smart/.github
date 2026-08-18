@@ -112,13 +112,27 @@ jobs:
             echo "resolved selector: $sel"
           fi
 
+      # GH_APP_CLIENT_ID is the ONE name for this secret across the org. A repo
+      # carrying the older GH_APP_ID must be migrated rather than accommodated
+      # here — teaching this workflow two names is how you end up with repos on
+      # both forever.
+      #
+      # Absence is announced. It used to be silent, and that was the actual bug:
+      # without the app token, validation below falls back to github.token,
+      # which is repo-scoped and cannot read /orgs/{org}/actions/runners. The
+      # step then reported "skipping" and exited 0 — indistinguishable from a
+      # clean pass, which is precisely the invisibility DODI-00012 exists to end.
       - id: have-app
         if: steps.resolve.outputs.hosted == 'false'
         env:
           CLIENT_ID: ${{ secrets.GH_APP_CLIENT_ID }}
         run: |
-          if [ -n "${CLIENT_ID:-}" ]; then echo "yes=true" >> "$GITHUB_OUTPUT";
-          else echo "yes=false" >> "$GITHUB_OUTPUT"; fi
+          if [ -n "${CLIENT_ID:-}" ]; then
+            echo "yes=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "yes=false" >> "$GITHUB_OUTPUT"
+            echo "::warning title=Runner selector cannot be validated::GH_APP_CLIENT_ID is not set on this repository, so the org runner list cannot be read. The job will still run, but a selector matching no runner will fall back to hosted WITHOUT telling you. Add GH_APP_CLIENT_ID and GH_APP_PRIVATE_KEY to fix (see DODI-00012)."
+          fi
 
       - id: app-token
         if: steps.have-app.outputs.yes == 'true'
@@ -142,7 +156,7 @@ jobs:
           runners=$(gh api "/orgs/$ORG/actions/runners" --paginate \
             --jq '.runners[] | {name,labels:[.labels[].name]}' 2>/dev/null | jq -s '.' || echo '[]')
           if [ "$(jq 'length' <<<"$runners")" = "0" ]; then
-            echo "::notice::could not read the org runner list; skipping selector validation"
+            echo "::warning title=Runner selector was NOT validated::Could not read the org runner list, so '$SEL' was not checked against the live fleet. A selector matching nothing looks exactly like a busy fleet from here. Most often this means the GitHub App token is missing or lacks org scope."
             exit 0
           fi
 

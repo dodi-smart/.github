@@ -1,0 +1,84 @@
+# Run claude-code-action with the org's settled defaults.
+#
+# Three workflows were each carrying their own copy of this call, and each
+# carried the same fifteen lines of comment explaining the same two footguns.
+# One copy is easier to keep right than three.
+#
+# The footguns, recorded once here so nobody rediscovers them:
+#
+#   `--allowed-tools <tools...>` is VARIADIC — space-separated, each entry
+#   quoted if it contains parentheses. A comma-joined list parses as ONE
+#   meaningless token: nothing matches, every Bash call is denied with "This
+#   command requires approval", and the job still reports SUCCESS. That cost
+#   three runs to find. The default below is correct; if you override it, keep
+#   the shape.
+#
+#   `display_report` defaults to false, which means a run that did nothing is
+#   indistinguishable from a run that worked. It is forced on here.
+#
+# Bash is allowed broadly on purpose. The bound that makes this reasonable is
+# not the allowlist — the action refuses to run for an actor without write
+# access, so untrusted issue or PR content only reaches the agent when someone
+# trusted invokes it. The real guards are elsewhere and must not be removed:
+# `agent:no-touch` is checked before every other condition (DODI-00008), and
+# public repos and fork PRs never touch a self-hosted runner (DODI-00010).
+name: Run agent
+description: Invoke claude-code-action with the org's tool allowlist, model policy and reporting defaults.
+
+inputs:
+  oauth-token:
+    description: 'CLAUDE_CODE_OAUTH_TOKEN'
+    required: true
+  prompt:
+    description: 'The prompt, or a plugin slash command'
+    required: true
+  model:
+    description: >-
+      Which model. Judgement work (reading unfamiliar code, deciding plan-vs-questions,
+      reviewing a diff) earns opus. Mechanical work against an answer the deterministic
+      gate already produced does not.
+    default: 'claude-opus-5'
+  allowed-tools:
+    description: 'Variadic, space-separated. See the header before changing.'
+    default: 'Bash "Bash(gh:*)" Read Grep Glob'
+  append-system-prompt:
+    description: 'Extra system-prompt text. Must be ONE LINE — it is interpolated into a shell-style argument string.'
+    default: ''
+  sticky-comment:
+    description: 'Update one comment instead of adding a new one each run'
+    default: 'false'
+  track-progress:
+    description: 'Post a live progress comment, so a run in flight is visible rather than silent'
+    default: 'false'
+  allowed-bots:
+    description: 'Comma-separated bot logins permitted to initiate. Named explicitly, never "*".'
+    default: ''
+  plugins:
+    description: 'Plugin spec, e.g. code-review@claude-code-plugins'
+    default: ''
+  plugin-marketplaces:
+    description: 'Marketplace URL for the above'
+    default: ''
+  additional-permissions:
+    description: 'YAML block, e.g. "actions: read"'
+    default: ''
+
+runs:
+  using: composite
+  steps:
+    - uses: anthropics/claude-code-action@v1
+      with:
+        claude_code_oauth_token: ${{ inputs.oauth-token }}
+        prompt: ${{ inputs.prompt }}
+        use_sticky_comment: ${{ inputs.sticky-comment }}
+        track_progress: ${{ inputs.track-progress }}
+        allowed_bots: ${{ inputs.allowed-bots }}
+        plugins: ${{ inputs.plugins }}
+        plugin_marketplaces: ${{ inputs.plugin-marketplaces }}
+        additional_permissions: ${{ inputs.additional-permissions }}
+        # Never optional. See the header.
+        display_report: true
+        claude_args: >-
+          --model ${{ inputs.model }}
+          --allowed-tools ${{ inputs.allowed-tools }}
+          ${{ inputs.append-system-prompt && format('--append-system-prompt "{0}"', inputs.append-system-prompt) || '' }}

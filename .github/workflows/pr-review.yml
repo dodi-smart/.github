@@ -12,9 +12,6 @@ name: PR Review
 on:
   workflow_call:
     inputs:
-      # Runner selection, passed through to the shared picker. Override per repo
-      # when the preset does not fit this stack — e.g. an Android build needing an
-      # SDK-bearing image, or a job needing the `docker` label.
       runner-weight:
         type: string
         default: "light"     # light | heavy | apple | hosted
@@ -64,17 +61,35 @@ jobs:
       actions: read
       pull-requests: read
     outputs:
-      proceed: ${{ steps.c.outputs.proceed }}
-      level:   ${{ steps.c.outputs.level }}
-      reason:  ${{ steps.c.outputs.reason }}
+      proceed: ${{ steps.level.outputs.proceed }}
+      level:   ${{ steps.level.outputs.level }}
+      reason:  ${{ steps.level.outputs.reason }}
       ci:      ${{ steps.ci.outputs.summary }}
     steps:
-      - uses: actions/checkout@v7
+      # Payload-only rules first, before the checkout — agent:no-touch, drafts
+      # and bot PRs are decided without fetching anything (DODI-00008, -00005).
+      # Bot dependency PRs are rejected here because deps-verify owns them;
+      # reviewing them in both places double-posts on every Renovate PR.
+      - id: gate
+        uses: dodi-smart/.github/actions/agent-gate@main
+        with:
+          labels:        ${{ toJson(github.event.pull_request.labels.*.name) }}
+          event-name:    ${{ github.event_name }}
+          event-action:  ${{ github.event.action }}
+          label:         ${{ github.event.label.name }}
+          request-label: 'agent:review'
+          author:        ${{ github.event.pull_request.user.login }}
+          draft:         ${{ github.event.pull_request.draft }}
+          bots:          'reject'
+
+      - if: steps.gate.outputs.proceed == 'true'
+        uses: actions/checkout@v7
         with: { fetch-depth: 0 }
-      - id: c
+
+      - id: level
         env:
-          DRAFT:     ${{ github.event.pull_request.draft }}
-          AUTHOR:    ${{ github.event.pull_request.user.login }}
+          PROCEED:   ${{ steps.gate.outputs.proceed }}
+          REASON:    ${{ steps.gate.outputs.reason }}
           LABELS:    ${{ toJson(github.event.pull_request.labels.*.name) }}
           BASE:      ${{ github.event.pull_request.base.sha }}
           HEAD:      ${{ github.event.pull_request.head.sha }}
@@ -83,16 +98,7 @@ jobs:
           ELEVATED:  ${{ inputs.elevated-level }}
         run: |
           set -euo pipefail
-          proceed=true; level="$LEVEL"; reason=""
-
-          if printf '%s' "$LABELS" | grep -q '"agent:no-touch"'; then
-            proceed=false; reason="agent:no-touch"
-          elif [ "$DRAFT" = "true" ]; then
-            proceed=false; reason="draft"
-          elif printf '%s' "$AUTHOR" | grep -qiE 'renovate|dependabot'; then
-            # deps-verify owns these; reviewing them here would double-cover.
-            proceed=false; reason="bot dependency PR"
-          fi
+          proceed="$PROCEED"; level="$LEVEL"; reason="$REASON"
 
           if [ "$proceed" = "true" ]; then
             files=$(git diff --name-only "$BASE" "$HEAD" || true)
@@ -124,11 +130,11 @@ jobs:
       # instead of the diff in the abstract. Annotations carry file, line and
       # message, which is far more usable than scraping raw logs.
       #
-      # Kept to ONE LINE on purpose: this value is interpolated into
-      # claude_args, which is a shell-style argument string. A multi-line or
-      # quote-bearing value would break the quoting and take the whole step with it.
+      # Kept to ONE LINE on purpose: this value is interpolated into a
+      # shell-style argument string. A multi-line or quote-bearing value would
+      # break the quoting and take the whole step with it.
       - id: ci
-        if: steps.c.outputs.proceed == 'true'
+        if: steps.level.outputs.proceed == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           REPO:     ${{ github.repository }}
@@ -192,24 +198,22 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with: { fetch-depth: 0 }
-      - uses: anthropics/claude-code-action@v1
+
+      # Opus for review: judging whether a change is correct, and diagnosing a
+      # failing check, is the expensive half of this job.
+      #
+      # The CI context goes in via the system prompt rather than the prompt, so
+      # the plugin's slash command stays exactly as the plugin expects it.
+      - uses: dodi-smart/.github/actions/run-agent@main
         with:
-          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          use_sticky_comment: true
-          additional_permissions: |
+          oauth-token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          model: claude-opus-5
+          sticky-comment: 'true'
+          additional-permissions: |
             actions: read
-          display_report: true
-          plugin_marketplaces: 'https://github.com/anthropics/claude-code.git'
+          plugin-marketplaces: 'https://github.com/anthropics/claude-code.git'
           plugins: 'code-review@claude-code-plugins'
-          # The CI context goes in via --append-system-prompt rather than the
-          # prompt, so the plugin's slash command stays exactly as the plugin
-          # expects it. Tools are allowed so the reviewer can pull a full log
-          # when the annotations are not enough.
-          # Opus for review: judging whether a change is correct, and diagnosing a
-          # failing check, is the expensive half of this job.
-          claude_args: >-
-            --model claude-opus-5
-            --allowed-tools Bash "Bash(gh:*)" Read Grep Glob
-            --append-system-prompt "${{ needs.gate.outputs.ci }}
-            When CI is failing, diagnose the cause and say which change caused it and how to fix it. Lead with that — it is more useful than anything else you could report. Do not repeat a failure the annotations already state verbatim; explain it."
+          append-system-prompt: >-
+            ${{ needs.gate.outputs.ci }}
+            When CI is failing, diagnose the cause and say which change caused it and how to fix it. Lead with that — it is more useful than anything else you could report. Do not repeat a failure the annotations already state verbatim; explain it.
           prompt: '/code-review:code-review ${{ github.repository }}/pull/${{ github.event.pull_request.number }} ${{ needs.gate.outputs.level }}'

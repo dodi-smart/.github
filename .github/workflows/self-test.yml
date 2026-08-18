@@ -1,0 +1,65 @@
+# The standard tests itself.
+#
+# This repo defines the org's CI and, until now, had none of its own — the one
+# repo whose breakage affects every other repo was also the one nothing checked.
+# Everything here is deterministic and hosted-only; a public repo never touches
+# a self-hosted runner (DODI-00010), and this one is public.
+name: Self test
+
+on:
+  pull_request:
+    paths:
+      - 'actions/**'
+      - '.github/workflows/**'
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: self-test-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+
+      # The kill switch is a behavioural claim (DODI-00008). Assert it.
+      - name: Agent gate behaviour
+        run: ./actions/agent-gate/test.sh
+
+      - name: Every workflow and action is parseable YAML
+        run: |
+          set -euo pipefail
+          python3 -c "
+          import sys, glob, yaml
+          bad = 0
+          for f in sorted(glob.glob('.github/workflows/*.yml') + glob.glob('actions/*/action.yml')):
+              try:
+                  yaml.safe_load(open(f))
+                  print('ok   ' + f)
+              except Exception as e:
+                  print('FAIL ' + f + ': ' + str(e)); bad += 1
+          sys.exit(bad)
+          "
+
+      - name: Shell scripts pass shellcheck
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
+          shellcheck actions/*/*.sh
+
+      # `-ignore` on create-github-app-token: actionlint ships a snapshot of
+      # popular actions' inputs and its copy predates that action moving from
+      # `app-id` to `client-id`. The workflow is correct; the linter's DB is old.
+      - name: actionlint
+        uses: docker://rhysd/actionlint:latest
+        with:
+          args: >-
+            -color
+            -ignore 'input "client-id" is not defined in action "actions/create-github-app-token'
+            -ignore 'missing input "app-id" which is required by action "actions/create-github-app-token'

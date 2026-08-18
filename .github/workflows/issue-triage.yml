@@ -43,6 +43,7 @@ jobs:
         env:
           EVENT:   ${{ github.event_name }}
           ACTION:  ${{ github.event.action }}
+          LABEL:   ${{ github.event.label.name }}
           AUTHOR:  ${{ github.event.issue.user.login }}
           COMMENT: ${{ github.event.comment.body }}
           LABELS:  ${{ toJson(github.event.issue.labels.*.name) }}
@@ -59,6 +60,16 @@ jobs:
 
           case "$EVENT" in
             issues)
+              # Applying `agent:triage` is the primary way to ask for triage:
+              # it needs no new account (GitHub Apps cannot be assignees), and
+              # the label doubles as the progress indicator — present means
+              # running, and the agent removes it when finished.
+              if [ "$ACTION" = "labeled" ]; then
+                if [ "$LABEL" = "agent:triage" ]; then proceed=true; fi
+                echo "proceed=$proceed" >> "$GITHUB_OUTPUT"
+                echo "mode=$mode" >> "$GITHUB_OUTPUT"
+                exit 0
+              fi
               # Bots open issues at machine volume. The Renovate Dependency
               # Dashboard is the one bot issue worth reading, and it is a
               # standing issue, so triage it once on open and never again.
@@ -132,11 +143,17 @@ jobs:
           # Two guards still apply and must not be removed: `agent:no-touch` is
           # checked before every other condition (DODI-00008), and public repos
           # and fork PRs never touch a self-hosted runner (DODI-00010).
+          # Opus for triage: it reads unfamiliar code and decides plan-vs-questions,
+          # which is judgement work. Reviewing a diff is not the same job.
           claude_args: >-
+            --model claude-opus-5
             --allowed-tools Bash "Bash(gh:*)" Read Grep Glob
           # Without this the agent's output never reaches the log, and a run that
           # did nothing is indistinguishable from one that worked.
           display_report: true
+          # Live progress comment, so a run in flight is visible rather than a
+          # silence that could equally mean "working" or "broken".
+          track_progress: true
           prompt: |
             Triage issue #${{ github.event.issue.number }} in ${{ github.repository }}.
             Mode: ${{ needs.gate.outputs.mode }}
@@ -195,5 +212,12 @@ jobs:
 
             Set fields with the GraphQL setIssueFieldValue mutation; ids come from
             /orgs/${{ github.repository_owner }}/issue-fields.
+
+            ## Finally
+
+            Remove the `agent:triage` label if it is present. It means "triage
+            requested / in progress"; leaving it on makes a finished issue look
+            like it is still being worked. Do NOT add it yourself — it is an
+            input, not a record of what you did.
 
             Keep the comment tight. No preamble, no restating the issue back.

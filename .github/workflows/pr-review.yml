@@ -205,7 +205,10 @@ jobs:
           # prompt, so the plugin's slash command stays exactly as the plugin
           # expects it. Tools are allowed so the reviewer can pull a full log
           # when the annotations are not enough.
+          # Opus for review: judging whether a change is correct, and diagnosing a
+          # failing check, is the expensive half of this job.
           claude_args: >-
+            --model claude-opus-5
             --allowed-tools Bash "Bash(gh:*)" Read Grep Glob
             --append-system-prompt "${{ needs.gate.outputs.ci }}
             When CI is failing, diagnose the cause and say which change caused it and how to fix it. Lead with that — it is more useful than anything else you could report. Do not repeat a failure the annotations already state verbatim; explain it."

@@ -172,7 +172,11 @@ jobs:
           # Two guards still apply and must not be removed: `agent:no-touch` is
           # checked before every other condition (DODI-00008), and public repos
           # and fork PRs never touch a self-hosted runner (DODI-00010).
+          # Sonnet: this job reads changelogs and greps for usage against a
+          # verdict the deterministic gate already produced. Mechanical work
+          # against a known answer, not judgement.
           claude_args: >-
+            --model claude-sonnet-5
             --allowed-tools Bash "Bash(gh:*)" Read Grep Glob WebFetch
           display_report: true
           prompt: |

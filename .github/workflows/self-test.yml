@@ -66,13 +66,20 @@ jobs:
           sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
           shellcheck actions/*/*.sh
 
-      # `-ignore` on create-github-app-token: actionlint ships a snapshot of
-      # popular actions' inputs and its copy predates that action moving from
-      # `app-id` to `client-id`. The workflow is correct; the linter's DB is old.
+      # Run the binary rather than `uses: docker://rhysd/actionlint`. That form
+      # word-splits `args` WITHOUT honouring quotes, so an -ignore pattern
+      # containing spaces is torn apart and its tail is read as a filename.
+      #
+      # The two ignores: actionlint ships a snapshot of popular actions' inputs,
+      # and its copy predates `actions/create-github-app-token` moving from
+      # `app-id` to `client-id`. The workflows are correct; the linter's DB is old.
       - name: actionlint
-        uses: docker://rhysd/actionlint:latest
-        with:
-          args: >-
-            -color
-            -ignore 'input "client-id" is not defined in action "actions/create-github-app-token'
+        env:
+          ACTIONLINT_VERSION: 1.7.12
+        run: |
+          set -euo pipefail
+          bash <(curl -fsSL https://raw.githubusercontent.com/rhysd/actionlint/main/scripts/download-actionlint.bash) \
+            "$ACTIONLINT_VERSION" >/dev/null
+          ./actionlint -color \
+            -ignore 'input "client-id" is not defined in action "actions/create-github-app-token' \
             -ignore 'missing input "app-id" which is required by action "actions/create-github-app-token'

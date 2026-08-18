@@ -33,6 +33,14 @@ on:
         type: string
         default: ""
 
+      # Run before `release-command`, and ONLY before it. "@stack" is the
+      # stack's conventional install (`bun install --frozen-lockfile`, `npm ci`,
+      # ...), resolved by setup-stack; an explicit "" says this repo has no
+      # install step. See the step itself for why the other path skips it.
+      install:
+        type: string
+        default: "@stack"
+
       # Installed only when `release-command` is empty, i.e. when this workflow
       # drives semantic-release itself.
       semantic-release-packages:
@@ -81,13 +89,16 @@ jobs:
           fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN || github.token }}
 
-      - uses: dodi-smart/.github/actions/setup-stack@v1
+      - id: setup
+        uses: dodi-smart/.github/actions/setup-stack@v1
         with:
           stack:        ${{ inputs.stack }}
           node-version: ${{ inputs.node-version }}
           bun-version:  ${{ inputs.bun-version }}
           cache:        false   # hosted-only; skip package cache. Never bun-on-GitHub.
-          install: ''      # the release path installs what it needs, below
+          # Resolved here, run below — the release path chooses whether it needs
+          # the repo's dependencies at all, so the action must not run this.
+          install:      ${{ inputs.install }}
 
       # semantic-release itself always runs on Node, whatever the repo's stack
       # is — an Android repo still releases with it.
@@ -99,6 +110,22 @@ jobs:
       - id: build-number
         if: inputs.expose-build-number
         run: echo "number=$(git rev-list --count HEAD)" >> "$GITHUB_OUTPUT"
+
+      # `release-command` runs the REPO'S OWN script, so it needs the repo's own
+      # dependencies. The step below covers only the other path, where this
+      # workflow drives semantic-release in a checkout that needs nothing else.
+      #
+      # That asymmetry is the whole bug: a caller that dropped its inline
+      # `bun install` when it adopted this workflow got neither install, and
+      # `bun run release` died with `semantic-release: command not found` —
+      # exit 127, from a repo that pins semantic-release in its devDependencies.
+      - if: inputs.release-command != '' && steps.setup.outputs.install != ''
+        name: Install dependencies
+        env:
+          INSTALL: ${{ steps.setup.outputs.install }}
+        run: |
+          set -euo pipefail
+          eval "$INSTALL"
 
       - if: inputs.release-command == ''
         name: Install semantic-release

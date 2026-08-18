@@ -86,6 +86,7 @@ jobs:
           stack:        ${{ inputs.stack }}
           node-version: ${{ inputs.node-version }}
           bun-version:  ${{ inputs.bun-version }}
+          cache:        false   # hosted-only; skip package cache. Never bun-on-GitHub.
           install: ''      # the release path installs what it needs, below
 
       # semantic-release itself always runs on Node, whatever the repo's stack

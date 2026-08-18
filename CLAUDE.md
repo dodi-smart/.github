@@ -1,6 +1,6 @@
 # Agent instructions
 
-## This repo is an extension of `dodi-smart/agent-skills`
+## This repo is an extension of `dodi-smart/dev-standards`
 
 It is not a separate project. It exists because GitHub mandates two fixed
 locations, and only these two things live here:
@@ -11,7 +11,7 @@ locations, and only these two things live here:
   people look for org CI
 
 **Everything else — the skills, the label manifest, the scripts, and all the
-reasoning — lives in [`dodi-smart/agent-skills`](https://github.com/dodi-smart/agent-skills).**
+reasoning — lives in [`dodi-smart/dev-standards`](https://github.com/dodi-smart/dev-standards).**
 Read that repo's `CLAUDE.md` before changing anything here.
 
 ## The `.github/.github/` in every caller is correct
@@ -23,7 +23,7 @@ not "fix" it to `dodi-smart/.github/workflows/...`; that path does not resolve.
 
 ## There is one knowledge layer, and it is not in this repo
 
-Decisions live in `agent-skills/.zavet/`, with ids `DODI-NNNNN`. This repo
+Decisions live in `dev-standards/.zavet/`, with ids `DODI-NNNNN`. This repo
 deliberately has no `.zavet/` of its own: two sequences sharing the `DODI` prefix
 would eventually both mint the same id, and a citation would stop resolving to a
 single record.
@@ -40,7 +40,7 @@ Read them before editing:
 | `.github/workflows/pr-review.yml` | **DODI-00005** — no `synchronize` trigger. Reviewing every push is what got the previous review workflow muted. |
 
 Those decisions carry executable checks that fetch these files over the API, so
-they are verified rather than assumed. Run them from `agent-skills`:
+they are verified rather than assumed. Run them from `dev-standards`:
 
 ```bash
 .zavet/check.sh
@@ -49,5 +49,5 @@ they are verified rather than assumed. Run them from `agent-skills`:
 ## If you add a workflow here
 
 Add its governing decision ids to the table above, and add a check in
-`agent-skills` that fetches it. A workflow nobody recorded a reason for is one
+`dev-standards` that fetches it. A workflow nobody recorded a reason for is one
 the next person will "simplify".

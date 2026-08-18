@@ -2,7 +2,7 @@
 
 Org-wide GitHub defaults for `dodi-smart`.
 
-**This repo is an add-on to [`dodi-smart/agent-skills`](https://github.com/dodi-smart/agent-skills), not a separate project.**
+**This repo is an add-on to [`dodi-smart/dev-standards`](https://github.com/dodi-smart/dev-standards), not a separate project.**
 Think of it as that repo's GitHub-mandated mount point. It holds only what has to
 live at a fixed path:
 
@@ -11,7 +11,7 @@ live at a fixed path:
 - `.github/workflows/` — reusable workflows called by thin callers in each repo
 
 Everything else — the skills, the label manifest, the scripts, and all the
-reasoning — lives in **[`dodi-smart/agent-skills`](https://github.com/dodi-smart/agent-skills)**.
+reasoning — lives in **[`dodi-smart/dev-standards`](https://github.com/dodi-smart/dev-standards)**.
 There is one knowledge layer and it is over there; see `AGENTS.md` in this repo
 for which decisions govern these workflows, and `DODI-00011` for why the split is
 drawn here.
@@ -65,7 +65,7 @@ shorten the line is to host the workflows in a repo *not* named `.github` — wh
 puts org CI where nobody looks for it (DODI-00011).
 
 Thin caller templates are in
-`agent-skills/skills/repo-triage-setup/assets/workflows/`.
+`dev-standards/skills/repo-triage-setup/assets/workflows/`.
 
 ## Onboarding a repo
 

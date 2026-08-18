@@ -157,7 +157,13 @@ jobs:
           # default makes the workflow impossible. Named explicitly rather than
           # '*' — the point is to trust these two bots, not all of them.
           allowed_bots: "renovate[bot],dependabot[bot],app/renovate"
-          claude_args: '--allowed-tools Bash(gh pr:*),Bash(gh api:*),Bash(gh label:*),Read,Grep,Glob,WebFetch'
+          # Variadic and space-separated — a comma-joined list matches nothing
+          # and every call is denied as "requires approval".
+          claude_args: >-
+            --allowed-tools
+            "Bash(gh pr:*)" "Bash(gh api:*)" "Bash(gh label:*)"
+            "Bash(cat:*)" "Bash(head:*)" "Bash(grep:*)" "Bash(rg:*)" "Bash(jq:*)"
+            Read Grep Glob WebFetch
           display_report: true
           prompt: |
             Verify dependency PR #${{ github.event.pull_request.number }} in

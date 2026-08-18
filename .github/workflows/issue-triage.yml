@@ -122,16 +122,24 @@ jobs:
           # nothing matches and every Bash call is denied with "This command
           # requires approval". That cost three runs that all reported success
           # while doing nothing.
+          # Read-only shell utilities are allowed explicitly. Without them the
+          # agent burns turns routing around denials — the first working run took
+          # 41 turns, 5 of them denied `cat`/`grep`/`sed`.
+          #
+          # NOT --permission-mode bypassPermissions. An issue body is untrusted
+          # input: anyone who can open an issue controls it. On a self-hosted
+          # runner holding an org-scoped App token, bypassing permissions turns a
+          # prompt injection into arbitrary code execution on our own hardware.
+          # The allowlist keeps the blast radius to reads and `gh`.
           claude_args: >-
             --allowed-tools
-            "Bash(gh issue:*)" "Bash(gh api:*)" "Bash(gh label:*)"
-            "Bash(gh search:*)" Read Grep Glob
+            "Bash(gh issue:*)" "Bash(gh api:*)" "Bash(gh label:*)" "Bash(gh search:*)"
+            "Bash(cat:*)" "Bash(head:*)" "Bash(tail:*)" "Bash(grep:*)" "Bash(rg:*)"
+            "Bash(sed:*)" "Bash(ls:*)" "Bash(find:*)" "Bash(wc:*)" "Bash(jq:*)"
+            Read Grep Glob
           # Without this the agent's output never reaches the log, and a run that
           # did nothing is indistinguishable from one that worked.
           display_report: true
-          # TEMPORARY, for diagnosing permission denials. Turn off once the
-          # triage path is proven: it prints full tool I/O into the run log.
-          show_full_output: true
           prompt: |
             Triage issue #${{ github.event.issue.number }} in ${{ github.repository }}.
             Mode: ${{ needs.gate.outputs.mode }}

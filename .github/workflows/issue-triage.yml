@@ -49,7 +49,7 @@ jobs:
       # the gate reads event payload only, which is why it is cheap enough to
       # run before the runner picker.
       - id: gate
-        uses: dodi-smart/.github/actions/agent-gate@main
+        uses: dodi-smart/.github/actions/agent-gate@v1
         with:
           labels:        ${{ toJson(github.event.issue.labels.*.name) }}
           event-name:    ${{ github.event_name }}
@@ -90,7 +90,7 @@ jobs:
   pick-runner:
     needs: [gate]
     if: needs.gate.outputs.proceed == 'true'
-    uses: dodi-smart/.github/.github/workflows/pick-runner.yml@main
+    uses: dodi-smart/.github/.github/workflows/pick-runner.yml@v1
     with:
       weight: ${{ inputs.runner-weight }}
       labels: ${{ inputs.runner-labels }}
@@ -121,7 +121,7 @@ jobs:
 
       # Opus for triage: it reads unfamiliar code and decides plan-vs-questions,
       # which is judgement work. Reviewing a diff is not the same job.
-      - uses: dodi-smart/.github/actions/run-agent@main
+      - uses: dodi-smart/.github/actions/run-agent@v1
         with:
           oauth-token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           model: claude-opus-5

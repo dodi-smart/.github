@@ -66,7 +66,7 @@ jobs:
     steps:
       # agent:no-touch first, unconditionally (DODI-00008).
       - id: gate
-        uses: dodi-smart/.github/actions/agent-gate@main
+        uses: dodi-smart/.github/actions/agent-gate@v1
         with:
           labels:        ${{ toJson(github.event.issue.labels.*.name) }}
           event-name:    ${{ github.event_name }}
@@ -151,7 +151,7 @@ jobs:
   pick-runner:
     needs: [gate]
     if: needs.gate.outputs.proceed == 'true'
-    uses: dodi-smart/.github/.github/workflows/pick-runner.yml@main
+    uses: dodi-smart/.github/.github/workflows/pick-runner.yml@v1
     with:
       weight: ${{ inputs.runner-weight }}
       labels: ${{ inputs.runner-labels }}
@@ -173,7 +173,7 @@ jobs:
           fetch-depth: 0
           ref: ${{ inputs.base-branch }}
 
-      - uses: dodi-smart/.github/actions/run-agent@main
+      - uses: dodi-smart/.github/actions/run-agent@v1
         with:
           oauth-token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           model: ${{ inputs.model }}

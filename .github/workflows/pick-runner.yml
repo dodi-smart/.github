@@ -2,7 +2,7 @@
 #
 #   jobs:
 #     pick-light:
-#       uses: dodi-smart/.github/.github/workflows/pick-runner.yml@main
+#       uses: dodi-smart/.github/.github/workflows/pick-runner.yml@v1
 #       with: { weight: light }
 #       secrets: inherit
 #     lint:

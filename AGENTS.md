@@ -59,24 +59,21 @@ be verified rather than asserted.
   allowlist — the action refuses to run for an actor without write access, so
   untrusted content only reaches the agent when someone trusted invokes it.
 
-## Known follow-up: the internal self-references still say `@main`
+## Everything here is pinned, including the internal references
 
-The workflows here call each other — and their composite actions — at `@main`,
-while callers outside are told to pin `@v1`. That is inconsistent, and it means a
-`@v1`-pinned caller still picks up `main`'s `pick-runner` and actions. It
-undercuts what pinning is for, so it is a gap to close, not a design.
+The workflows in this repo call each other — and their composite actions — at
+`@v1`, the same ref callers outside are told to pin. That was not always true:
+they used `@main` while callers pinned `@v1`, which meant a `@v1` pin held the
+workflow bodies but not the picker and actions they call. It was closed once
+every repo had migrated off `@main`, in that order, because flipping earlier
+would have broken the repos that had not moved yet.
 
-It is deliberate only in its ORDER. Repos that have not migrated still pin
-`@main`, so flipping the internal references to `@v1` before they move would
-break them in the window between merge and migration. The sequence is:
+Two consequences to keep in mind:
 
-1. Merge with internal references at `@main` — existing `@main` callers keep working.
-2. Cut `v1`.
-3. Migrate every repo to `@v1`.
-4. **Then** flip the internal references to `@v1` and move the tag.
-
-Step 4 is the one that gets forgotten. Until it is done, `@v1` pins the workflow
-bodies but not what they call.
+- **A change here is inert until `v1` moves.** That is the point — merging to
+  `main` no longer changes anyone's CI. Verify on a repo, then move the tag.
+- **Cutting `v2` means updating these internal references too.** They are part of
+  the release, not incidental to it.
 
 ## If you add a workflow
 

@@ -81,7 +81,7 @@ jobs:
           fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN || github.token }}
 
-      - uses: dodi-smart/.github/actions/setup-stack@main
+      - uses: dodi-smart/.github/actions/setup-stack@v1
         with:
           stack:        ${{ inputs.stack }}
           node-version: ${{ inputs.node-version }}

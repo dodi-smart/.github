@@ -198,6 +198,7 @@ jobs:
           use_sticky_comment: true
           additional_permissions: |
             actions: read
+          display_report: true
           plugin_marketplaces: 'https://github.com/anthropics/claude-code.git'
           plugins: 'code-review@claude-code-plugins'
           # The CI context goes in via --append-system-prompt rather than the
@@ -205,7 +206,7 @@ jobs:
           # expects it. Tools are allowed so the reviewer can pull a full log
           # when the annotations are not enough.
           claude_args: >-
-            --allowed-tools Bash(gh run:*),Bash(gh pr checks:*),Bash(gh api:*)
+            --allowed-tools Bash(gh run:*),Bash(gh pr checks:*),Bash(gh api:*),Read,Grep,Glob
             --append-system-prompt "${{ needs.gate.outputs.ci }}
             When CI is failing, diagnose the cause and say which change caused it and how to fix it. Lead with that — it is more useful than anything else you could report. Do not repeat a failure the annotations already state verbatim; explain it."
           prompt: '/code-review:code-review ${{ github.repository }}/pull/${{ github.event.pull_request.number }} ${{ needs.gate.outputs.level }}'

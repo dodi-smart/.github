@@ -1,0 +1,166 @@
+# Reusable: cut releases with semantic-release.
+#
+# The multi-module repo in this org ran FIVE near-identical jobs — one per
+# module, chained with `needs:` and `always()` — each checking out, each setting
+# up Node, and each running the same nine-package `npm install -D` before
+# calling semantic-release with a different `--extends`. That is four redundant
+# installs and four copies of a job body whose only real difference is one
+# filename.
+#
+# Modules are ordered and released in ONE job here, because they were already
+# strictly sequential: the chain existed to order them, not to parallelise. The
+# install happens once.
+name: Release
+
+on:
+  workflow_call:
+    inputs:
+      stack:
+        type: string
+        default: "node"      # the toolchain the release scripts need
+
+      # ORDERED list of semantic-release configs, as a JSON array. Each is run in
+      # turn with `--extends`. Order is the dependency order between modules.
+      #   modules: '["./.releaserc.core.js", "./.releaserc.app.js"]'
+      # Leave empty for a single-package repo.
+      modules:
+        type: string
+        default: "[]"
+
+      # For a repo that already wraps semantic-release in its own script
+      # (e.g. `bun run release`). Wins over `modules` when set.
+      release-command:
+        type: string
+        default: ""
+
+      # Installed only when `release-command` is empty, i.e. when this workflow
+      # drives semantic-release itself.
+      semantic-release-packages:
+        type: string
+        default: >-
+          semantic-release
+          @semantic-release/git
+          @semantic-release/github
+          @semantic-release/changelog
+          @semantic-release/exec
+          semantic-release-replace-plugin
+          conventional-changelog-conventionalcommits@9
+          @kilianpaquier/semantic-release-backmerge
+          semantic-release-scope-filter
+
+      # Some release configs read a monotonic build number.
+      expose-build-number:
+        type: boolean
+        default: true
+
+      backmerge:      { type: boolean, default: false }
+      backmerge-from: { type: string,  default: "main" }
+      backmerge-to:   { type: string,  default: "develop" }
+
+      node-version:    { type: string, default: "lts/*" }
+      bun-version:     { type: string, default: "latest" }
+      timeout-minutes: { type: number, default: 30 }
+    secrets:
+      GH_APP_CLIENT_ID:   { required: false }
+      GH_APP_PRIVATE_KEY: { required: false }
+
+permissions:
+  contents: write
+  issues: write
+  pull-requests: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ inputs.timeout-minutes }}
+    # A release that is half-applied is worse than one that is late, so a second
+    # run queues behind the first rather than cancelling it.
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN || github.token }}
+
+      - uses: dodi-smart/.github/actions/setup-stack@main
+        with:
+          stack:        ${{ inputs.stack }}
+          node-version: ${{ inputs.node-version }}
+          bun-version:  ${{ inputs.bun-version }}
+          install: ''      # the release path installs what it needs, below
+
+      # semantic-release itself always runs on Node, whatever the repo's stack
+      # is — an Android repo still releases with it.
+      - if: inputs.stack != 'node'
+        uses: actions/setup-node@v7
+        with:
+          node-version: ${{ inputs.node-version }}
+
+      - id: build-number
+        if: inputs.expose-build-number
+        run: echo "number=$(git rev-list --count HEAD)" >> "$GITHUB_OUTPUT"
+
+      - if: inputs.release-command == ''
+        name: Install semantic-release
+        env:
+          PACKAGES: ${{ inputs.semantic-release-packages }}
+        run: |
+          set -euo pipefail
+          # Unquoted on purpose: PACKAGES is a space-separated list of package
+          # specs, and word-splitting is exactly what is wanted here.
+          # shellcheck disable=SC2086
+          npm install -D $PACKAGES
+
+      - name: Release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN || github.token }}
+          BUILD_NUMBER: ${{ steps.build-number.outputs.number }}
+          MODULES: ${{ inputs.modules }}
+          CMD:     ${{ inputs.release-command }}
+        run: |
+          set -euo pipefail
+          if [ -n "$CMD" ]; then
+            eval "$CMD"
+            exit 0
+          fi
+
+          count=$(jq 'length' <<<"$MODULES")
+          if [ "$count" = "0" ]; then
+            npx semantic-release
+            exit 0
+          fi
+
+          # Sequential and fail-fast. If probe fails to release, releasing the
+          # app that depends on it against a version that does not exist is
+          # worse than stopping.
+          for cfg in $(jq -r '.[]' <<<"$MODULES"); do
+            echo "::group::semantic-release $cfg"
+            npx semantic-release --extends "$cfg"
+            echo "::endgroup::"
+          done
+
+  # A real merge commit, not a force-push: the release commit must stay
+  # reachable from both branches or the next run recomputes versions from a
+  # history that no longer matches the tags.
+  backmerge:
+    needs: [release]
+    if: inputs.backmerge && github.ref == format('refs/heads/{0}', inputs.backmerge-from)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          ref: ${{ inputs.backmerge-from }}
+          token: ${{ secrets.GITHUB_TOKEN || github.token }}
+      - env:
+          FROM: ${{ inputs.backmerge-from }}
+          TO:   ${{ inputs.backmerge-to }}
+        run: |
+          set -euo pipefail
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git fetch origin "$TO:$TO"
+          git checkout "$TO"
+          # [skip ci] so the merge does not trigger the release workflow again.
+          git merge "$FROM" --no-ff -m "chore(release): merge $FROM into $TO [skip ci]"
+          git push origin "$TO"

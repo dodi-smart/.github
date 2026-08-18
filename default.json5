@@ -1,0 +1,70 @@
+// Shared Renovate preset for dodi-smart.
+//
+// Use it from a repo with:
+//   { extends: ["github>dodi-smart/.github"] }
+//
+// Only what is TRUE OF EVERY REPO lives here. Ecosystem rules — npm depTypes,
+// Gradle version catalogs, Kotlin/KSP lockstep, custom datasources — stay in the
+// repo that has that ecosystem, because a rule matching nothing is worse than no
+// rule: it reads as coverage.
+//
+// If preset resolution ever fails, check the filename first. Renovate looks for
+// `default.json5` or `default.json` in the repo root; older versions know only
+// the latter.
+{
+  $schema: "https://docs.renovatebot.com/renovate-schema.json",
+
+  extends: [
+    "config:best-practices",
+    // Listed AFTER best-practices so it wins. config:recommended's
+    // :semanticPrefixFixDepsChoreOthers would otherwise make production deps
+    // `fix(deps)`, which every .releaserc in this org maps to a PATCH release —
+    // so a dependency bump would cut a release. Forcing `chore(deps)` everywhere
+    // means it does not.
+    ":semanticCommitTypeAll(chore)",
+  ],
+
+  timezone: "Europe/Sofia",
+
+  // Every repo in this org develops on `develop`. Pinned explicitly rather than
+  // inherited from the default branch, so behaviour stays correct if the default
+  // branch ever changes. Note Renovate READS its config from the default branch.
+  baseBranchPatterns: ["develop"],
+
+  // Deterministic prefix; the default is "auto", which is not.
+  semanticCommits: "enabled",
+  dependencyDashboard: true,
+
+  // The label the deps-verify workflow and every saved query expect. Changing it
+  // means changing Renovate's config FIRST and then renaming the label — never
+  // delete-and-recreate, which silently strips it from every existing PR
+  // (DODI-00006).
+  labels: ["deps:update"],
+
+  // Weekly batch. Security PRs ignore the schedule.
+  schedule: ["before 6am on monday"],
+
+  // NOTE: vulnerabilityAlerts is on by default via config:recommended and works
+  // on the Mend hosted community app, but only fires if GitHub "Dependabot
+  // alerts" are enabled for the repo. osvVulnerabilityAlerts is deliberately NOT
+  // used — experimental, and uncertain on the community tier.
+
+  packageRules: [
+    // Keep Actions on readable version tags. best-practices pins digests, which
+    // turns every workflow into a wall of SHAs and makes review harder for a
+    // threat this org is not defending against.
+    { matchManagers: ["github-actions"], pinDigests: false },
+
+    // Non-major Action bumps are CI-gated and boring. Auto-merge them.
+    {
+      matchManagers: ["github-actions"],
+      matchUpdateTypes: ["minor", "patch"],
+      groupName: "github actions",
+      automerge: true,
+    },
+
+    // Majors are labelled for visibility, never auto-merged (automerge defaults
+    // to false, so this rule only adds the label).
+    { matchUpdateTypes: ["major"], addLabels: ["deps:major"] },
+  ],
+}

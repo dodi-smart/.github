@@ -1,0 +1,94 @@
+# Decide whether an agent may run, deterministically and cheaply.
+#
+# This exists so `agent:no-touch` is evaluated FIRST in exactly one place
+# (DODI-00008). It used to be re-implemented in every agent workflow, and a rule
+# whose correctness depends on where three different authors chose to put an
+# `if:` is not a rule. Position matters as much as existence: a check placed
+# after an early return silently stops covering that path.
+#
+# Every rule below is a plain string test. Nothing here asks a model anything —
+# gates run before agents so that a run which will not proceed costs one hosted
+# minute rather than twenty (DODI-00005).
+name: Agent gate
+description: Evaluate agent:no-touch and the standard preconditions, in a fixed order.
+
+inputs:
+  labels:
+    description: 'toJson(...labels.*.name) for the issue or PR. Required for the kill switch to work at all.'
+    required: true
+  event-name:
+    description: 'github.event_name'
+    required: true
+  event-action:
+    description: 'github.event.action'
+    default: ''
+  label:
+    description: 'github.event.label.name, on a `labeled` event'
+    default: ''
+  request-label:
+    description: 'The label that requests this workflow (e.g. agent:triage). A `labeled` event proceeds only for this one.'
+    default: ''
+  author:
+    description: 'Issue or PR author login'
+    default: ''
+  draft:
+    description: 'github.event.pull_request.draft'
+    default: 'false'
+  comment:
+    description: 'github.event.comment.body'
+    default: ''
+  commands:
+    description: 'Space-separated comment verbs that request this workflow, e.g. "triage plan". Matched as `@claude <verb>`.'
+    default: ''
+  mention:
+    description: >-
+      For the general assistant: the mention that requests it, e.g. "@claude".
+      When set, a body without it stops the run.
+    default: ''
+  exclude-commands:
+    description: >-
+      Verbs another workflow owns, declined here. The counterpart to `commands`,
+      and the reason both lists live in this action instead of in every repo.
+    default: ''
+  bots:
+    description: 'How to treat bot authors: reject (default) | only | allow'
+    default: 'reject'
+  skip-draft:
+    description: 'Stop on draft PRs'
+    default: 'true'
+  changed-files:
+    description: 'Newline-separated changed files. When given, a docs-only change stops the run.'
+    default: ''
+
+outputs:
+  proceed:
+    description: '"true" when the agent may run'
+    value: ${{ steps.gate.outputs.proceed }}
+  reason:
+    description: 'Why it stopped, or why it proceeded'
+    value: ${{ steps.gate.outputs.reason }}
+  mode:
+    description: 'The matched command verb, when one triggered this run'
+    value: ${{ steps.gate.outputs.mode }}
+
+runs:
+  using: composite
+  steps:
+    - id: gate
+      shell: bash
+      env:
+        LABELS:   ${{ inputs.labels }}
+        EVENT:    ${{ inputs.event-name }}
+        ACTION:   ${{ inputs.event-action }}
+        LABEL:    ${{ inputs.label }}
+        REQUEST:  ${{ inputs.request-label }}
+        AUTHOR:   ${{ inputs.author }}
+        DRAFT:    ${{ inputs.draft }}
+        COMMENT:  ${{ inputs.comment }}
+        COMMANDS: ${{ inputs.commands }}
+        MENTION:  ${{ inputs.mention }}
+        EXCLUDE:  ${{ inputs.exclude-commands }}
+        BOTS:     ${{ inputs.bots }}
+        SKIPDRAFT: ${{ inputs.skip-draft }}
+        FILES:    ${{ inputs.changed-files }}
+      run: ${{ github.action_path }}/gate.sh

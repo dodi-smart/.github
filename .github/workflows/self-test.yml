@@ -1,0 +1,85 @@
+# The standard tests itself.
+#
+# This repo defines the org's CI and, until now, had none of its own — the one
+# repo whose breakage affects every other repo was also the one nothing checked.
+# Everything here is deterministic and hosted-only; a public repo never touches
+# a self-hosted runner (DODI-00010), and this one is public.
+name: Self test
+
+on:
+  pull_request:
+    paths:
+      - 'actions/**'
+      - '.github/workflows/**'
+      - 'default.json5'
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: self-test-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+
+      # The kill switch is a behavioural claim (DODI-00008). Assert it.
+      - name: Agent gate behaviour
+        run: ./actions/agent-gate/test.sh
+
+      - name: Every workflow and action is parseable YAML
+        run: |
+          set -euo pipefail
+          python3 -c "
+          import sys, glob, yaml
+          bad = 0
+          for f in sorted(glob.glob('.github/workflows/*.yml') + glob.glob('actions/*/action.yml')):
+              try:
+                  yaml.safe_load(open(f))
+                  print('ok   ' + f)
+              except Exception as e:
+                  print('FAIL ' + f + ': ' + str(e)); bad += 1
+          sys.exit(bad)
+          "
+
+      # A JSON5 object literal is also a valid JavaScript expression, so this
+      # catches a malformed preset without pulling in a JSON5 parser. A broken
+      # preset silently disables Renovate config in every repo extending it.
+      - name: Renovate preset parses
+        run: |
+          node -e '
+            const o = eval("(" + require("fs").readFileSync("default.json5","utf8") + ")");
+            if (!Array.isArray(o.packageRules)) throw new Error("packageRules missing");
+            if (!o.labels.includes("deps:update")) throw new Error("deps:update label missing");
+            console.log("preset OK:", Object.keys(o).join(", "));
+          '
+
+      - name: Shell scripts pass shellcheck
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
+          shellcheck actions/*/*.sh
+
+      # Run the binary rather than `uses: docker://rhysd/actionlint`. That form
+      # word-splits `args` WITHOUT honouring quotes, so an -ignore pattern
+      # containing spaces is torn apart and its tail is read as a filename.
+      #
+      # The two ignores: actionlint ships a snapshot of popular actions' inputs,
+      # and its copy predates `actions/create-github-app-token` moving from
+      # `app-id` to `client-id`. The workflows are correct; the linter's DB is old.
+      - name: actionlint
+        env:
+          ACTIONLINT_VERSION: 1.7.12
+        run: |
+          set -euo pipefail
+          bash <(curl -fsSL https://raw.githubusercontent.com/rhysd/actionlint/main/scripts/download-actionlint.bash) \
+            "$ACTIONLINT_VERSION" >/dev/null
+          ./actionlint -color \
+            -ignore 'input "client-id" is not defined in action "actions/create-github-app-token' \
+            -ignore 'missing input "app-id" which is required by action "actions/create-github-app-token'

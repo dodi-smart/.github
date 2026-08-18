@@ -1,0 +1,186 @@
+# Reusable: the deterministic checks a pull request must pass.
+#
+# Replaces a hand-written ci.yml / pr-checks.yml per repo. The two that existed
+# were the same shape with a different toolchain — checkout, install, lint,
+# typecheck, test, build — and differed mostly in ways nobody chose: one had a
+# concurrency group and the other did not, so every push to the busier repo ran
+# a full Next.js build to completion; neither had a path filter, so a README-only
+# PR built the whole app. Set both in the caller's `on:` and `concurrency:`.
+#
+# Light work (lint, typecheck) goes to the small pool and heavy work (build,
+# tests) to the large one, because that is the split the fleet is sized for.
+# Any step whose command resolves to empty is skipped, so a repo that has no
+# typecheck simply passes "".
+name: PR Checks
+
+on:
+  workflow_call:
+    inputs:
+      stack:
+        type: string
+        required: true      # bun | node | gradle | android | flutter | rust | xcode | none
+
+      # "@stack" = this stack's conventional command; "" = this repo has no such
+      # step. See actions/setup-stack, which resolves these.
+      install:   { type: string, default: "@stack" }
+      lint:      { type: string, default: "@stack" }
+      typecheck: { type: string, default: "@stack" }
+      test:      { type: string, default: "@stack" }
+      build:     { type: string, default: "@stack" }
+
+      light-weight: { type: string, default: "light" }
+      heavy-weight: { type: string, default: "heavy" }
+
+      commitlint:        { type: boolean, default: false }
+      commitlint-config: { type: string,  default: ".commitlintrc.json" }
+
+      coverage:      { type: string, default: "none" }   # none | vitest | kover
+      coverage-path: { type: string, default: "" }
+      coverage-min-overall: { type: number, default: 0 }
+      coverage-min-changed: { type: number, default: 0 }
+
+      build-env:
+        type: string
+        default: ""      # newline-separated KEY=VALUE, placeholders only
+      timeout-minutes: { type: number, default: 30 }
+
+      java-version:    { type: string, default: "21" }
+      node-version:    { type: string, default: "24" }
+      bun-version:     { type: string, default: "latest" }
+      flutter-version: { type: string, default: "" }
+      rust-toolchain:  { type: string, default: "stable" }
+    secrets:
+      GH_APP_CLIENT_ID:   { required: false }
+      GH_APP_PRIVATE_KEY: { required: false }
+
+jobs:
+  pick-light:
+    uses: dodi-smart/.github/.github/workflows/pick-runner.yml@main
+    with: { weight: "${{ inputs.light-weight }}" }
+    secrets: inherit
+
+  pick-heavy:
+    uses: dodi-smart/.github/.github/workflows/pick-runner.yml@main
+    with: { weight: "${{ inputs.heavy-weight }}" }
+    secrets: inherit
+
+  # Hosted on purpose: needs full history and no toolchain, so the large pool
+  # would be wasted on it.
+  commitlint:
+    if: inputs.commitlint
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+        with: { fetch-depth: 0 }
+      - uses: wagoid/commitlint-github-action@v6
+        with:
+          configFile: ${{ inputs.commitlint-config }}
+
+  checks:
+    needs: [pick-light]
+    runs-on: ${{ fromJson(needs.pick-light.outputs.runner) }}
+    timeout-minutes: ${{ inputs.timeout-minutes }}
+    steps:
+      - uses: actions/checkout@v7
+      - id: setup
+        uses: dodi-smart/.github/actions/setup-stack@main
+        with:
+          stack:           ${{ inputs.stack }}
+          install:         ${{ inputs.install }}
+          lint:            ${{ inputs.lint }}
+          typecheck:       ${{ inputs.typecheck }}
+          java-version:    ${{ inputs.java-version }}
+          node-version:    ${{ inputs.node-version }}
+          bun-version:     ${{ inputs.bun-version }}
+          flutter-version: ${{ inputs.flutter-version }}
+          rust-toolchain:  ${{ inputs.rust-toolchain }}
+      - name: Install
+        if: steps.setup.outputs.install != ''
+        run: ${{ steps.setup.outputs.install }}
+      - name: Lint
+        if: steps.setup.outputs.lint != ''
+        run: ${{ steps.setup.outputs.lint }}
+      - name: Typecheck
+        if: steps.setup.outputs.typecheck != ''
+        run: ${{ steps.setup.outputs.typecheck }}
+
+  test:
+    needs: [pick-heavy]
+    runs-on: ${{ fromJson(needs.pick-heavy.outputs.runner) }}
+    timeout-minutes: ${{ inputs.timeout-minutes }}
+    permissions:
+      contents: read
+      pull-requests: write     # coverage comment
+    steps:
+      - uses: actions/checkout@v7
+        with: { fetch-depth: 0 }
+      - id: setup
+        uses: dodi-smart/.github/actions/setup-stack@main
+        with:
+          stack:           ${{ inputs.stack }}
+          install:         ${{ inputs.install }}
+          test:            ${{ inputs.test }}
+          java-version:    ${{ inputs.java-version }}
+          node-version:    ${{ inputs.node-version }}
+          bun-version:     ${{ inputs.bun-version }}
+          flutter-version: ${{ inputs.flutter-version }}
+          rust-toolchain:  ${{ inputs.rust-toolchain }}
+      - name: Install
+        if: steps.setup.outputs.install != ''
+        run: ${{ steps.setup.outputs.install }}
+      - name: Test
+        if: steps.setup.outputs.test != ''
+        run: ${{ steps.setup.outputs.test }}
+
+      - if: always() && inputs.coverage == 'vitest'
+        uses: davelosert/vitest-coverage-report-action@v2
+      - if: always() && inputs.coverage == 'kover'
+        uses: mi-kas/kover-report@v2
+        with:
+          path: ${{ inputs.coverage-path }}
+          token: ${{ github.token }}
+          title: Code Coverage
+          update-comment: true
+          min-coverage-overall: ${{ inputs.coverage-min-overall }}
+          min-coverage-changed-files: ${{ inputs.coverage-min-changed }}
+
+  build:
+    needs: [pick-heavy, checks]
+    runs-on: ${{ fromJson(needs.pick-heavy.outputs.runner) }}
+    timeout-minutes: ${{ inputs.timeout-minutes }}
+    steps:
+      - uses: actions/checkout@v7
+      - id: setup
+        uses: dodi-smart/.github/actions/setup-stack@main
+        with:
+          stack:           ${{ inputs.stack }}
+          install:         ${{ inputs.install }}
+          build:           ${{ inputs.build }}
+          java-version:    ${{ inputs.java-version }}
+          node-version:    ${{ inputs.node-version }}
+          bun-version:     ${{ inputs.bun-version }}
+          flutter-version: ${{ inputs.flutter-version }}
+          rust-toolchain:  ${{ inputs.rust-toolchain }}
+
+      # A build often needs config present but not real — a Next.js build reads
+      # public env at build time and fails without it. These are PLACEHOLDERS
+      # supplied by the caller in plain sight, never secrets: a value that must
+      # stay secret has no business being visible in a PR build log.
+      - name: Build-time configuration
+        if: inputs.build-env != ''
+        env:
+          BUILD_ENV: ${{ inputs.build-env }}
+        run: |
+          set -euo pipefail
+          while IFS= read -r line; do
+            [ -z "$line" ] && continue
+            echo "$line" >> "$GITHUB_ENV"
+          done <<< "$BUILD_ENV"
+
+      - name: Install
+        if: steps.setup.outputs.install != ''
+        run: ${{ steps.setup.outputs.install }}
+      - name: Build
+        if: steps.setup.outputs.build != ''
+        run: ${{ steps.setup.outputs.build }}

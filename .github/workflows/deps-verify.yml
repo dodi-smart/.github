@@ -9,22 +9,41 @@ name: Dependency Verification
 on:
   workflow_call:
     inputs:
-      # Runner selection, passed through to the shared picker. Override per repo
-      # when the preset does not fit this stack — e.g. an Android build needing an
-      # SDK-bearing image, or a job needing the `docker` label.
       runner-weight:
         type: string
         default: "heavy"     # light | heavy | apple | hosted
       runner-labels:
         type: string
         default: ""       # explicit selector; wins over runner-weight
-      install:   { type: string, default: "bun install --frozen-lockfile" }
-      build:     { type: string, default: "bun run build" }
-      typecheck: { type: string, default: "bun run typecheck" }
-      test:      { type: string, default: "bun run test:run" }
+
+      # WHICH TOOLCHAIN. One input, not one template per stack — see
+      # actions/setup-stack for why.
+      #   bun | node | gradle | android | flutter | rust | xcode | none
+      stack:
+        type: string
+        default: ""
+      # DEPRECATED alias for `stack`, kept so callers written against the older
+      # shape keep working. `java` mapped to what is now `gradle`. Remove once
+      # every repo has moved.
+      setup:
+        type: string
+        default: ""
+
+      # Commands. The sentinel "@stack" means "whatever this stack conventionally
+      # uses"; an explicit empty string means "skip this step". Those are
+      # genuinely different intentions and a plain default cannot express both —
+      # a Gradle repo really does have no install step.
+      install:   { type: string, default: "@stack" }
+      build:     { type: string, default: "@stack" }
+      typecheck: { type: string, default: "@stack" }
+      test:      { type: string, default: "@stack" }
       smoke:     { type: string, default: "" }
-      setup:        { type: string, default: "bun" }   # bun | node | java | none
-      java-version: { type: string, default: "21" }
+
+      java-version:    { type: string, default: "21" }
+      node-version:    { type: string, default: "24" }
+      bun-version:     { type: string, default: "latest" }
+      flutter-version: { type: string, default: "" }
+      rust-toolchain:  { type: string, default: "stable" }
     secrets:
       CLAUDE_CODE_OAUTH_TOKEN: { required: true }
       GH_APP_CLIENT_ID:        { required: false }
@@ -39,35 +58,41 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
-      proceed: ${{ steps.c.outputs.proceed }}
+      proceed: ${{ steps.gate.outputs.proceed }}
+      stack:   ${{ steps.stack.outputs.stack }}
     steps:
-      - id: c
+      # `bots: only` is the inverse of every other agent workflow: this one runs
+      # for Renovate and Dependabot and nothing else. It also absorbs the author
+      # check every caller used to carry in its own `if:`, byte-identically.
+      - id: gate
+        uses: dodi-smart/.github/actions/agent-gate@main
+        with:
+          labels:        ${{ toJson(github.event.pull_request.labels.*.name) }}
+          event-name:    ${{ github.event_name }}
+          event-action:  ${{ github.event.action }}
+          label:         ${{ github.event.label.name }}
+          request-label: 'agent:review'
+          author:        ${{ github.event.pull_request.user.login }}
+          draft:         ${{ github.event.pull_request.draft }}
+          bots:          'only'
+
+      - id: stack
         env:
-          AUTHOR: ${{ github.event.pull_request.user.login }}
-          DRAFT:  ${{ github.event.pull_request.draft }}
-          LABELS: ${{ toJson(github.event.pull_request.labels.*.name) }}
-          ACTION: ${{ github.event.action }}
-          LABEL:  ${{ github.event.label.name }}
+          STACK: ${{ inputs.stack }}
+          SETUP: ${{ inputs.setup }}
         run: |
           set -euo pipefail
-          proceed=false
-          if printf '%s' "$LABELS" | grep -q '"agent:no-touch"'; then
-            echo "agent:no-touch — stopping"
-          elif [ "$DRAFT" = "true" ]; then
-            echo "draft — stopping"
-          elif printf '%s' "$AUTHOR" | grep -qiE 'renovate|dependabot'; then
-            proceed=true
-          else
-            echo "not a bot dependency PR — stopping"
+          s="$STACK"
+          if [ -z "$s" ] && [ -n "$SETUP" ]; then
+            case "$SETUP" in
+              java) s=gradle ;;
+              *)    s="$SETUP" ;;
+            esac
+            echo "::warning title=Deprecated input::'setup: $SETUP' is deprecated; use 'stack: $s'. The alias will be removed once every repo has moved."
           fi
-
-          # A `labeled` event only proceeds for the re-run label. Without this,
-          # ANY label added to a Renovate PR would re-run the whole build.
-          if [ "$ACTION" = "labeled" ] && [ "$LABEL" != "agent:review" ]; then
-            proceed=false
-            echo "labeled '$LABEL' — only agent:review re-runs verification"
-          fi
-          echo "proceed=$proceed" >> "$GITHUB_OUTPUT"
+          [ -z "$s" ] && s=none
+          echo "stack=$s" >> "$GITHUB_OUTPUT"
+          echo "stack: $s"
 
   pick-runner:
     needs: [gate]
@@ -79,7 +104,7 @@ jobs:
     secrets: inherit
 
   # Deterministic gates FIRST. If the build is red, the compiler has already
-  # explained why and an agent adds nothing but cost.
+  # explained why and an agent adds nothing but cost (DODI-00005).
   build:
     needs: [gate, pick-runner]
     if: needs.gate.outputs.proceed == 'true'
@@ -89,52 +114,55 @@ jobs:
       verdict: ${{ steps.result.outputs.verdict }}
     steps:
       - uses: actions/checkout@v7
-      - if: inputs.setup == 'bun'
-        uses: oven-sh/setup-bun@v2
-      - if: inputs.setup == 'node'
-        uses: actions/setup-node@v4
-        with: { node-version: '24' }
-      - if: inputs.setup == 'java'
-        uses: actions/setup-java@v5
-        with:
-          java-version: ${{ inputs.java-version }}
-          distribution: temurin
-      - if: inputs.setup == 'java'
-        uses: gradle/actions/setup-gradle@v4
 
+      - id: setup
+        uses: dodi-smart/.github/actions/setup-stack@main
+        with:
+          stack:           ${{ needs.gate.outputs.stack }}
+          install:         ${{ inputs.install }}
+          build:           ${{ inputs.build }}
+          typecheck:       ${{ inputs.typecheck }}
+          test:            ${{ inputs.test }}
+          java-version:    ${{ inputs.java-version }}
+          node-version:    ${{ inputs.node-version }}
+          bun-version:     ${{ inputs.bun-version }}
+          flutter-version: ${{ inputs.flutter-version }}
+          rust-toolchain:  ${{ inputs.rust-toolchain }}
+
+      # Every step runs even after one fails, so the agent below can explain the
+      # whole picture rather than only the first thing that broke.
       - id: steps
         continue-on-error: true
         env:
-          # Job-scoped package caches. On a persistent self-hosted runner the
-          # default caches are shared between jobs, and a half-written entry
-          # poisons later runs — `Fail extracting tarball for "next"`, which
-          # re-runs do NOT clear. Isolating costs a cold install and buys
-          # determinism, which is the whole point of a verification job.
-          BUN_INSTALL_CACHE_DIR: ${{ runner.temp }}/bun-cache
-          GRADLE_USER_HOME: ${{ runner.temp }}/gradle-home
+          INSTALL:   ${{ steps.setup.outputs.install }}
+          BUILD:     ${{ steps.setup.outputs.build }}
+          TYPECHECK: ${{ steps.setup.outputs.typecheck }}
+          TEST:      ${{ steps.setup.outputs.test }}
+          SMOKE:     ${{ inputs.smoke }}
         run: |
           set -x
           fail=""
           run() { [ -z "$2" ] && return 0; eval "$2" || fail="$fail $1"; }
-          run install   "${{ inputs.install }}"
-          run build     "${{ inputs.build }}"
-          run typecheck "${{ inputs.typecheck }}"
-          run test      "${{ inputs.test }}"
-          run smoke     "${{ inputs.smoke }}"
+          run install   "$INSTALL"
+          run build     "$BUILD"
+          run typecheck "$TYPECHECK"
+          run test      "$TEST"
+          run smoke     "$SMOKE"
           echo "failed=${fail# }" >> "$GITHUB_OUTPUT"
           [ -z "$fail" ]
 
       - id: result
+        env:
+          FAILED: ${{ steps.steps.outputs.failed }}
         run: |
-          f="${{ steps.steps.outputs.failed }}"
-          if [ -z "$f" ]; then
+          if [ -z "${FAILED:-}" ]; then
             echo "verdict=green" >> "$GITHUB_OUTPUT"
           else
-            echo "verdict=red:$f" >> "$GITHUB_OUTPUT"
+            echo "verdict=red:$FAILED" >> "$GITHUB_OUTPUT"
             # The steps are continue-on-error so the agent still gets to explain
             # the failure, which means this job goes green regardless. Annotate,
             # or the run summary claims a build passed when it did not.
-            echo "::warning title=Dependency build failed::Failed steps:$f — see the verdict comment on the PR."
+            echo "::warning title=Dependency build failed::Failed steps: $FAILED — see the verdict comment on the PR."
           fi
 
   review:
@@ -148,37 +176,22 @@ jobs:
       id-token: write
     steps:
       - uses: actions/checkout@v7
-      - uses: anthropics/claude-code-action@v1
+
+      # Sonnet: this job reads changelogs and greps for usage against a verdict
+      # the deterministic gate already produced. Mechanical work against a known
+      # answer, not judgement.
+      #
+      # allowed-bots is load-bearing: without it the action aborts with
+      # "Workflow initiated by non-human actor: renovate (type: Bot)". EVERY run
+      # here is bot-initiated, so the default makes this workflow impossible.
+      # Named explicitly rather than '*' — the point is to trust these two bots.
+      - uses: dodi-smart/.github/actions/run-agent@main
         with:
-          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          use_sticky_comment: true
-          # Without this the action aborts: "Workflow initiated by non-human
-          # actor: renovate (type: Bot)". Every run here is bot-initiated, so the
-          # default makes the workflow impossible. Named explicitly rather than
-          # '*' — the point is to trust these two bots, not all of them.
-          allowed_bots: "renovate[bot],dependabot[bot],app/renovate"
-          # `--allowed-tools <tools...>` is VARIADIC — space-separated, each
-          # entry quoted if it contains parentheses. A comma-joined list parses
-          # as one meaningless token: nothing matches, every Bash call is denied
-          # with "This command requires approval", and the job still reports
-          # SUCCESS. That cost three runs before show_full_output revealed it.
-          #
-          # Bash is allowed broadly, and `gh` with it. The bound that makes this
-          # reasonable is not the allowlist — the action refuses to run for an
-          # actor without write access ("Actor has write access"), so untrusted
-          # issue or PR content only reaches the agent when someone trusted
-          # invokes it. Same profile as running a review agent on a PR.
-          #
-          # Two guards still apply and must not be removed: `agent:no-touch` is
-          # checked before every other condition (DODI-00008), and public repos
-          # and fork PRs never touch a self-hosted runner (DODI-00010).
-          # Sonnet: this job reads changelogs and greps for usage against a
-          # verdict the deterministic gate already produced. Mechanical work
-          # against a known answer, not judgement.
-          claude_args: >-
-            --model claude-sonnet-5
-            --allowed-tools Bash "Bash(gh:*)" Read Grep Glob WebFetch
-          display_report: true
+          oauth-token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          model: claude-sonnet-5
+          sticky-comment: 'true'
+          allowed-bots: "renovate[bot],dependabot[bot],app/renovate"
+          allowed-tools: 'Bash "Bash(gh:*)" Read Grep Glob WebFetch'
           prompt: |
             Verify dependency PR #${{ github.event.pull_request.number }} in
             ${{ github.repository }}.

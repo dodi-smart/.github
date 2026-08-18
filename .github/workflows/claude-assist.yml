@@ -1,0 +1,115 @@
+# Reusable: the general-purpose assistant, for `@claude <anything>`.
+#
+# WHY THIS IS SHARED AND NOT A FILE IN EVERY REPO
+#
+# Every repo used to carry its own claude.yml. Two problems followed.
+#
+# First, it was the ONE agent workflow the standard did not own, and it did not
+# check `agent:no-touch`. The kill switch had a hole in the most permissive
+# surface in the org — a workflow that answers any mention, with write access.
+# DODI-00008 says no-touch is evaluated before every other rule in every agent
+# workflow; "every" has to include this one.
+#
+# Second, it had to DECLINE the verbs other workflows own (`@claude triage`
+# would otherwise run both this and triage on the same comment). That exclusion
+# was hand-copied into every repo, in two `if:` blocks each, and had already
+# drifted: one repo guarded pull_request_review_comment and the other did not.
+# The verb list now lives in `reserved-commands` below, in one place.
+#
+# Called by a thin wrapper in each repo:
+#   jobs:
+#     assist:
+#       uses: dodi-smart/.github/.github/workflows/claude-assist.yml@v1
+#       secrets: inherit
+name: Claude Assist
+
+on:
+  workflow_call:
+    inputs:
+      runner-weight:
+        type: string
+        default: "light"     # light | heavy | apple | hosted
+      runner-labels:
+        type: string
+        default: ""
+      # Verbs owned by another workflow. Adding one here is the ONLY change
+      # needed to teach every repo about a new command.
+      reserved-commands:
+        type: string
+        default: "triage plan implement"
+      model:
+        type: string
+        default: "claude-opus-5"
+      timeout-minutes:
+        type: number
+        default: 20
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN: { required: true }
+      GH_APP_CLIENT_ID:        { required: false }
+      GH_APP_PRIVATE_KEY:      { required: false }
+
+concurrency:
+  group: assist-${{ github.repository }}-${{ github.event.issue.number || github.event.pull_request.number || github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      proceed: ${{ steps.gate.outputs.proceed }}
+    steps:
+      - id: gate
+        uses: dodi-smart/.github/actions/agent-gate@main
+        with:
+          # An issue and a PR keep their labels in different places; whichever
+          # is absent is an empty list, so the kill switch reads the right one.
+          labels: ${{ github.event.issue.number && toJson(github.event.issue.labels.*.name) || toJson(github.event.pull_request.labels.*.name) }}
+          event-name:   ${{ github.event_name }}
+          event-action: ${{ github.event.action }}
+          author:       ${{ github.event.issue.user.login || github.event.pull_request.user.login }}
+          # The body to search differs by event: a comment, a review, or the
+          # issue itself. `||` takes the first non-empty.
+          comment: >-
+            ${{ github.event.comment.body
+             || github.event.review.body
+             || format('{0} {1}', github.event.issue.title, github.event.issue.body) }}
+          mention: '@claude'
+          exclude-commands: ${{ inputs.reserved-commands }}
+          bots: 'reject'
+          skip-draft: 'false'
+
+  pick-runner:
+    needs: [gate]
+    if: needs.gate.outputs.proceed == 'true'
+    uses: dodi-smart/.github/.github/workflows/pick-runner.yml@main
+    with:
+      weight: ${{ inputs.runner-weight }}
+      labels: ${{ inputs.runner-labels }}
+    secrets: inherit
+
+  assist:
+    needs: [gate, pick-runner]
+    if: needs.gate.outputs.proceed == 'true'
+    runs-on: ${{ fromJson(needs.pick-runner.outputs.runner) }}
+    timeout-minutes: ${{ inputs.timeout-minutes }}
+    permissions:
+      contents: read
+      pull-requests: read
+      issues: read
+      id-token: write
+      actions: read
+    steps:
+      - uses: actions/checkout@v7
+        with: { fetch-depth: 1 }
+
+      # No `prompt`: with none supplied the action follows the instruction in
+      # the comment that mentioned it, which is the entire point of this
+      # workflow. Everything else is the org's standard agent configuration.
+      - uses: dodi-smart/.github/actions/run-agent@main
+        with:
+          oauth-token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          model: ${{ inputs.model }}
+          prompt: ''
+          additional-permissions: |
+            actions: read

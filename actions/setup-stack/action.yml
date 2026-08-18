@@ -1,0 +1,207 @@
+# Install a toolchain, and isolate its package cache.
+#
+# WHY THIS IS ONE ACTION AND NOT ONE TEMPLATE PER STACK
+#
+# The old shape was a thin-caller file per stack (deps-verify.yml,
+# deps-verify.gradle.yml, ...). Five stacks across three workflows is fifteen
+# files that must be kept in agreement, and the Gradle one had already grown a
+# hardcoded product-specific Gradle task name — sitting in a template every other
+# Gradle repo was meant to copy, where it produces a build failure whose cause is
+# a different product. Stack is a VALUE, so it belongs in an input.
+#
+# WHY THE CACHE DIRS ARE JOB-SCOPED
+#
+# Self-hosted runners persist between jobs, so the default per-user caches are
+# shared. A half-written entry poisons every later run — `Fail extracting
+# tarball for "next"` — and `restore-keys` faithfully restores the poison, so
+# re-running does NOT clear it. That cost real days. Isolation costs a cold
+# install and buys determinism, which is the entire point of a verification job.
+name: Setup stack
+description: Install the toolchain for a stack and isolate its package cache.
+
+inputs:
+  stack:
+    description: 'bun | node | gradle | android | flutter | rust | xcode | none'
+    required: true
+  node-version:
+    description: 'For stack=node, and for semantic-release on any stack'
+    default: '24'
+  bun-version:
+    description: 'For stack=bun'
+    default: 'latest'
+  java-version:
+    description: 'For gradle/android/flutter. Empty skips the JDK on flutter.'
+    default: '21'
+  flutter-version:
+    description: 'For stack=flutter. Empty takes the channel head.'
+    default: ''
+  flutter-channel:
+    description: 'For stack=flutter'
+    default: 'stable'
+  rust-toolchain:
+    description: 'For stack=rust'
+    default: 'stable'
+  rust-components:
+    description: 'For stack=rust, e.g. "clippy, rustfmt"'
+    default: 'clippy, rustfmt'
+  xcode-version:
+    description: 'For stack=xcode. Empty takes the runner default.'
+    default: ''
+  cache:
+    description: 'Restore and save the package cache'
+    default: 'true'
+
+  # Command overrides. The sentinel "@stack" means "use this stack's
+  # conventional command"; an explicit empty string means "this repo has no such
+  # step". Those are different intentions and a plain default cannot express
+  # both — a Gradle repo genuinely has no install step. Resolving them HERE
+  # means callers read `steps.setup.outputs.install` and never reimplement the
+  # precedence rule; three workflows had started to.
+  install:   { description: 'Override the install command',   default: '@stack' }
+  lint:      { description: 'Override the lint command',      default: '@stack' }
+  typecheck: { description: 'Override the typecheck command', default: '@stack' }
+  test:      { description: 'Override the test command',      default: '@stack' }
+  build:     { description: 'Override the build command',     default: '@stack' }
+
+outputs:
+  install:
+    description: 'Resolved install command — the override, or the stack default. Empty means skip.'
+    value: ${{ steps.defaults.outputs.install }}
+  lint:
+    description: 'Resolved lint command. Empty means skip.'
+    value: ${{ steps.defaults.outputs.lint }}
+  typecheck:
+    description: 'Resolved typecheck command. Empty means skip.'
+    value: ${{ steps.defaults.outputs.typecheck }}
+  test:
+    description: 'Resolved test command. Empty means skip.'
+    value: ${{ steps.defaults.outputs.test }}
+  build:
+    description: 'Resolved build command. Empty means skip.'
+    value: ${{ steps.defaults.outputs.build }}
+
+runs:
+  using: composite
+  steps:
+    # Point every toolchain at a directory this job owns. See the header.
+    - id: isolate
+      shell: bash
+      env:
+        STACK: ${{ inputs.stack }}
+      run: |
+        set -euo pipefail
+        case "$STACK" in
+          bun|node|gradle|android|flutter|rust|xcode|none) : ;;
+          *) echo "::error::unknown stack '$STACK' (expected bun|node|gradle|android|flutter|rust|xcode|none)"; exit 1 ;;
+        esac
+        {
+          echo "BUN_INSTALL_CACHE_DIR=${RUNNER_TEMP}/bun-cache"
+          echo "npm_config_cache=${RUNNER_TEMP}/npm-cache"
+          echo "GRADLE_USER_HOME=${RUNNER_TEMP}/gradle-home"
+          echo "PUB_CACHE=${RUNNER_TEMP}/pub-cache"
+          echo "CARGO_HOME=${RUNNER_TEMP}/cargo-home"
+        } >> "$GITHUB_ENV"
+        echo "stack: $STACK, caches scoped to $RUNNER_TEMP"
+
+    - if: inputs.stack == 'bun'
+      uses: oven-sh/setup-bun@v2
+      with:
+        bun-version: ${{ inputs.bun-version }}
+
+    - if: inputs.stack == 'node'
+      uses: actions/setup-node@v7
+      with:
+        node-version: ${{ inputs.node-version }}
+
+    - if: (inputs.stack == 'gradle' || inputs.stack == 'android') || (inputs.stack == 'flutter' && inputs.java-version != '')
+      uses: actions/setup-java@v5
+      with:
+        java-version: ${{ inputs.java-version }}
+        distribution: temurin
+
+    - if: inputs.stack == 'gradle' || inputs.stack == 'android'
+      uses: gradle/actions/setup-gradle@v6
+      with:
+        # Publishing a build scan from a verification job leaks the dependency
+        # graph of a private repo to a third party. Off unless a repo opts in.
+        build-scan-publish: false
+        cache-read-only: ${{ inputs.cache != 'true' }}
+
+    - if: inputs.stack == 'android'
+      uses: android-actions/setup-android@v4
+
+    - if: inputs.stack == 'flutter'
+      uses: subosito/flutter-action@v2
+      with:
+        flutter-version: ${{ inputs.flutter-version }}
+        channel: ${{ inputs.flutter-channel }}
+        cache: ${{ inputs.cache }}
+
+    # Pinned to @master with an explicit `toolchain`, which is how this action
+    # is meant to be parameterised — the `@stable` form the README leads with
+    # hardcodes the channel in the ref and cannot be overridden by an input.
+    - if: inputs.stack == 'rust'
+      uses: dtolnay/rust-toolchain@master
+      with:
+        toolchain: ${{ inputs.rust-toolchain }}
+        components: ${{ inputs.rust-components }}
+
+    - if: inputs.stack == 'rust' && inputs.cache == 'true'
+      uses: Swatinem/rust-cache@v2
+
+    - if: inputs.stack == 'xcode' && inputs.xcode-version != ''
+      uses: maxim-lobanov/setup-xcode@v1
+      with:
+        xcode-version: ${{ inputs.xcode-version }}
+
+    # Conventional commands per stack, so a caller that has nothing unusual to
+    # say can name its stack and stop. Anything explicit wins over these.
+    - id: defaults
+      shell: bash
+      env:
+        STACK:       ${{ inputs.stack }}
+        O_INSTALL:   ${{ inputs.install }}
+        O_LINT:      ${{ inputs.lint }}
+        O_TYPECHECK: ${{ inputs.typecheck }}
+        O_TEST:      ${{ inputs.test }}
+        O_BUILD:     ${{ inputs.build }}
+      run: |
+        set -euo pipefail
+        install=""; lint=""; typecheck=""; test=""; build=""
+        case "$STACK" in
+          bun)
+            install="bun install --frozen-lockfile"
+            lint="bun run lint"; typecheck="bun run typecheck"
+            test="bun run test:run"; build="bun run build" ;;
+          node)
+            install="npm ci"
+            lint="npm run lint"; typecheck="npm run typecheck"
+            test="npm test"; build="npm run build" ;;
+          gradle|android)
+            # Gradle resolves on demand; there is no separate install step.
+            lint="./gradlew ktlintCheck"
+            test="./gradlew test"; build="./gradlew assemble" ;;
+          flutter)
+            install="flutter pub get"
+            lint="flutter analyze"
+            test="flutter test"; build="flutter build apk --debug" ;;
+          rust)
+            lint="cargo clippy --all-targets -- -D warnings"
+            typecheck="cargo check --all-targets"
+            test="cargo test --all"; build="cargo build --release" ;;
+          xcode)
+            lint="swiftlint --strict"
+            test="xcodebuild test -scheme \"\$SCHEME\" -destination 'platform=iOS Simulator,name=iPhone 15'"
+            build="xcodebuild build -scheme \"\$SCHEME\"" ;;
+          none) : ;;
+        esac
+        # "@stack" -> the conventional command above. Anything else, empty
+        # string included, is taken literally.
+        pick() { if [ "$1" = "@stack" ]; then printf '%s' "$2"; else printf '%s' "$1"; fi; }
+        {
+          echo "install=$(pick "$O_INSTALL" "$install")"
+          echo "lint=$(pick "$O_LINT" "$lint")"
+          echo "typecheck=$(pick "$O_TYPECHECK" "$typecheck")"
+          echo "test=$(pick "$O_TEST" "$test")"
+          echo "build=$(pick "$O_BUILD" "$build")"
+        } >> "$GITHUB_OUTPUT"

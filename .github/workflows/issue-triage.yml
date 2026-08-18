@@ -3,16 +3,21 @@
 # Called by a thin wrapper in each repo:
 #   jobs:
 #     triage:
-#       uses: dodi-smart/.github/.github/workflows/issue-triage.yml@main
+#       uses: dodi-smart/.github/.github/workflows/issue-triage.yml@v1
 #       secrets: inherit
+#
+# TRIGGERS: the `agent:triage` label, or a `@claude triage` / `@claude plan`
+# comment. The bare `/triage` and `/plan` forms were removed — three surfaces
+# requesting one action meant the exclusion guard in every repo's claude.yml had
+# to be hand-synced with this list, and it had already drifted between repos.
+# The verb list now lives in the `commands:` input below and nowhere else.
 name: Issue Triage
 
 on:
   workflow_call:
     inputs:
       # Runner selection, passed through to the shared picker. Override per repo
-      # when the preset does not fit this stack — e.g. an Android build needing an
-      # SDK-bearing image, or a job needing the `docker` label.
+      # when the preset does not fit this stack.
       runner-weight:
         type: string
         default: "light"     # light | heavy | apple | hosted
@@ -24,74 +29,63 @@ on:
       GH_APP_CLIENT_ID:        { required: false }
       GH_APP_PRIVATE_KEY:      { required: false }
 
-# One triage per issue. A second /triage supersedes the first rather than racing it.
+# One triage per issue. A second request supersedes the first rather than racing it.
 concurrency:
   group: triage-${{ github.repository }}-${{ github.event.issue.number }}
   cancel-in-progress: true
 
 jobs:
   # Gate BEFORE picking a runner: the picker itself costs a hosted minute, so it
-  # must never run for an event that will not proceed.
+  # must never run for an event that will not proceed (DODI-00005).
   gate:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
-      proceed: ${{ steps.check.outputs.proceed }}
-      mode:    ${{ steps.check.outputs.mode }}
+      proceed: ${{ steps.bots.outputs.proceed }}
+      mode:    ${{ steps.bots.outputs.mode }}
     steps:
-      - id: check
+      # agent:no-touch is evaluated inside this action, first and unconditionally
+      # (DODI-00008). Nothing below may run ahead of it. No checkout is needed:
+      # the gate reads event payload only, which is why it is cheap enough to
+      # run before the runner picker.
+      - id: gate
+        uses: dodi-smart/.github/actions/agent-gate@main
+        with:
+          labels:        ${{ toJson(github.event.issue.labels.*.name) }}
+          event-name:    ${{ github.event_name }}
+          event-action:  ${{ github.event.action }}
+          label:         ${{ github.event.label.name }}
+          request-label: 'agent:triage'
+          author:        ${{ github.event.issue.user.login }}
+          comment:       ${{ github.event.comment.body }}
+          commands:      'triage plan'
+          bots:          'allow'
+          skip-draft:    'false'
+
+      # Bots open issues at machine volume. The Renovate Dependency Dashboard is
+      # the one bot issue worth reading, and it is a STANDING issue — so triage
+      # it once on open and never again. This only ever narrows the gate above;
+      # it can never re-open a run the kill switch stopped.
+      - id: bots
         env:
-          EVENT:   ${{ github.event_name }}
-          ACTION:  ${{ github.event.action }}
-          LABEL:   ${{ github.event.label.name }}
+          PROCEED: ${{ steps.gate.outputs.proceed }}
+          MODE:    ${{ steps.gate.outputs.mode }}
           AUTHOR:  ${{ github.event.issue.user.login }}
-          COMMENT: ${{ github.event.comment.body }}
-          LABELS:  ${{ toJson(github.event.issue.labels.*.name) }}
           TITLE:   ${{ github.event.issue.title }}
+          ACTION:  ${{ github.event.action }}
         run: |
           set -euo pipefail
-          proceed=false; mode=triage
-
-          # agent:no-touch is absolute and evaluated before anything else (DODI-00008).
-          if printf '%s' "$LABELS" | grep -q '"agent:no-touch"'; then
-            echo "agent:no-touch present — stopping."
-            echo "proceed=false" >> "$GITHUB_OUTPUT"; echo "mode=$mode" >> "$GITHUB_OUTPUT"; exit 0
+          proceed="$PROCEED"
+          if [ "$proceed" = "true" ] && printf '%s' "$AUTHOR" | grep -qiE 'renovate|dependabot|\[bot\]$'; then
+            proceed=false
+            if printf '%s' "$TITLE" | grep -qi 'dependency dashboard' && [ "$ACTION" = "opened" ]; then
+              proceed=true
+            else
+              echo "bot-authored issue that is not a newly opened Dependency Dashboard — stopping"
+            fi
           fi
-
-          case "$EVENT" in
-            issues)
-              # Applying `agent:triage` is the primary way to ask for triage:
-              # it needs no new account (GitHub Apps cannot be assignees), and
-              # the label doubles as the progress indicator — present means
-              # running, and the agent removes it when finished.
-              if [ "$ACTION" = "labeled" ]; then
-                if [ "$LABEL" = "agent:triage" ]; then proceed=true; fi
-                echo "proceed=$proceed" >> "$GITHUB_OUTPUT"
-                echo "mode=$mode" >> "$GITHUB_OUTPUT"
-                exit 0
-              fi
-              # Bots open issues at machine volume. The Renovate Dependency
-              # Dashboard is the one bot issue worth reading, and it is a
-              # standing issue, so triage it once on open and never again.
-              if printf '%s' "$AUTHOR" | grep -qiE 'renovate|dependabot|\[bot\]$'; then
-                if printf '%s' "$TITLE" | grep -qi 'dependency dashboard' && [ "$ACTION" = "opened" ]; then
-                  proceed=true
-                fi
-              else
-                proceed=true
-              fi
-              ;;
-            issue_comment)
-              case "$COMMENT" in
-                */triage*) proceed=true; mode=triage ;;
-                */plan*)   proceed=true; mode=plan ;;
-              esac
-              ;;
-            workflow_dispatch) proceed=true ;;
-          esac
-
-          echo "proceed=$proceed" >> "$GITHUB_OUTPUT"
-          echo "mode=$mode"       >> "$GITHUB_OUTPUT"
+          echo "proceed=$proceed"          >> "$GITHUB_OUTPUT"
+          echo "mode=${MODE:-triage}"      >> "$GITHUB_OUTPUT"
 
   pick-runner:
     needs: [gate]
@@ -125,35 +119,15 @@ jobs:
               echo ' say it is missing and apply none)'; echo '__EOF__'; } >> "$GITHUB_OUTPUT"
           fi
 
-      - uses: anthropics/claude-code-action@v1
+      # Opus for triage: it reads unfamiliar code and decides plan-vs-questions,
+      # which is judgement work. Reviewing a diff is not the same job.
+      - uses: dodi-smart/.github/actions/run-agent@main
         with:
-          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          # `--allowed-tools <tools...>` is VARIADIC — space-separated, each
-          # entry quoted if it contains parentheses. A comma-joined list parses
-          # as one meaningless token: nothing matches, every Bash call is denied
-          # with "This command requires approval", and the job still reports
-          # SUCCESS. That cost three runs before show_full_output revealed it.
-          #
-          # Bash is allowed broadly, and `gh` with it. The bound that makes this
-          # reasonable is not the allowlist — the action refuses to run for an
-          # actor without write access ("Actor has write access"), so untrusted
-          # issue or PR content only reaches the agent when someone trusted
-          # invokes it. Same profile as running a review agent on a PR.
-          #
-          # Two guards still apply and must not be removed: `agent:no-touch` is
-          # checked before every other condition (DODI-00008), and public repos
-          # and fork PRs never touch a self-hosted runner (DODI-00010).
-          # Opus for triage: it reads unfamiliar code and decides plan-vs-questions,
-          # which is judgement work. Reviewing a diff is not the same job.
-          claude_args: >-
-            --model claude-opus-5
-            --allowed-tools Bash "Bash(gh:*)" Read Grep Glob
-          # Without this the agent's output never reaches the log, and a run that
-          # did nothing is indistinguishable from one that worked.
-          display_report: true
+          oauth-token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          model: claude-opus-5
           # Live progress comment, so a run in flight is visible rather than a
           # silence that could equally mean "working" or "broken".
-          track_progress: true
+          track-progress: 'true'
           prompt: |
             Triage issue #${{ github.event.issue.number }} in ${{ github.repository }}.
             Mode: ${{ needs.gate.outputs.mode }}
@@ -187,7 +161,6 @@ jobs:
             approach, the test plan, the risks, and a rough effort. Reference real
             paths you actually opened. Then set:
               Triage state = Plan ready
-            and add the `agent:plan` label.
 
             **If no** — do NOT write a speculative plan. Post numbered blocking
             questions in exactly two groups:
@@ -201,6 +174,16 @@ jobs:
 
             Prefer questions over a guessed plan. A confident plan built on an
             assumption you never checked costs far more than one extra round-trip.
+
+            ## Labels are requests; fields are state
+
+            Set `Triage state` and STOP THERE. Do NOT add an `agent:plan` label —
+            it no longer exists. The field already says the issue is planned, and
+            writing the same fact twice means the two disagree within weeks
+            (DODI-00001, DODI-00016).
+
+            `Triage state = Plan ready` is what makes an issue eligible for
+            `agent:implement`, so setting it accurately is the whole contract.
 
             ## Fields
 

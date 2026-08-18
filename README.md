@@ -124,14 +124,21 @@ the Gradle one carried one product's Gradle task name, in a file every other
 Gradle repo was told to copy (DODI-00015).
 
 Package caches are **not** always job-scoped. `setup-stack` resolves three
-modes from `isolate`, `cache`, `runner.environment` and `runner.arch`
-(DODI-00020):
+modes from `isolate`, `cache`, `runner.environment`, `runner.os` and
+`runner.arch` (DODI-00020):
 
-- `isolate: true` (deps-verify) and self-hosted ARM64 pin caches to
-  `RUNNER_TEMP` and disable GitHub cache — verification must not see
-  yesterday's tree, and a Pi with 8 GB must not grow bun/Gradle volumes.
-- Self-hosted X64 uses default home dirs (`~/.bun`, `~/.gradle`, `~/.cargo`)
-  so per-runner named volumes are actually read. GitHub cache stays off.
+- `isolate: true` (deps-verify) and the self-hosted **Linux** ARM64 pool pin
+  caches to `RUNNER_TEMP` and disable GitHub cache — verification must not see
+  yesterday's tree, and a Pi with 8 GB must not grow bun/Gradle volumes. The
+  check is Linux ARM64, not ARM64: the self-hosted Mac is ARM64 too, has no
+  container volumes to grow, and gains nothing from running every job cold.
+- Self-hosted X64 uses default home dirs (`~/.bun`, `~/.npm`, `~/.cache/pnpm`,
+  `~/.gradle`, `~/.cargo`) so per-runner named volumes are actually read.
+  GitHub cache stays off.
+- `~/.pub-cache` is job-scoped in **every** mode. A home dir is only worth
+  using if a volume backs it, and the runner image mounts none for pub — so on
+  a persistent runner it would grow in the container layer, outside the
+  post-job LRU cap that bounds every other store.
 - GitHub-hosted uses those same home dirs; `cache: auto` becomes true for
   `setup-gradle` / `rust-cache` / `flutter-action` only. Bun is never
   uploaded. One mechanism per stack — never *also* `setup-java cache: gradle`,

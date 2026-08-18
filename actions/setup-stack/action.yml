@@ -16,17 +16,31 @@
 # still let setup-gradle talk to GitHub's cache — which is how a partial bun
 # tarball plus restore-keys reimported poison. Three modes, resolved here:
 #
-#   isolate=true          -> RUNNER_TEMP dirs, cache-disabled (deps-verify)
-#   self-hosted + ARM64   -> isolate anyway (Pi 8 GB must not grow volumes)
-#   self-hosted + X64     -> default home dirs (~/.bun, ~/.gradle, ~/.cargo);
-#                            GitHub cache-disabled (the volume IS the cache)
-#   github-hosted         -> default home dirs; cache=auto becomes true
-#                            (setup-gradle / rust-cache / flutter-action only)
+#   isolate=true             -> RUNNER_TEMP dirs, cache-disabled (deps-verify)
+#   self-hosted Linux ARM64  -> isolate anyway (Pi 8 GB must not grow volumes)
+#   self-hosted + X64        -> default home dirs; GitHub cache-disabled
+#                               (the named volume IS the cache)
+#   github-hosted            -> default home dirs; cache=auto becomes true
+#                               (setup-gradle / rust-cache / flutter-action only)
+#
+# A HOME DIR IS ONLY WORTH USING IF A VOLUME BACKS IT
+#
+# The runner image mounts one named volume per runner for ~/.bun, ~/.npm,
+# ~/.cache/pnpm, ~/.gradle and ~/.cargo, and its post-job hook LRU-caps them.
+# PUB_CACHE has no such volume, so on a persistent runner ~/.pub-cache would
+# grow in the container's writable layer where nothing caps it. It stays
+# pinned to RUNNER_TEMP in every mode until the image mounts and caps it.
+#
+# The forced-isolate arch check is Linux ARM64, not ARM64. The Pi is Linux
+# ARM64; the self-hosted macOS runner is also ARM64 but is not a Pi, has no
+# container volumes to grow, and has no reason to run every job cold.
 #
 # Hosted GitHub cache is ONE mechanism per stack. Never also setup-java
 # cache: gradle, never a manual actions/cache of ~/.gradle, never restore-keys
-# on a package store. Bun's install cache is never uploaded to GitHub — 8s
-# vs a 420 MB restore; the budget belongs to toolchain caches that pay rent.
+# on a package store. No package STORE is ever uploaded to GitHub — bun's is
+# 420 MB to restore against an 8s cold install, and restore-keys on a store is
+# how poison reimports. (setup-bun still caches the bun EXECUTABLE, which is a
+# small exact-keyed binary, not a store; that one is fine.)
 name: Setup stack
 description: Install the toolchain for a stack and resolve its package-cache mode.
 
@@ -61,8 +75,9 @@ inputs:
   isolate:
     description: >-
       Pin package caches to RUNNER_TEMP and disable GitHub cache. Forced on
-      for self-hosted ARM64. Default false: X64 self-hosted uses home dirs
-      (named volumes); hosted uses home dirs plus toolchain cache actions.
+      for the self-hosted Linux ARM64 pool. Default false: X64 self-hosted
+      uses home dirs (named volumes); hosted uses home dirs plus toolchain
+      cache actions. PUB_CACHE is job-scoped regardless — no volume backs it.
     default: 'false'
   cache:
     description: >-
@@ -111,6 +126,7 @@ runs:
         CACHE: ${{ inputs.cache }}
         RUNNER_ENVIRONMENT: ${{ runner.environment }}
         RUNNER_ARCH: ${{ runner.arch }}
+        RUNNER_OS: ${{ runner.os }}
       run: |
         set -euo pipefail
         case "$STACK" in
@@ -122,11 +138,15 @@ runs:
           *) echo "::error::cache must be auto, true, or false (got '$CACHE')"; exit 1 ;;
         esac
 
-        # isolate=true, or ARM64 self-hosted (Pi 8 GB must not grow volumes).
+        # isolate=true, or the self-hosted Linux ARM64 pool — the Pis, whose
+        # 8 GB must not grow bun/Gradle volumes. Deliberately NOT plain ARM64:
+        # the self-hosted macOS runner is ARM64 too, and forcing it cold would
+        # be a cost with no matching risk.
         do_isolate=false
         if [ "$ISOLATE" = "true" ]; then
           do_isolate=true
-        elif [ "${RUNNER_ENVIRONMENT:-}" = "self-hosted" ] && [ "${RUNNER_ARCH:-}" = "ARM64" ]; then
+        elif [ "${RUNNER_ENVIRONMENT:-}" = "self-hosted" ] \
+          && [ "${RUNNER_OS:-}" = "Linux" ] && [ "${RUNNER_ARCH:-}" = "ARM64" ]; then
           do_isolate=true
         fi
 
@@ -141,12 +161,25 @@ runs:
           fi
         fi
 
+        # No volume backs ~/.pub-cache and the image's LRU cap does not reach
+        # it, so it is job-scoped in every mode. See the header.
+        echo "PUB_CACHE=${RUNNER_TEMP}/pub-cache" >> "$GITHUB_ENV"
+
         if [ "$do_isolate" = "true" ]; then
           {
             echo "BUN_INSTALL_CACHE_DIR=${RUNNER_TEMP}/bun-cache"
             echo "npm_config_cache=${RUNNER_TEMP}/npm-cache"
+            # pnpm reads npm_config_* as its own config: npm_config_store_dir
+            # is store-dir, npm_config_cache_dir is cache-dir. npm's `cache`
+            # setting above is NOT pnpm's, so both are needed — without them
+            # an isolated job still wrote to the shared ~/.cache/pnpm store.
+            echo "npm_config_store_dir=${RUNNER_TEMP}/pnpm-store"
+            echo "npm_config_cache_dir=${RUNNER_TEMP}/pnpm-cache"
+            # Berry derives YARN_CACHE_FOLDER/YARN_GLOBAL_FOLDER from
+            # cacheFolder/globalFolder; classic reads YARN_CACHE_FOLDER.
+            echo "YARN_CACHE_FOLDER=${RUNNER_TEMP}/yarn-cache"
+            echo "YARN_GLOBAL_FOLDER=${RUNNER_TEMP}/yarn-global"
             echo "GRADLE_USER_HOME=${RUNNER_TEMP}/gradle-home"
-            echo "PUB_CACHE=${RUNNER_TEMP}/pub-cache"
             echo "CARGO_HOME=${RUNNER_TEMP}/cargo-home"
           } >> "$GITHUB_ENV"
         fi
@@ -155,14 +188,16 @@ runs:
           echo "isolated=$do_isolate"
           echo "cache_enabled=$cache_enabled"
         } >> "$GITHUB_OUTPUT"
-        echo "stack: $STACK, isolate=$do_isolate, cache=$cache_enabled (input cache=$CACHE, env=${RUNNER_ENVIRONMENT:-unknown}/${RUNNER_ARCH:-unknown})"
+        echo "stack: $STACK, isolate=$do_isolate, cache=$cache_enabled (input cache=$CACHE, env=${RUNNER_ENVIRONMENT:-unknown}/${RUNNER_OS:-unknown}/${RUNNER_ARCH:-unknown})"
 
     - if: inputs.stack == 'bun'
       uses: oven-sh/setup-bun@v2
       with:
         bun-version: ${{ inputs.bun-version }}
-        # No GitHub cache for bun, even on hosted. The tarball store is large
-        # and restore-keys on it is how poison reimports.
+        # The bun INSTALL CACHE is never uploaded to GitHub, on any runner:
+        # the tarball store is large and restore-keys on it is how poison
+        # reimports. setup-bun's own cache of the bun executable stays on —
+        # that is a small binary under an exact version key, not a store.
 
     - if: inputs.stack == 'node'
       uses: actions/setup-node@v7

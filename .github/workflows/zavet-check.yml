@@ -88,6 +88,14 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           DIR: ${{ inputs.zavet-dir }}
         run: |
+          # `set +e` is REQUIRED and must come first.
+          #
+          # GitHub runs every `run:` step as `bash -e {0}`. `set -uo pipefail`
+          # does NOT clear `-e`, so `out=$(check.sh); rc=$?` aborted the step at
+          # the assignment with check.sh's exit code — before printf ever ran.
+          # The result was a failed check with NO diagnostic output at all, which
+          # is the exact failure mode this whole standard exists to eliminate.
+          set +e
           set -uo pipefail
           out=$("$DIR/check.sh" 2>&1); rc=$?
           printf '%s\n' "$out"
@@ -97,9 +105,13 @@ jobs:
             printf '%s\n' "$out"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
+          # `|| true` is the point, not decoration. With zero failures this grep
+          # matches nothing and exits 1, which under `-e` killed the step — so the
+          # job failed precisely BECAUSE every check had passed. The step's verdict
+          # is $rc from check.sh, never the annotation pass.
           printf '%s\n' "$out" | grep -E '^\s*FAIL' | while read -r line; do
             echo "::error title=Decision check failed::$line"
-          done
+          done || true
           echo "rc=$rc" >> "$GITHUB_OUTPUT"
           exit "$rc"
 
@@ -114,6 +126,7 @@ jobs:
           BASE: ${{ github.event.pull_request.base.sha }}
           HEAD: ${{ github.event.pull_request.head.sha }}
         run: |
+          set +e            # see the checks step: GitHub's `bash -e` would abort early
           set -uo pipefail
           zavet="$DIR/bin/zavet"
           if [ ! -x "$zavet" ]; then
@@ -146,6 +159,7 @@ jobs:
         env:
           DIR: ${{ inputs.zavet-dir }}
         run: |
+          set +e            # see the checks step
           set -uo pipefail
           out=$("$DIR/bin/zavet" audit 2>&1 || true)
           printf '%s\n' "$out"
@@ -161,6 +175,7 @@ jobs:
           CHECKS: ${{ steps.checks.outcome }}
           GUARDS: ${{ steps.guards.outcome }}
         run: |
+          set +e            # see the checks step
           set -uo pipefail
           marker="<!-- zavet-check -->"
           status() { case "$1" in success) echo "passed";; skipped) echo "skipped";; *) echo "**FAILED**";; esac; }
@@ -189,8 +204,12 @@ jobs:
           GUARDS: ${{ steps.guards.outcome }}
         run: |
           set -euo pipefail
-          bad=0
-          [ "$CHECKS" = "failure" ] && bad=1
-          [ "$GUARDS" = "failure" ] && bad=1
-          [ "$bad" = "0" ] || { echo "knowledge-layer checks failed"; exit 1; }
-          echo "knowledge layer is consistent"
+          # `if` over `[ x ] && y` for legibility, and the values are echoed
+          # because "knowledge-layer checks failed" alone does not say WHICH.
+          # (For the record: `[ x ] && y` was NOT the bug — bash's `set -e` does
+          # not exit on it. The real cause was the annotation grep above.)
+          if [ "$CHECKS" = "failure" ] || [ "$GUARDS" = "failure" ]; then
+            echo "knowledge-layer checks failed (checks=$CHECKS guards=$GUARDS)"
+            exit 1
+          fi
+          echo "knowledge layer is consistent (checks=$CHECKS guards=$GUARDS)"

@@ -142,6 +142,11 @@ jobs:
           REPO:     ${{ github.repository }}
           SHA:      ${{ github.event.pull_request.head.sha }}
         run: |
+          # GitHub runs steps as `bash -e {0}`, and `set -uo pipefail` does not
+          # clear `-e`. Without `set +e` an unguarded command substitution aborts
+          # the step before it can report — and this step is meant to REPORT and
+          # never fail.
+          set +e
           set -uo pipefail
           runs=$(gh api "/repos/$REPO/commits/$SHA/check-runs?per_page=100" \
                  --jq '[.check_runs[] | {name, conclusion, id}]' 2>/dev/null || echo '[]')

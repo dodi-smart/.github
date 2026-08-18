@@ -37,7 +37,7 @@ on:
 
 jobs:
   pick-runner:
-    uses: dodi-smart/.github/.github/workflows/pick-runner.yml@main
+    uses: dodi-smart/.github/.github/workflows/pick-runner.yml@v1
     with:
       weight: ${{ inputs.runner-weight }}
       labels: ${{ inputs.runner-labels }}

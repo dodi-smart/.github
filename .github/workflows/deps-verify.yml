@@ -65,7 +65,7 @@ jobs:
       # for Renovate and Dependabot and nothing else. It also absorbs the author
       # check every caller used to carry in its own `if:`, byte-identically.
       - id: gate
-        uses: dodi-smart/.github/actions/agent-gate@main
+        uses: dodi-smart/.github/actions/agent-gate@v1
         with:
           labels:        ${{ toJson(github.event.pull_request.labels.*.name) }}
           event-name:    ${{ github.event_name }}
@@ -97,7 +97,7 @@ jobs:
   pick-runner:
     needs: [gate]
     if: needs.gate.outputs.proceed == 'true'
-    uses: dodi-smart/.github/.github/workflows/pick-runner.yml@main
+    uses: dodi-smart/.github/.github/workflows/pick-runner.yml@v1
     with:
       weight: ${{ inputs.runner-weight }}
       labels: ${{ inputs.runner-labels }}
@@ -116,7 +116,7 @@ jobs:
       - uses: actions/checkout@v7
 
       - id: setup
-        uses: dodi-smart/.github/actions/setup-stack@main
+        uses: dodi-smart/.github/actions/setup-stack@v1
         with:
           stack:           ${{ needs.gate.outputs.stack }}
           install:         ${{ inputs.install }}
@@ -185,7 +185,7 @@ jobs:
       # "Workflow initiated by non-human actor: renovate (type: Bot)". EVERY run
       # here is bot-initiated, so the default makes this workflow impossible.
       # Named explicitly rather than '*' — the point is to trust these two bots.
-      - uses: dodi-smart/.github/actions/run-agent@main
+      - uses: dodi-smart/.github/actions/run-agent@v1
         with:
           oauth-token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           model: claude-sonnet-5

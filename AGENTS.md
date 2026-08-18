@@ -14,6 +14,13 @@ locations, and only these two things live here:
 reasoning — lives in [`dodi-smart/agent-skills`](https://github.com/dodi-smart/agent-skills).**
 Read that repo's `CLAUDE.md` before changing anything here.
 
+## The `.github/.github/` in every caller is correct
+
+`uses:` is `{owner}/{repo}/{path}@{ref}`. This repo is named `.github`, and
+GitHub requires reusable workflows to live in `.github/workflows/` of the source
+repo — so the segment appears twice, once as the repo and once as the path. Do
+not "fix" it to `dodi-smart/.github/workflows/...`; that path does not resolve.
+
 ## There is one knowledge layer, and it is not in this repo
 
 Decisions live in `agent-skills/.zavet/`, with ids `DODI-NNNNN`. This repo

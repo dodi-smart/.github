@@ -45,8 +45,24 @@ jobs:
     secrets: inherit
 ```
 
-The doubled `.github/.github/` is correct — it is the repo name followed by the
-workflow path inside it.
+### Why `.github/.github/`
+
+Not a typo, and not removable. A `uses:` value is `{owner}/{repo}/{path}@{ref}`.
+This repo is *named* `.github`, and GitHub requires every reusable workflow to
+live in `.github/workflows/` of its source repo — so both segments contain it.
+
+It is also the ecosystem norm; the same shape appears wherever a `.github` repo
+hosts shared CI:
+
+```yaml
+uses: stylelint/.github/.github/workflows/call-lint.yml@ab79793
+uses: craftcms/.github/.github/workflows/ci.yml@v3
+```
+
+`dodi-smart/.github/workflows/...` would resolve to a file at `workflows/` in the
+repo root, which GitHub will not accept as a reusable workflow. The only way to
+shorten the line is to host the workflows in a repo *not* named `.github` — which
+puts org CI where nobody looks for it (DODI-00011).
 
 Thin caller templates are in
 `agent-skills/skills/repo-triage-setup/assets/workflows/`.

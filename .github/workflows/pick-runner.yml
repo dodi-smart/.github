@@ -158,10 +158,33 @@ jobs:
           # never fail.
           set +e
           set -uo pipefail
-          runners=$(gh api "/orgs/$ORG/actions/runners" --paginate \
-            --jq '.runners[] | {name,labels:[.labels[].name]}' 2>/dev/null | jq -s '.' || echo '[]')
-          if [ "$(jq 'length' <<<"$runners")" = "0" ]; then
-            echo "::warning title=Runner selector was NOT validated::Could not read the org runner list, so '$SEL' was not checked against the live fleet. A selector matching nothing looks exactly like a busy fleet from here. Most often this means the GitHub App token is missing or lacks org scope."
+          # Key off gh's OWN exit status, captured separately.
+          #
+          # The previous form was `runners=$(gh api ... | jq -s '.' || echo '[]')`.
+          # A pipeline's status is the LAST command's, so jq succeeding masked gh
+          # failing, and `|| echo '[]'` never fired. Worse, gh prints the error
+          # body on failure, which jq -s then slurped into a ONE-element array —
+          # so the length check passed and the step went on to report
+          # "'self-hosted,Linux,X64' ... which no runner carries" against a fleet
+          # that carries exactly those labels and simply could not be read.
+          #
+          # Never claim the fleet lacks a label unless the fleet was actually read.
+          raw=$(gh api "/orgs/$ORG/actions/runners" --paginate \
+                --jq '.runners[] | {name,labels:[.labels[].name]}' 2>/dev/null)
+          gh_rc=$?
+
+          runners='[]'
+          if [ "$gh_rc" -eq 0 ] && [ -n "$raw" ]; then
+            runners=$(jq -s '.' <<<"$raw" 2>/dev/null) || runners='[]'
+          fi
+          count=$(jq 'length' <<<"$runners" 2>/dev/null || echo 0)
+
+          if [ "$gh_rc" -ne 0 ]; then
+            echo "::warning title=Runner selector was NOT validated::Could not read the org runner list (gh exited $gh_rc), so '$SEL' was NOT checked against the live fleet. This says nothing about whether the labels exist. Usually the GitHub App token is missing or lacks org scope — see GH_APP_CLIENT_ID."
+            exit 0
+          fi
+          if [ "$count" -eq 0 ]; then
+            echo "::warning title=Runner selector was NOT validated::The org reports no self-hosted runners at all, so '$SEL' could not be checked. If that is unexpected, the fleet is offline or the token cannot see it."
             exit 0
           fi
 

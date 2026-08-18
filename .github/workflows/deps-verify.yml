@@ -115,10 +115,14 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      # Isolation is hard-coded, not a caller input: a verification job that
+      # can see yesterday's tree is not verifying (DODI-00020).
       - id: setup
         uses: dodi-smart/.github/actions/setup-stack@main
         with:
           stack:           ${{ needs.gate.outputs.stack }}
+          isolate:         true
+          cache:           false
           install:         ${{ inputs.install }}
           build:           ${{ inputs.build }}
           typecheck:       ${{ inputs.typecheck }}

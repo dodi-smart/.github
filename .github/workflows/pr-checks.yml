@@ -87,6 +87,8 @@ jobs:
         uses: dodi-smart/.github/actions/setup-stack@main
         with:
           stack:           ${{ inputs.stack }}
+          isolate:         false
+          cache:           auto
           install:         ${{ inputs.install }}
           lint:            ${{ inputs.lint }}
           typecheck:       ${{ inputs.typecheck }}
@@ -119,6 +121,8 @@ jobs:
         uses: dodi-smart/.github/actions/setup-stack@main
         with:
           stack:           ${{ inputs.stack }}
+          isolate:         false
+          cache:           auto
           install:         ${{ inputs.install }}
           test:            ${{ inputs.test }}
           java-version:    ${{ inputs.java-version }}
@@ -155,6 +159,8 @@ jobs:
         uses: dodi-smart/.github/actions/setup-stack@main
         with:
           stack:           ${{ inputs.stack }}
+          isolate:         false
+          cache:           auto
           install:         ${{ inputs.install }}
           build:           ${{ inputs.build }}
           java-version:    ${{ inputs.java-version }}

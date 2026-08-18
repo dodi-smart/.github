@@ -60,7 +60,7 @@ exactly like a busy fleet (DODI-00012).
 |---|---|
 | `actions/agent-gate` | Decides whether an agent may run. Evaluates `agent:no-touch` first, always |
 | `actions/run-agent` | Invokes the agent with the org's tool allowlist and reporting defaults |
-| `actions/setup-stack` | Installs a toolchain, isolates its caches, supplies conventional commands |
+| `actions/setup-stack` | Installs a toolchain, resolves cache isolation, supplies conventional commands |
 
 ## Two things you can rely on
 
@@ -123,10 +123,20 @@ There used to be a caller template per stack. It failed the way templates fail:
 the Gradle one carried one product's Gradle task name, in a file every other
 Gradle repo was told to copy (DODI-00015).
 
-Package caches are pinned to job-scoped directories. Self-hosted runners persist
-between jobs, so default caches are shared, and a half-written entry poisons
-every later run — which `restore-keys` then faithfully restores, so re-running
-does not clear it.
+Package caches are **not** always job-scoped. `setup-stack` resolves three
+modes from `isolate`, `cache`, `runner.environment` and `runner.arch`
+(DODI-00020):
+
+- `isolate: true` (deps-verify) and self-hosted ARM64 pin caches to
+  `RUNNER_TEMP` and disable GitHub cache — verification must not see
+  yesterday's tree, and a Pi with 8 GB must not grow bun/Gradle volumes.
+- Self-hosted X64 uses default home dirs (`~/.bun`, `~/.gradle`, `~/.cargo`)
+  so per-runner named volumes are actually read. GitHub cache stays off.
+- GitHub-hosted uses those same home dirs; `cache: auto` becomes true for
+  `setup-gradle` / `rust-cache` / `flutter-action` only. Bun is never
+  uploaded. One mechanism per stack — never *also* `setup-java cache: gradle`,
+  never `restore-keys` on a package store. That pairing is how a partial
+  tarball came back on every retry.
 
 ## Runners
 

@@ -181,7 +181,7 @@ jobs:
           prompt: |
             Implement issue #${{ github.event.issue.number }} in ${{ github.repository }}.
 
-            A plan for this issue already exists — `Triage state` is
+            A plan for this issue already exists. `Triage state` is
             `${{ inputs.required-state }}`, which is why this run was allowed to
             start. Read the issue and its comments and find that plan. Follow it.
 
@@ -192,13 +192,13 @@ jobs:
 
             ## How to work
 
-            1. Create a branch off the current HEAD. Name it conventionally —
-               `feat/`, `fix/`, `chore/`, `refactor/`, `test/` — and include the
+            1. Create a branch off the current HEAD. Name it conventionally,
+               `feat/`, `fix/`, `chore/`, `refactor/`, `test/`, and include the
                issue number, e.g. `fix/158-company-prefill`.
             2. Read the repo's CLAUDE.md / AGENTS.md first if present, and match
                the surrounding code: its naming, its comment density, its idiom.
             3. Follow the repo's commit conventions. If it has a commitlint
-               config, read it — some repos enforce a scope-enum and will reject
+               config, read it. Some repos enforce a scope-enum and will reject
                a scope you invented.
             4. Write or update tests. A change with no test is not finished
                unless the repo genuinely has no test setup, in which case say so.
@@ -214,9 +214,24 @@ jobs:
             have looked, and marking it ready is what triggers PR Review. Do NOT
             merge, approve, or mark it ready yourself.
 
-            The PR body should say what you changed and why, what you tested, and
-            — importantly — anything you were unsure about. An honest "I could
-            not verify X" is worth more than a confident summary.
+            The PR body goes in this shape:
+
+              ## What changed
+              One paragraph. The change, not a file list.
+
+              ## Why
+              The issue's constraint, in your own words. Link the issue.
+
+              ## Tested
+              What you ran and what it showed. Name the command.
+
+              ## Not verified
+              What you could not check, and why. Write "nothing" only when
+              that is true.
+
+            An honest "I could not verify X" is worth more than a confident
+            summary. Do not restate the issue's Priority, Effort or Risk
+            fields in the body. Those live on the issue.
 
             ## Finally
 
@@ -225,5 +240,5 @@ jobs:
             it is still running.
 
             Do NOT change `Triage state`. Triage state stops at "Ready for agent"
-            and never mirrors execution — the open PR and the closed issue are
+            and never mirrors execution. The open PR and the closed issue are
             how GitHub already tracks that (DODI-00003).

@@ -42,8 +42,15 @@ inputs:
     description: 'Variadic, space-separated. See the header before changing.'
     default: 'Bash "Bash(gh:*)" Read Grep Glob'
   append-system-prompt:
-    description: 'Extra system-prompt text. Must be ONE LINE — it is interpolated into a shell-style argument string.'
+    description: 'Extra system-prompt text, appended after house-style. Must be ONE LINE, with no double quotes, backticks or dollar signs, because it is interpolated into a double-quoted shell argument.'
     default: ''
+  house-style:
+    description: >-
+      The org writing-style rule, prepended to append-system-prompt on every
+      run. Same one-line constraint as append-system-prompt. Do not override
+      this to change the rule. Edit the default here, so every workflow picks
+      up the fix at once.
+    default: 'House writing style for everything you write, issue comments and PR bodies alike. Be plain and direct, like telling a colleague what happened. One idea per sentence, and split anything that makes the reader backtrack. Active voice, name the actor. No em dashes, use a period or a comma. Sentence case headings. No inline-header bullets, write the sentence instead. Cut words that sound technical and say nothing: surface, harness, substrate, vector, primitive, pivotal, delve, underscore, crucial, leverage, foster, showcase. Skip the pattern not just X but Y, state the point once. Prefer the plain word, use instead of leverage, help instead of facilitate. Write to the person who has to act on this today. No preamble, do not restate the request back, and no chatbot enthusiasm.'
   sticky-comment:
     description: 'Update one comment instead of adding a new one each run'
     default: 'false'
@@ -81,4 +88,4 @@ runs:
         claude_args: >-
           --model ${{ inputs.model }}
           --allowed-tools ${{ inputs.allowed-tools }}
-          ${{ inputs.append-system-prompt && format('--append-system-prompt "{0}"', inputs.append-system-prompt) || '' }}
+          ${{ format('--append-system-prompt "{0} {1}"', inputs.house-style, inputs.append-system-prompt) }}

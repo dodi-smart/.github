@@ -115,7 +115,7 @@ jobs:
           if [ -f .github/areas.yml ]; then
             { echo 'areas<<__EOF__'; cat .github/areas.yml; echo '__EOF__'; } >> "$GITHUB_OUTPUT"
           else
-            { echo 'areas<<__EOF__'; echo '(no .github/areas.yml — do NOT invent area labels;'; \
+            { echo 'areas<<__EOF__'; echo '(no .github/areas.yml, so do NOT invent area labels;'; \
               echo ' say it is missing and apply none)'; echo '__EOF__'; } >> "$GITHUB_OUTPUT"
           fi
 
@@ -143,13 +143,13 @@ jobs:
             1. Read the issue and anything it links to.
             2. Explore the code enough to know where the work lands. Map changed or
                relevant files to areas using the paths above. Follow the
-               disambiguation rules literally — they exist because the obvious
+               disambiguation rules literally. They exist because the obvious
                guess is wrong.
             3. Apply the `area:*` labels. Several is normal. If areas.yml was
                missing, apply none and say so.
             4. Set the issue type:
                gh api -X PATCH /repos/${{ github.repository }}/issues/${{ github.event.issue.number }} -f type='<Type>'
-               Bug only for a real regression or a violated spec — not for
+               Bug only for a real regression or a violated spec, not for
                something that never worked and was never specified.
 
             ## Then decide, and be honest about which
@@ -157,17 +157,33 @@ jobs:
             Ask yourself: could a competent engineer start implementing this today
             without asking anyone anything?
 
-            **If yes** — post an implementation plan: the files to change, the
-            approach, the test plan, the risks, and a rough effort. Reference real
-            paths you actually opened. Then set:
+            **If yes**, post the plan in exactly this shape:
+
+              ### Plan
+
+              Files. Real paths you opened, one line each: the path, then why
+              it changes.
+              Approach. The shape of the change, not a diff. Three to six
+              sentences.
+              Tests. What proves it works. Name the runner if the repo has one.
+              Risks. The specific thing that could break, and only when there
+              is one worth naming.
+
+            Under 30 lines. Do not write an Effort, Priority or Risk level line.
+            Those are fields, you set them below, and a fact written in two
+            places disagrees with itself within weeks (DODI-00001, DODI-00016).
+            Then set:
               Triage state = Plan ready
 
-            **If no** — do NOT write a speculative plan. Post numbered blocking
+            **If no**, do NOT write a speculative plan. Post numbered blocking
             questions in exactly two groups:
               ### Questions for the team
               ### Questions to ask the customer
-            The second group must be phrased so it can be pasted into an email
-            verbatim. Omit a group entirely if it would be empty. Then set:
+            At most five questions per group. Omit a group entirely if it would
+            be empty, and never leave a heading with nothing under it. The
+            customer group must be phrased so it can be pasted into an email
+            verbatim: no internal jargon, no ticket numbers, no code paths.
+            Then set:
               Triage state = Needs info
             and add the most specific `needs:*` label
             (needs:info, needs:repro, needs:decision, needs:design, needs:customer, needs:spec).
@@ -177,8 +193,8 @@ jobs:
 
             ## Labels are requests; fields are state
 
-            Set `Triage state` and STOP THERE. Do NOT add an `agent:plan` label —
-            it no longer exists. The field already says the issue is planned, and
+            Set `Triage state` and STOP THERE. Do NOT add an `agent:plan` label.
+            It no longer exists. The field already says the issue is planned, and
             writing the same fact twice means the two disagree within weeks
             (DODI-00001, DODI-00016).
 
@@ -188,7 +204,7 @@ jobs:
             ## Fields
 
             Set Priority, Effort and Risk only where you can justify them from what
-            you read. Leave a field unset rather than guessing — triage output is
+            you read. Leave a field unset rather than guessing. Triage output is
             read as evidence, and an unjustified value is worse than an empty one.
             Risk is at least High for auth, payments, RLS, migrations, or anything
             that loses data.
@@ -215,7 +231,7 @@ jobs:
               403 `Resource not accessible by integration` for THIS token. The
               GitHub App this job runs as holds repo-scoped permissions only and
               has no organisation permission at all, so every /orgs/* endpoint is
-              closed to it — REST and GraphQL alike. The repository query above
+              closed to it, REST and GraphQL alike. The repository query above
               returns the same org-level fields with the same ids. Do not fall
               back to the org path, and do not report the fields as unsettable:
               if the query above fails, say so and fail, because the fallback you
@@ -225,7 +241,7 @@ jobs:
               them with "Could not resolve to a node with the global id of ...".
               The query above already returns the right kind.
             - The mutation argument is `issueFields`, but the key INSIDE each
-              entry is `fieldId` — not `issueFieldId`. Easy to misread, and the
+              entry is `fieldId`, not `issueFieldId`. Easy to misread, and the
               error it produces does not point at the cause.
 
             A worked call, both fields in one mutation:
@@ -237,14 +253,14 @@ jobs:
                 ]}){ clientMutationId } }'
 
             `Triage state` is not optional. This job FAILS if it is still unset
-            when you finish, and it is right to — a triage pass that did not
+            when you finish, and it is right to. A triage pass that did not
             record its own state is a triage pass nobody downstream can act on.
 
             ## Finally
 
             Remove the `agent:triage` label if it is present. It means "triage
             requested / in progress"; leaving it on makes a finished issue look
-            like it is still being worked. Do NOT add it yourself — it is an
+            like it is still being worked. Do NOT add it yourself. It is an
             input, not a record of what you did.
 
             Keep the comment tight. No preamble, no restating the issue back.

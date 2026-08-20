@@ -193,8 +193,52 @@ jobs:
             Risk is at least High for auth, payments, RLS, migrations, or anything
             that loses data.
 
-            Set fields with the GraphQL setIssueFieldValue mutation; ids come from
-            /orgs/${{ github.repository_owner }}/issue-fields.
+            Never invent an option name. The valid ones, exactly:
+
+              Triage state  Needs triage | Needs info | Ready for plan |
+                            Plan ready | Ready for agent | Blocked
+              Priority      Urgent | High | Medium | Low
+              Effort        High | Medium | Low
+              Risk          Low | Medium | High | Critical
+
+            Set them with the GraphQL setIssueFieldValue mutation. Resolve the ids
+            from the REPOSITORY, not the organisation:
+
+              gh api graphql -f query='query($o:String!,$r:String!){
+                repository(owner:$o,name:$r){ issueFields(first:50){ nodes{
+                  ... on IssueFieldSingleSelect { id name options{ id name } }
+                } } } }' -f o='${{ github.repository_owner }}' -f r='${{ github.event.repository.name }}'
+
+            Three things that will otherwise cost you the whole triage:
+
+            - `/orgs/${{ github.repository_owner }}/issue-fields` returns
+              403 `Resource not accessible by integration` for THIS token. The
+              GitHub App this job runs as holds repo-scoped permissions only and
+              has no organisation permission at all, so every /orgs/* endpoint is
+              closed to it — REST and GraphQL alike. The repository query above
+              returns the same org-level fields with the same ids. Do not fall
+              back to the org path, and do not report the fields as unsettable:
+              if the query above fails, say so and fail, because the fallback you
+              are reaching for cannot work.
+            - The ids must be GRAPHQL NODE IDS (`IFSS_…`, `IFSSO_…`). The REST
+              catalog hands out numeric database ids and the mutation rejects
+              them with "Could not resolve to a node with the global id of ...".
+              The query above already returns the right kind.
+            - The mutation argument is `issueFields`, but the key INSIDE each
+              entry is `fieldId` — not `issueFieldId`. Easy to misread, and the
+              error it produces does not point at the cause.
+
+            A worked call, both fields in one mutation:
+
+              gh api graphql -f query='mutation{ setIssueFieldValue(input:{
+                issueId:"<issue node id>", issueFields:[
+                  {fieldId:"IFSS_…", singleSelectOptionId:"IFSSO_…"},
+                  {fieldId:"IFSS_…", singleSelectOptionId:"IFSSO_…"}
+                ]}){ clientMutationId } }'
+
+            `Triage state` is not optional. This job FAILS if it is still unset
+            when you finish, and it is right to — a triage pass that did not
+            record its own state is a triage pass nobody downstream can act on.
 
             ## Finally
 
@@ -204,3 +248,39 @@ jobs:
             input, not a record of what you did.
 
             Keep the comment tight. No preamble, no restating the issue back.
+
+      # A triage pass that did not record its own state is a failed triage, and
+      # must look like one. Without this the job reports SUCCESS with the fields
+      # unwritten, the break surfaces days later as `agent:implement` refusing
+      # the issue, and the run that actually caused it is long gone from view —
+      # precisely the invisibility DODI-00007 exists to end.
+      #
+      # The read is repo-scoped on purpose: it must work with the same token the
+      # agent had, or it would pass where the agent failed. No `if:` — it runs
+      # only when the agent step succeeded, which is the one case where a green
+      # job would otherwise be misleading.
+      - name: Verify triage recorded its state
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO:     ${{ github.repository }}
+          NUM:      ${{ github.event.issue.number }}
+        run: |
+          set -euo pipefail
+          owner="${REPO%%/*}"; name="${REPO##*/}"
+          # shellcheck disable=SC2016  # $o/$r/$n are GraphQL variables, not shell
+          state=$(gh api graphql -f query='query($o:String!,$r:String!,$n:Int!){
+            repository(owner:$o,name:$r){ issue(number:$n){
+              issueFieldValues(first:50){ nodes{
+                ... on IssueFieldSingleSelectValue {
+                  name field { ... on IssueFieldSingleSelect { name } } } } } } } }' \
+            -f o="$owner" -f r="$name" -F n="$NUM" \
+            --jq '[.data.repository.issue.issueFieldValues.nodes[]
+                   | select(.field.name == "Triage state") | .name] | first // ""')
+
+          if [ -n "$state" ]; then
+            echo "Triage state = $state"
+            exit 0
+          fi
+
+          echo "::error title=Triage did not set Triage state::$REPO#$NUM came out of triage with \`Triage state\` unset, so it is not eligible for \`agent:implement\` and no one downstream can act on it. Usual cause: the agent could not resolve issue-field ids. Resolve them from repository(owner,name){ issueFields } — /orgs/*/issue-fields is 403 for this token."
+          exit 1

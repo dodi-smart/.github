@@ -161,13 +161,19 @@ jobs:
 
               ### Plan
 
-              Files. Real paths you opened, one line each: the path, then why
-              it changes.
-              Approach. The shape of the change, not a diff. Three to six
-              sentences.
-              Tests. What proves it works. Name the runner if the repo has one.
-              Risks. The specific thing that could break, and only when there
-              is one worth naming.
+              #### Files
+              Real paths you opened, one line each: the path, then why it
+              changes.
+
+              #### Approach
+              The shape of the change, not a diff. Three to six sentences.
+
+              #### Tests
+              What proves it works. Name the runner if the repo has one.
+
+              #### Risks
+              The specific thing that could break. Omit this section when
+              there is nothing worth naming.
 
             Under 30 lines. Do not write an Effort, Priority or Risk level line.
             Those are fields, you set them below, and a fact written in two

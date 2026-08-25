@@ -1,3 +1,9 @@
+## [1.0.1](https://github.com/dodi-smart/.github/compare/v1.0.0...v1.0.1) (2026-08-25)
+
+### 🐛 Bug Fixes
+
+* **release:** cut a patch when a dependency updates ([7e119f1](https://github.com/dodi-smart/.github/commit/7e119f12523900e666cb040b649bdc52a82271a4))
+
 ## 1.0.0 (2026-08-25)
 
 ### Features

@@ -1,0 +1,200 @@
+# The standard tests itself.
+#
+# Everything here is deterministic and hosted-only. This repo is public, and a
+# public repo never touches a self-hosted runner.
+name: Self test
+
+on:
+  pull_request:
+    paths:
+      - 'actions/**'
+      - '.github/workflows/**'
+      - 'default.json5'
+      - '.releaserc.json'
+      - 'renovate.json'
+      - 'package.json'
+      - 'package-lock.json'
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: self-test-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+
+      # The kill switch is a claim about behaviour. Assert it.
+      - name: Agent gate behaviour
+        run: ./actions/agent-gate/test.sh
+
+      # Which comment a sticky run EDITS is the part that can be wrong quietly:
+      # picking wrong means a later run overwrites something it did not write.
+      - name: Sticky comment picks the right comment
+        run: ./actions/sticky-comment/test.sh
+
+      # `sticky-comment` is read only in tag mode, which a non-empty `prompt`
+      # switches off. The pair costs a full agent run and posts nothing.
+      # run-agent refuses it at runtime; this catches it at review time.
+      - name: No workflow asks for a sticky comment it will not get
+        run: |
+          set -euo pipefail
+          python3 -c "
+          import sys, glob, yaml
+          bad = []
+          for f in sorted(glob.glob('.github/workflows/*.yml')):
+              doc = yaml.safe_load(open(f)) or {}
+              for job in (doc.get('jobs') or {}).values():
+                  for step in (job.get('steps') or []) if isinstance(job, dict) else []:
+                      if 'run-agent@' not in str(step.get('uses', '')):
+                          continue
+                      w = step.get('with') or {}
+                      if str(w.get('sticky-comment')) == 'True' or w.get('sticky-comment') == 'true':
+                          if str(w.get('prompt', '')).strip():
+                              bad.append(f)
+          if bad:
+              print('::error::sticky-comment with a non-empty prompt in ' + ', '.join(bad)
+                    + '. A prompt selects agent mode, which creates no comment. Use track-progress, or tell the agent to post.')
+              sys.exit(1)
+          print('no run-agent call combines sticky-comment with a prompt')
+          "
+
+      # The picker's `case` block is the only place a preset is defined, and the
+      # README table is where people read it. Drift between them is how a
+      # retired pool keeps being documented as live.
+      - name: Runner presets match the README
+        run: |
+          set -euo pipefail
+          python3 - <<'PRESETS'
+          import re, sys
+
+          picker = open('.github/workflows/pick-runner.yml').read()
+          readme = open('README.md').read()
+
+          got = dict(re.findall(r'^\s+(light|heavy|apple|hosted)\)\s+sel="([^"]*)"',
+                                picker, re.M))
+
+          rows = {}
+          for name, sel in re.findall(r'^\|\s*.(light|heavy|apple|hosted).\s*\|([^|]*)\|',
+                                      readme, re.M):
+              sel = sel.strip().strip('`').strip()
+              rows[name] = '' if sel in ('', 'none') else sel
+
+          if len(got) != 4 or len(rows) != 4:
+              sys.exit('::error::parsed %d presets and %d README rows, expected 4 and 4. '
+                       'Refusing to report clean from a parse that found nothing.'
+                       % (len(got), len(rows)))
+
+          bad = [k for k in sorted(got) if got[k] != rows.get(k)]
+          if bad:
+              for k in bad:
+                  print('::error::%s: picker=%r README=%r' % (k, got[k], rows.get(k)))
+              sys.exit(1)
+
+          print('preset table agrees: %r' % got)
+          PRESETS
+
+      # Caching a project build directory is a governed rule, not a preference.
+      # Those paths hold absolute paths that do not survive a move between
+      # runners, and a per-SHA key falls through restore-keys to another
+      # branch's compiled output. See AGENTS.md.
+      - name: No workflow caches a build directory
+        run: |
+          set -euo pipefail
+          python3 -c "
+          import sys, glob, re, yaml
+          pat = re.compile(r'^(.*/)?(build|\.gradle)(/.*)?$')
+          bad = []
+          for f in sorted(glob.glob('.github/workflows/*.yml') + glob.glob('actions/*/action.yml')):
+              doc = yaml.safe_load(open(f)) or {}
+              jobs = list((doc.get('jobs') or {}).values())
+              jobs += [doc.get('runs') or {}]
+              for job in jobs:
+                  for step in (job.get('steps') or []) if isinstance(job, dict) else []:
+                      if 'actions/cache' not in str(step.get('uses', '')):
+                          continue
+                      for line in str((step.get('with') or {}).get('path', '')).splitlines():
+                          line = line.strip().lstrip('!')
+                          if line and pat.match(line):
+                              bad.append(f + ': ' + line)
+          if bad:
+              print('::error::a build directory is used as a cache path: ' + '; '.join(bad)
+                    + '. Reuse of compiled output is the build tool job, by content hash. See AGENTS.md.')
+              sys.exit(1)
+          print('no build directory is cached')
+          "
+
+      - name: Every workflow and action is parseable YAML
+        run: |
+          set -euo pipefail
+          python3 -c "
+          import sys, glob, yaml
+          bad = 0
+          for f in sorted(glob.glob('.github/workflows/*.yml') + glob.glob('actions/*/action.yml')):
+              try:
+                  yaml.safe_load(open(f))
+                  print('ok   ' + f)
+              except Exception as e:
+                  print('FAIL ' + f + ': ' + str(e)); bad += 1
+          sys.exit(bad)
+          "
+
+      # A JSON5 object literal is also a valid JavaScript expression, so this
+      # catches a malformed preset without pulling in a JSON5 parser. A broken
+      # preset silently disables Renovate config in every repo extending it.
+      - name: Renovate preset parses
+        run: |
+          node -e '
+            const o = eval("(" + require("fs").readFileSync("default.json5","utf8") + ")");
+            if (!Array.isArray(o.packageRules)) throw new Error("packageRules missing");
+            if (!o.labels.includes("deps:update")) throw new Error("deps:update label missing");
+            console.log("preset OK:", Object.keys(o).join(", "));
+          '
+
+      # A malformed .releaserc.json does not fail loudly, it just stops cutting
+      # releases, and the major tag every caller pins stops moving with it.
+      - name: Release and Renovate config parse
+        run: |
+          node -e '
+            const fs = require("fs");
+            const rel = JSON.parse(fs.readFileSync(".releaserc.json", "utf8"));
+            if (!rel.branches.includes("main")) throw new Error("releaserc: main is not a release branch");
+            const names = rel.plugins.map(p => Array.isArray(p) ? p[0] : p);
+            for (const need of ["@semantic-release/commit-analyzer", "@semantic-release/exec"]) {
+              if (!names.includes(need)) throw new Error("releaserc: missing " + need);
+            }
+            const exec = rel.plugins.find(p => Array.isArray(p) && p[0] === "@semantic-release/exec");
+            if (!/git tag -f v/.test(exec[1].successCmd)) throw new Error("releaserc: the major tag is never moved");
+            const ren = JSON.parse(fs.readFileSync("renovate.json", "utf8"));
+            if (!ren.baseBranchPatterns.includes("main")) throw new Error("renovate: baseBranchPatterns must name main, the preset says develop");
+            JSON.parse(fs.readFileSync("package.json", "utf8"));
+            console.log("release and renovate config OK");
+          '
+
+      - name: Shell scripts pass shellcheck
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
+          shellcheck actions/*/*.sh
+
+      # Run the binary, not `uses: docker://rhysd/actionlint`: that form
+      # word-splits `args` without honouring quotes, so an -ignore pattern with
+      # spaces is torn apart. The two ignores exist because actionlint's bundled
+      # snapshot predates create-github-app-token moving to `client-id`.
+      - name: actionlint
+        env:
+          ACTIONLINT_VERSION: 1.7.12
+        run: |
+          set -euo pipefail
+          bash <(curl -fsSL https://raw.githubusercontent.com/rhysd/actionlint/main/scripts/download-actionlint.bash) \
+            "$ACTIONLINT_VERSION" >/dev/null
+          ./actionlint -color \
+            -ignore 'input "client-id" is not defined in action "actions/create-github-app-token' \
+            -ignore 'missing input "app-id" which is required by action "actions/create-github-app-token'

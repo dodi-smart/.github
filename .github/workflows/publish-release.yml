@@ -1,0 +1,52 @@
+# This repo's own release. Cuts a version from main with semantic-release, then
+# moves the major tag that every caller pins.
+#
+# It does NOT call the reusable release.yml, and cannot. That workflow uses
+# actions/setup-stack@v1, and on a fresh repo no v1 exists yet, so the first
+# release could never run: the tag needs the release and the release needs the
+# tag. A relative `./` reference does not help either, because inside a reusable
+# workflow it resolves against the CALLING repo.
+#
+# Hosted on purpose. This repo is public, the org runner group refuses public
+# repos, and a self-hosted job here would queue rather than fail.
+name: Publish release
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: publish-release
+  cancel-in-progress: false
+
+permissions:
+  contents: write        # push the changelog commit and the tags
+  issues: write          # semantic-release comments on released issues
+  pull-requests: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      # Full history, or the commit analyser cannot see what changed since the
+      # last tag and every run looks like the first one.
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: true
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: lts/*
+
+      # From the lockfile, so a release installs the same tree every time.
+      # Renovate keeps package.json and the lockfile current together.
+      - name: Install semantic-release
+        run: npm ci
+
+      - name: Release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: npx semantic-release

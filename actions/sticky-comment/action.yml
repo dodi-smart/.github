@@ -1,0 +1,49 @@
+# One comment per key on a pull request, edited in place on every later run.
+# Thin wrapper; the mechanics and the reasoning are in sticky.sh.
+name: Sticky comment
+description: Create a keyed comment on a pull request, or edit the existing one in place.
+
+inputs:
+  key:
+    description: >-
+      Identifies this comment among any others on the same PR. One key per kind
+      of report, stable across runs. Changing it strands the old comment.
+    required: true
+  body-file:
+    description: >-
+      File holding the comment body. A missing or empty file is an ERROR, so a
+      report that was never written cannot pass silently.
+    required: true
+  number:
+    description: 'Pull request or issue number'
+    required: true
+  repository:
+    description: 'owner/repo'
+    default: ${{ github.repository }}
+  token:
+    description: 'Token to comment with. Needs pull-requests: write.'
+    default: ${{ github.token }}
+
+outputs:
+  action:
+    description: '"created" on the first run for this key, "updated" after'
+    value: ${{ steps.sticky.outputs.action }}
+  id:
+    description: 'Comment id'
+    value: ${{ steps.sticky.outputs.id }}
+  url:
+    description: 'Comment URL'
+    value: ${{ steps.sticky.outputs.url }}
+
+runs:
+  using: composite
+  steps:
+    - id: sticky
+      shell: bash
+      env:
+        KEY:       ${{ inputs.key }}
+        BODY_FILE: ${{ inputs.body-file }}
+        NUMBER:    ${{ inputs.number }}
+        REPO:      ${{ inputs.repository }}
+        GH_TOKEN:  ${{ inputs.token }}
+      run: ${{ github.action_path }}/sticky.sh

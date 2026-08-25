@@ -1,0 +1,321 @@
+# Install a toolchain, and decide where its package cache lives.
+#
+# Stack is a VALUE, so it is an input rather than one caller template per stack.
+# Five stacks across three workflows would otherwise be fifteen files to keep in
+# agreement, and the Gradle one had already grown a product-specific task name.
+#
+# Cache modes, resolved below:
+#
+#   isolate=true             -> RUNNER_TEMP dirs, GitHub cache off (deps-verify)
+#   self-hosted Linux ARM64  -> isolated anyway; matches no runner today, and is
+#                               kept because it describes a class of machine
+#   self-hosted X64          -> home dirs, GitHub cache off; the named volume
+#                               the runner image mounts IS the cache
+#   github-hosted            -> home dirs, and cache=auto becomes true
+#
+# Two rules that are easy to undo by accident:
+#
+#   PUB_CACHE is job-scoped in EVERY mode. A home dir is only worth using if a
+#   named volume backs it, and the image mounts none for ~/.pub-cache.
+#
+#   Hosted GitHub cache is ONE mechanism per stack (setup-gradle / rust-cache /
+#   flutter-action). Never a package store, and never restore-keys on one, which
+#   is how a poisoned entry reimports.
+name: Setup stack
+description: Install the toolchain for a stack and resolve its package-cache mode.
+
+inputs:
+  stack:
+    description: 'bun | node | gradle | android | flutter | rust | xcode | none'
+    required: true
+  node-version:
+    description: 'For stack=node, and for semantic-release on any stack'
+    default: '24'
+  bun-version:
+    description: 'For stack=bun'
+    default: 'latest'
+  java-version:
+    description: 'For gradle/android/flutter. Empty skips the JDK on flutter.'
+    default: '21'
+  flutter-version:
+    description: 'For stack=flutter. Empty takes the channel head.'
+    default: ''
+  flutter-channel:
+    description: 'For stack=flutter'
+    default: 'stable'
+  rust-toolchain:
+    description: 'For stack=rust'
+    default: 'stable'
+  rust-components:
+    description: 'For stack=rust, e.g. "clippy, rustfmt"'
+    default: 'clippy, rustfmt'
+  xcode-version:
+    description: 'For stack=xcode. Empty takes the runner default.'
+    default: ''
+  isolate:
+    description: >-
+      Pin package caches to RUNNER_TEMP and disable GitHub cache. Forced on for
+      self-hosted Linux ARM64. Default false: X64 self-hosted uses home dirs
+      backed by named volumes, hosted uses home dirs plus the toolchain cache
+      actions. PUB_CACHE is job-scoped either way.
+    default: 'false'
+  cache:
+    description: >-
+      auto | true | false. auto becomes true only on github-hosted, and is
+      ignored when isolated or on self-hosted (those never use GitHub cache).
+      Applies to setup-gradle / rust-cache / flutter-action only, never bun.
+    default: 'auto'
+
+  env:
+    description: >-
+      Newline-separated KEY=VALUE applied to every command step the caller runs.
+      Written to a sourceable file rather than $GITHUB_ENV, because GitHub
+      refuses a few names there, NODE_OPTIONS among them, since it can inject
+      code into node processes the runner itself spawns, and that is exactly the
+      variable a Next.js build needs. Read the path from the `env-file` output
+      and source it. Placeholders and build tuning only, never secrets: a value
+      that must stay secret has no business in a PR build log.
+    default: ''
+
+  # Command overrides. "@stack" means the conventional command for this stack;
+  # an explicit empty string means the repo has no such step. Those differ, and
+  # a plain default cannot express both. Resolved here so callers read
+  # `steps.setup.outputs.install` instead of reimplementing the precedence.
+  install:   { description: 'Override the install command',   default: '@stack' }
+  lint:      { description: 'Override the lint command',      default: '@stack' }
+  typecheck: { description: 'Override the typecheck command', default: '@stack' }
+  test:      { description: 'Override the test command',      default: '@stack' }
+  build:     { description: 'Override the build command',     default: '@stack' }
+
+outputs:
+  env-file:
+    description: >-
+      Path to a shell file exporting the `env` input. Always written, empty when
+      nothing was given, so a caller can source it unconditionally.
+    value: ${{ steps.stepenv.outputs.file }}
+  install:
+    description: 'Resolved install command: the override, or the stack default. Empty means skip.'
+    value: ${{ steps.defaults.outputs.install }}
+  lint:
+    description: 'Resolved lint command. Empty means skip.'
+    value: ${{ steps.defaults.outputs.lint }}
+  typecheck:
+    description: 'Resolved typecheck command. Empty means skip.'
+    value: ${{ steps.defaults.outputs.typecheck }}
+  test:
+    description: 'Resolved test command. Empty means skip.'
+    value: ${{ steps.defaults.outputs.test }}
+  build:
+    description: 'Resolved build command. Empty means skip.'
+    value: ${{ steps.defaults.outputs.build }}
+
+runs:
+  using: composite
+  steps:
+    - id: resolve
+      shell: bash
+      env:
+        STACK: ${{ inputs.stack }}
+        ISOLATE: ${{ inputs.isolate }}
+        CACHE: ${{ inputs.cache }}
+        RUNNER_ENVIRONMENT: ${{ runner.environment }}
+        RUNNER_ARCH: ${{ runner.arch }}
+        RUNNER_OS: ${{ runner.os }}
+      run: |
+        set -euo pipefail
+        case "$STACK" in
+          bun|node|gradle|android|flutter|rust|xcode|none) : ;;
+          *) echo "::error::unknown stack '$STACK' (expected bun|node|gradle|android|flutter|rust|xcode|none)"; exit 1 ;;
+        esac
+        case "$CACHE" in
+          auto|true|false) : ;;
+          *) echo "::error::cache must be auto, true, or false (got '$CACHE')"; exit 1 ;;
+        esac
+
+        # isolate=true, or self-hosted Linux ARM64. Deliberately not plain
+        # ARM64: the macOS runners are ARM64 too and have no volumes to grow.
+        do_isolate=false
+        if [ "$ISOLATE" = "true" ]; then
+          do_isolate=true
+        elif [ "${RUNNER_ENVIRONMENT:-}" = "self-hosted" ] \
+          && [ "${RUNNER_OS:-}" = "Linux" ] && [ "${RUNNER_ARCH:-}" = "ARM64" ]; then
+          do_isolate=true
+        fi
+
+        # GitHub Actions cache: never when isolated, never on self-hosted.
+        # auto becomes true only on github-hosted. An unknown environment falls
+        # through to hosted, so a job that lands on ubuntu-latest still caches.
+        cache_enabled=false
+        if [ "$do_isolate" != "true" ] && [ "${RUNNER_ENVIRONMENT:-}" != "self-hosted" ]; then
+          if [ "$CACHE" = "true" ] || [ "$CACHE" = "auto" ]; then
+            cache_enabled=true
+          fi
+        fi
+
+        # No volume backs ~/.pub-cache and the image's LRU cap does not reach
+        # it, so it is job-scoped in every mode. See the header.
+        echo "PUB_CACHE=${RUNNER_TEMP}/pub-cache" >> "$GITHUB_ENV"
+
+        if [ "$do_isolate" = "true" ]; then
+          {
+            echo "BUN_INSTALL_CACHE_DIR=${RUNNER_TEMP}/bun-cache"
+            echo "npm_config_cache=${RUNNER_TEMP}/npm-cache"
+            # pnpm reads npm_config_* as its own config: npm_config_store_dir
+            # is store-dir, npm_config_cache_dir is cache-dir. npm's `cache`
+            # setting above is NOT pnpm's, so both are needed. Without them
+            # an isolated job still wrote to the shared ~/.cache/pnpm store.
+            echo "npm_config_store_dir=${RUNNER_TEMP}/pnpm-store"
+            echo "npm_config_cache_dir=${RUNNER_TEMP}/pnpm-cache"
+            # Berry derives YARN_CACHE_FOLDER/YARN_GLOBAL_FOLDER from
+            # cacheFolder/globalFolder; classic reads YARN_CACHE_FOLDER.
+            echo "YARN_CACHE_FOLDER=${RUNNER_TEMP}/yarn-cache"
+            echo "YARN_GLOBAL_FOLDER=${RUNNER_TEMP}/yarn-global"
+            echo "GRADLE_USER_HOME=${RUNNER_TEMP}/gradle-home"
+            echo "CARGO_HOME=${RUNNER_TEMP}/cargo-home"
+          } >> "$GITHUB_ENV"
+        fi
+
+        {
+          echo "isolated=$do_isolate"
+          echo "cache_enabled=$cache_enabled"
+        } >> "$GITHUB_OUTPUT"
+        echo "stack: $STACK, isolate=$do_isolate, cache=$cache_enabled (input cache=$CACHE, env=${RUNNER_ENVIRONMENT:-unknown}/${RUNNER_OS:-unknown}/${RUNNER_ARCH:-unknown})"
+
+    - if: inputs.stack == 'bun'
+      uses: oven-sh/setup-bun@v2
+      with:
+        bun-version: ${{ inputs.bun-version }}
+        # The bun install cache is never uploaded to GitHub on any runner.
+        # setup-bun's cache of the bun executable stays on: exact key, not a store.
+
+    - if: inputs.stack == 'node'
+      uses: actions/setup-node@v7
+      with:
+        node-version: ${{ inputs.node-version }}
+        # No cache: npm. Hosted cache is one mechanism per stack, and this
+        # action never uploads a package store under restore-keys.
+
+    - if: (inputs.stack == 'gradle' || inputs.stack == 'android') || (inputs.stack == 'flutter' && inputs.java-version != '')
+      uses: actions/setup-java@v5
+      with:
+        java-version: ${{ inputs.java-version }}
+        distribution: temurin
+        # No cache: gradle. The hosted Gradle cache is setup-gradle's job.
+
+    - if: inputs.stack == 'gradle' || inputs.stack == 'android'
+      uses: gradle/actions/setup-gradle@v6
+      with:
+        # Publishing a build scan from a verification job leaks the dependency
+        # graph of a private repo to a third party. Off unless a repo opts in.
+        build-scan-publish: false
+        cache-disabled: ${{ steps.resolve.outputs.cache_enabled != 'true' }}
+
+    - if: inputs.stack == 'android'
+      uses: android-actions/setup-android@v4
+
+    - if: inputs.stack == 'flutter'
+      uses: subosito/flutter-action@v2
+      with:
+        flutter-version: ${{ inputs.flutter-version }}
+        channel: ${{ inputs.flutter-channel }}
+        cache: ${{ steps.resolve.outputs.cache_enabled == 'true' }}
+
+    # Pinned to @master with an explicit `toolchain`, which is how this action
+    # is meant to be parameterised. The `@stable` form the README leads with
+    # hardcodes the channel in the ref and cannot be overridden by an input.
+    - if: inputs.stack == 'rust'
+      uses: dtolnay/rust-toolchain@master
+      with:
+        toolchain: ${{ inputs.rust-toolchain }}
+        components: ${{ inputs.rust-components }}
+
+    - if: inputs.stack == 'rust' && steps.resolve.outputs.cache_enabled == 'true'
+      uses: Swatinem/rust-cache@v2
+
+    - if: inputs.stack == 'xcode' && inputs.xcode-version != ''
+      uses: maxim-lobanov/setup-xcode@v1
+      with:
+        xcode-version: ${{ inputs.xcode-version }}
+
+    # The caller's step environment, parsed once so every command step is a
+    # one-line `source`. `IFS='='` splits on the FIRST `=` only, so URLs and
+    # base64 survive, and `%q` quotes the value so GRADLE_OPTS arrives as a
+    # string of flags rather than one word.
+    - id: stepenv
+      shell: bash
+      env:
+        STEP_ENV: ${{ inputs.env }}
+      run: |
+        set -euo pipefail
+        file="${RUNNER_TEMP}/setup-stack-env.sh"
+        : > "$file"
+        if [ -n "${STEP_ENV:-}" ]; then
+          while IFS='=' read -r k v; do
+            k="${k#"${k%%[![:space:]]*}"}"
+            [ -z "$k" ] && continue
+            case "$k" in \#*) continue ;; esac
+            printf 'export %s=%q\n' "$k" "$v" >> "$file"
+          done <<< "$STEP_ENV"
+        fi
+        echo "file=$file" >> "$GITHUB_OUTPUT"
+        echo "step environment: $(wc -l < "$file" | tr -d ' ') variable(s)"
+
+    # Conventional commands per stack, so a caller that has nothing unusual to
+    # say can name its stack and stop. Anything explicit wins over these.
+    - id: defaults
+      shell: bash
+      env:
+        STACK:       ${{ inputs.stack }}
+        O_INSTALL:   ${{ inputs.install }}
+        O_LINT:      ${{ inputs.lint }}
+        O_TYPECHECK: ${{ inputs.typecheck }}
+        O_TEST:      ${{ inputs.test }}
+        O_BUILD:     ${{ inputs.build }}
+      run: |
+        set -euo pipefail
+        install=""; lint=""; typecheck=""; test=""; build=""
+        case "$STACK" in
+          bun)
+            install="bun install --frozen-lockfile"
+            lint="bun run lint"; typecheck="bun run typecheck"
+            test="bun run test:run"; build="bun run build" ;;
+          node)
+            install="npm ci"
+            lint="npm run lint"; typecheck="npm run typecheck"
+            test="npm test"; build="npm run build" ;;
+          gradle|android)
+            # Gradle resolves on demand; there is no separate install step.
+            lint="./gradlew ktlintCheck"
+            test="./gradlew test"; build="./gradlew assemble" ;;
+          flutter)
+            install="flutter pub get"
+            lint="flutter analyze"
+            test="flutter test"; build="flutter build apk --debug" ;;
+          rust)
+            lint="cargo clippy --all-targets -- -D warnings"
+            typecheck="cargo check --all-targets"
+            test="cargo test --all"; build="cargo build --release" ;;
+          xcode)
+            lint="swiftlint --strict"
+            test="xcodebuild test -scheme \"\$SCHEME\" -destination 'platform=iOS Simulator,name=iPhone 15'"
+            build="xcodebuild build -scheme \"\$SCHEME\"" ;;
+          none) : ;;
+        esac
+        # "@stack" -> the conventional command above. Anything else, empty
+        # string included, is taken literally.
+        pick() { if [ "$1" = "@stack" ]; then printf '%s' "$2"; else printf '%s' "$1"; fi; }
+
+        # Delimiter form, not `echo "k=v"`. A caller's command may span lines,
+        # which `k=v` would write into $GITHUB_OUTPUT as if they were outputs.
+        emit() {
+          {
+            printf '%s<<__SETUP_STACK_EOF__\n' "$1"
+            printf '%s\n' "$2"
+            printf '__SETUP_STACK_EOF__\n'
+          } >> "$GITHUB_OUTPUT"
+        }
+        emit install   "$(pick "$O_INSTALL" "$install")"
+        emit lint      "$(pick "$O_LINT" "$lint")"
+        emit typecheck "$(pick "$O_TYPECHECK" "$typecheck")"
+        emit test      "$(pick "$O_TEST" "$test")"
+        emit build     "$(pick "$O_BUILD" "$build")"

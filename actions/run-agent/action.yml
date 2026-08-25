@@ -1,0 +1,98 @@
+# Run claude-code-action with the org's settled defaults.
+#
+# Bash is allowed broadly on purpose. The bound is not the allowlist: the action
+# refuses to run for an actor without write access, so untrusted content only
+# reaches the agent when someone trusted invokes it. The real guards are
+# elsewhere and must not be removed. `agent:no-touch` is checked before every
+# other condition, and public repos and fork PRs never touch a self-hosted
+# runner.
+#
+# Three footguns are repeated below because the code reads as wrong without them:
+#
+#   `--allowed-tools` is VARIADIC, space-separated, each entry quoted if it
+#   contains parentheses. A comma-joined list parses as one meaningless token:
+#   nothing matches, every Bash call is denied, and the job reports SUCCESS.
+#
+#   `display_report` defaults to false, so a run that did nothing looks exactly
+#   like a run that worked. Forced on below.
+#
+#   A non-empty `prompt` selects AGENT mode, which creates no comment at all.
+#   `use_sticky_comment` is read only in tag mode, so pairing the two posts
+#   nothing. The guard below refuses that pair instead of passing green.
+name: Run agent
+description: Invoke claude-code-action with the org's tool allowlist, model policy and reporting defaults.
+
+inputs:
+  oauth-token:
+    description: 'CLAUDE_CODE_OAUTH_TOKEN'
+    required: true
+  prompt:
+    description: 'The prompt, or a plugin slash command'
+    required: true
+  model:
+    description: >-
+      Which model. Judgement work (reading unfamiliar code, deciding plan-vs-questions,
+      reviewing a diff) earns opus. Mechanical work against an answer the deterministic
+      gate already produced does not.
+    default: 'claude-opus-5'
+  allowed-tools:
+    description: 'Variadic, space-separated. See the header before changing.'
+    default: 'Bash "Bash(gh:*)" Read Grep Glob'
+  append-system-prompt:
+    description: 'Extra system-prompt text, appended after house-style. Must be ONE LINE, with no double quotes, backticks or dollar signs, because it is interpolated into a double-quoted shell argument.'
+    default: ''
+  house-style:
+    description: >-
+      The org writing-style rule, prepended to append-system-prompt on every
+      run. Same one-line constraint as append-system-prompt. Do not override
+      this to change the rule. Edit the default here, so every workflow picks
+      up the fix at once.
+    default: 'House writing style for everything you write, issue comments and PR bodies alike. Be plain and direct, like telling a colleague what happened. One idea per sentence, and split anything that makes the reader backtrack. Active voice, name the actor. No em dashes, use a period or a comma. Sentence case headings. No inline-header bullets, write the sentence instead. Cut words that sound technical and say nothing: surface, harness, substrate, vector, primitive, pivotal, delve, underscore, crucial, leverage, foster, showcase. Skip the pattern not just X but Y, state the point once. Prefer the plain word, use instead of leverage, help instead of facilitate. Write to the person who has to act on this today. No preamble, do not restate the request back, and no chatbot enthusiasm.'
+  sticky-comment:
+    description: >-
+      Update one comment instead of adding a new one each run. TAG MODE ONLY,
+      so only when `prompt` is empty. Setting it with a prompt is an error.
+    default: 'false'
+  track-progress:
+    description: 'Post a live progress comment, so a run in flight is visible rather than silent'
+    default: 'false'
+  allowed-bots:
+    description: 'Comma-separated bot logins permitted to initiate. Named explicitly, never "*".'
+    default: ''
+  plugins:
+    description: 'Plugin spec, e.g. code-review@claude-code-plugins'
+    default: ''
+  plugin-marketplaces:
+    description: 'Marketplace URL for the above'
+    default: ''
+  additional-permissions:
+    description: 'YAML block, e.g. "actions: read"'
+    default: ''
+
+runs:
+  using: composite
+  steps:
+    # Fail fast on the combination that silently posts nothing. See the header.
+    - name: Reject a sticky comment agent mode will ignore
+      if: inputs.sticky-comment == 'true' && inputs.prompt != ''
+      shell: bash
+      run: |
+        echo "::error::sticky-comment is set alongside a non-empty prompt. A prompt selects agent mode, which creates no comment, so this run would report only to the job summary. Use track-progress for a live comment, or instruct the agent to post with gh pr comment."
+        exit 1
+
+    - uses: anthropics/claude-code-action@v1
+      with:
+        claude_code_oauth_token: ${{ inputs.oauth-token }}
+        prompt: ${{ inputs.prompt }}
+        use_sticky_comment: ${{ inputs.sticky-comment }}
+        track_progress: ${{ inputs.track-progress }}
+        allowed_bots: ${{ inputs.allowed-bots }}
+        plugins: ${{ inputs.plugins }}
+        plugin_marketplaces: ${{ inputs.plugin-marketplaces }}
+        additional_permissions: ${{ inputs.additional-permissions }}
+        # Never optional. See the header.
+        display_report: true
+        claude_args: >-
+          --model ${{ inputs.model }}
+          --allowed-tools ${{ inputs.allowed-tools }}
+          ${{ format('--append-system-prompt "{0} {1}"', inputs.house-style, inputs.append-system-prompt) }}

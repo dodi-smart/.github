@@ -1,3 +1,13 @@
+## [1.0.2](https://github.com/dodi-smart/.github/compare/v1.0.1...v1.0.2) (2026-08-25)
+
+### 🐛 Bug Fixes
+
+* **ci:** run Self test on every pull request, not a filtered subset ([bee32dc](https://github.com/dodi-smart/.github/commit/bee32dcdeadfdebdad99afb452b89d5dd8ea57f5))
+
+### ⬆️ Dependencies
+
+* **deps:** update actions/setup-java action to v6 ([b53a5c2](https://github.com/dodi-smart/.github/commit/b53a5c2c98076fb7bc0764291c7eacca45e4d371))
+
 ## [1.0.1](https://github.com/dodi-smart/.github/compare/v1.0.0...v1.0.1) (2026-08-25)
 
 ### 🐛 Bug Fixes

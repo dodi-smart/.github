@@ -1,0 +1,246 @@
+# Reusable: choose a runner, and say so out loud when the choice is wrong.
+#
+#   jobs:
+#     pick-light:
+#       uses: dodi-smart/.github/.github/workflows/pick-runner.yml@v1
+#       with: { weight: light }
+#       secrets: inherit
+#     lint:
+#       needs: [pick-light]
+#       runs-on: ${{ fromJson(needs.pick-light.outputs.runner) }}
+#
+# Selection is by capability label, never by architecture and never by machine
+# name. An architecture pins a tier of intent to this month's hardware, and a
+# machine name does not survive re-registration.
+#
+# Centralising the selector is the point. A lost or renamed label is one commit
+# here rather than one per workflow per repo. Falling back on error is correct,
+# and it also makes a selector that matches nothing look exactly like a busy
+# fleet, which is why the validation step below exists.
+name: Pick runner
+
+on:
+  workflow_call:
+    inputs:
+      # Semantic preset. Prefer this over `labels`, so re-tiering the fleet is
+      # one edit here rather than an audit of every caller.
+      #   light   lint, typecheck, checks, releases, reading a diff
+      #   heavy   builds, Docker, full suites
+      #   apple   Xcode, iOS, Swift, signing
+      #   hosted  force GitHub-hosted, skip self-hosted entirely
+      #
+      # These name TIERS OF INTENT, not machine classes, and they select on
+      # capability labels with NO architecture. A runner of any arch that joins
+      # a pool is picked up without a change here.
+      weight:
+        type: string
+        default: light
+
+      # Escape hatch for a stack the presets do not describe, e.g. a job needing
+      # the `docker` label, or an Android build needing an SDK-bearing image.
+      # Wins over `weight` when non-empty. Validated like any other selector, so a
+      # typo here is reported rather than silently downgraded to hosted.
+      labels:
+        type: string
+        default: ""
+
+      # Where a self-hosted selector falls back to when its pool cannot be
+      # reached. The light pool, so an unreachable large pool costs capacity
+      # rather than hosted minutes. A self-hosted fallback QUEUES when the fleet
+      # is offline, where a hosted one would run, so set this to `ubuntu-latest`
+      # for a job that must finish even then.
+      fallback:
+        type: string
+        default: "self-hosted,Linux,light"
+
+      # The runner used whenever self-hosted is off the table: `weight: hosted`,
+      # and the public-repo and fork-PR path. That path never reads `fallback`,
+      # so `fallback` can never point it at our own hardware.
+      hosted-runner:
+        type: string
+        default: "ubuntu-latest"
+
+      # Self-hosted is refused on public repos by org policy and is unsafe for
+      # fork PRs. Leave this on unless you know exactly why not.
+      guard-public:
+        type: boolean
+        default: true
+
+    outputs:
+      runner:
+        description: "JSON array of labels for runs-on, via fromJson()"
+        value: ${{ jobs.pick.outputs.runner }}
+      selector:
+        description: "The resolved selector, for logging"
+        value: ${{ jobs.pick.outputs.selector }}
+
+    secrets:
+      GH_APP_CLIENT_ID:   { required: false }
+      GH_APP_PRIVATE_KEY: { required: false }
+
+jobs:
+  pick:
+    name: Pick runner
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      runner:   ${{ steps.out.outputs.runner }}
+      selector: ${{ steps.resolve.outputs.selector }}
+    steps:
+      - id: resolve
+        env:
+          WEIGHT:  ${{ inputs.weight }}
+          LABELS:  ${{ inputs.labels }}
+          PRIVATE: ${{ github.event.repository.private }}
+          FORK:    ${{ github.event.pull_request.head.repo.fork }}
+          GUARD:   ${{ inputs.guard-public }}
+        run: |
+          set -euo pipefail
+
+          # Public repos and fork PRs never touch self-hosted, with no opt-out.
+          # The runner group refuses public repos, and a fork PR would otherwise
+          # run attacker-authored code on our hardware against a cache the next
+          # job inherits. This path resolves through `hosted-runner` below and
+          # never reads `fallback`.
+          if [ "$GUARD" = "true" ] && { [ "$PRIVATE" != "true" ] || [ "$FORK" = "true" ]; }; then
+            echo "public repo or fork PR, hosted only"
+            echo "selector=" >> "$GITHUB_OUTPUT"
+            echo "hosted=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if [ -n "${LABELS:-}" ]; then
+            sel="$LABELS"
+          else
+            case "$WEIGHT" in
+              light)  sel="self-hosted,Linux,light" ;;
+              heavy)  sel="self-hosted,Linux,large" ;;
+              apple)  sel="self-hosted,macOS,ARM64" ;;
+              hosted) sel="" ;;
+              *)
+                echo "::error::unknown weight '$WEIGHT' (expected light|heavy|apple|hosted, or set the labels input)"
+                exit 1 ;;
+            esac
+          fi
+
+          if [ -z "$sel" ]; then
+            echo "selector=" >> "$GITHUB_OUTPUT"; echo "hosted=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "selector=$sel" >> "$GITHUB_OUTPUT"; echo "hosted=false" >> "$GITHUB_OUTPUT"
+            echo "resolved selector: $sel"
+          fi
+
+      # GH_APP_CLIENT_ID is the ONE name for this secret across the org.
+      # Migrate a repo carrying the older GH_APP_ID rather than teaching this
+      # workflow two names.
+      #
+      # Absence is announced, never silent. Without the app token, validation
+      # below falls back to github.token, which cannot read the org runner list,
+      # and a skipped check reads exactly like a clean pass.
+      - id: have-app
+        if: steps.resolve.outputs.hosted == 'false'
+        env:
+          CLIENT_ID: ${{ secrets.GH_APP_CLIENT_ID }}
+        run: |
+          if [ -n "${CLIENT_ID:-}" ]; then
+            echo "yes=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "yes=false" >> "$GITHUB_OUTPUT"
+            echo "::warning title=Runner selector cannot be validated::GH_APP_CLIENT_ID is not set on this repository, so the org runner list cannot be read. The job will still run, but a selector matching no runner will fall back to hosted WITHOUT telling you. Add GH_APP_CLIENT_ID and GH_APP_PRIVATE_KEY to fix."
+          fi
+
+      - id: app-token
+        if: steps.have-app.outputs.yes == 'true'
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id:   ${{ secrets.GH_APP_CLIENT_ID }}
+          private-key: ${{ secrets.GH_APP_PRIVATE_KEY }}
+          owner:       ${{ github.repository_owner }}
+
+      # Reports rather than fails. A selector matching nothing still runs on the
+      # fallback, and breaking CI over it would be worse than the bug.
+      - id: validate
+        if: steps.resolve.outputs.hosted == 'false'
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token || github.token }}
+          SEL:      ${{ steps.resolve.outputs.selector }}
+          ORG:      ${{ github.repository_owner }}
+        run: |
+          # Steps run as `bash -e {0}` and `set -uo pipefail` does not clear
+          # `-e`. This step must report rather than fail, hence `set +e`.
+          set +e
+          set -uo pipefail
+          # Key off gh's OWN exit status, captured separately. Piping into
+          # `jq -s` masks a gh failure, because a pipeline's status is the last
+          # command's, and jq slurps the error body into a one-element array
+          # that passes a length check.
+          #
+          # Never claim the fleet lacks a label unless the fleet was read.
+          raw=$(gh api "/orgs/$ORG/actions/runners" --paginate \
+                --jq '.runners[] | {name,labels:[.labels[].name]}' 2>/dev/null)
+          gh_rc=$?
+
+          runners='[]'
+          if [ "$gh_rc" -eq 0 ] && [ -n "$raw" ]; then
+            runners=$(jq -s '.' <<<"$raw" 2>/dev/null) || runners='[]'
+          fi
+          count=$(jq 'length' <<<"$runners" 2>/dev/null || echo 0)
+
+          if [ "$gh_rc" -ne 0 ]; then
+            echo "::warning title=Runner selector was NOT validated::Could not read the org runner list (gh exited $gh_rc), so '$SEL' was NOT checked against the live fleet. This says nothing about whether the labels exist. Usually the GitHub App token is missing or lacks org scope. See GH_APP_CLIENT_ID."
+            exit 0
+          fi
+          if [ "$count" -eq 0 ]; then
+            echo "::warning title=Runner selector was NOT validated::The org reports no self-hosted runners at all, so '$SEL' could not be checked. If that is unexpected, the fleet is offline or the token cannot see it."
+            exit 0
+          fi
+
+          missing=""
+          IFS=',' read -ra want <<<"$SEL"
+          for l in "${want[@]}"; do
+            l="$(echo "$l" | xargs)"
+            jq -e --arg l "$l" 'any(.[]; .labels|index($l))' >/dev/null <<<"$runners" || missing="$missing $l"
+          done
+
+          if [ -n "$missing" ]; then
+            all=$(jq -r '[.[].labels[]]|unique|join(" ")' <<<"$runners")
+            echo "::warning title=Runner selector matches nothing::'$SEL' asks for label(s):$missing, which no runner carries. This job will run on hosted and report success, the same silent failure that hid for months. Fleet labels: $all"
+            exit 0
+          fi
+
+          n=$(jq --arg s "$SEL" '
+            ($s | split(",") | map(gsub("^\\s+|\\s+$"; ""))) as $want
+            | [ .[] | . as $r | select( all($want[]; . as $l | ($r.labels|index($l)) != null) ) ]
+            | length' <<<"$runners")
+          if [ "$n" = "0" ]; then
+            echo "::warning title=Runner selector matches nothing::Every label in '$SEL' exists, but no single runner carries them together. Falling back to hosted."
+          else
+            echo "selector '$SEL' matches $n runner(s)"
+          fi
+
+      - id: fallback
+        if: steps.resolve.outputs.hosted == 'false'
+        uses: dodi-smart/runner-fallback-action@v2
+        with:
+          organization:      ${{ github.repository_owner }}
+          primary-runner:    ${{ steps.resolve.outputs.selector }}
+          fallback-runner:   ${{ inputs.fallback }}
+          github-token:      ${{ steps.app-token.outputs.token || github.token }}
+          fallback-on-error: true
+
+      - id: out
+        env:
+          PICKED: ${{ steps.fallback.outputs.use-runner }}
+          HOSTED: ${{ inputs.hosted-runner }}
+        run: |
+          set -euo pipefail
+          if [ -n "${PICKED:-}" ]; then
+            echo "runner=$PICKED" >> "$GITHUB_OUTPUT"
+          else
+            # Hosted-only path, or the picker was skipped. Emit valid JSON so
+            # fromJson() in the caller does not fail the job, splitting the
+            # selector into the array runs-on expects.
+            jq -cn --arg s "$HOSTED" \
+              '$s | split(",") | map(gsub("^\\s+|\\s+$"; "")) | "runner=" + tojson' \
+              -r >> "$GITHUB_OUTPUT"
+          fi

@@ -4,16 +4,13 @@
 # public repo never touches a self-hosted runner.
 name: Self test
 
+# No `paths:` filter on purpose. The run takes about 15 seconds, and two of the
+# checks read files a filter would have to list: the preset check compares the
+# README runner table against the picker, so a README-only change can break it.
+# A filter also makes this unusable as a required check, since a filtered-out
+# pull request produces no check run at all and could never merge.
 on:
   pull_request:
-    paths:
-      - 'actions/**'
-      - '.github/workflows/**'
-      - 'default.json5'
-      - '.releaserc.json'
-      - 'renovate.json'
-      - 'package.json'
-      - 'package-lock.json'
   push:
     branches: [main]
   workflow_dispatch:

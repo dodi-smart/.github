@@ -1,0 +1,329 @@
+# Reusable: second-opinion review on a pull request.
+#
+# Uses Anthropic's maintained `code-review` plugin rather than a hand-written
+# prompt. The gate's job is to decide WHETHER to review and HOW DEEPLY; what a
+# good review looks like is the plugin's problem, and it is better at it.
+#
+# Triggers are deliberately narrow. Reviewing on every push is what gets a
+# review bot muted, and a muted bot reviews nothing. The caller fires this on
+# `ready_for_review` and on the `agent:review` label, never on `synchronize`.
+name: PR Review
+
+on:
+  workflow_call:
+    inputs:
+      runner-weight:
+        type: string
+        default: "light"     # light | heavy | apple | hosted
+      runner-labels:
+        type: string
+        default: ""       # explicit selector; wins over runner-weight
+
+      # Review depth. low|medium: fewer, high-confidence findings.
+      # high|xhigh|max: broader coverage, may include uncertain ones.
+      #
+      # Carried in the SYSTEM PROMPT, never as an argument: the plugin's slash
+      # command parses `--comment` and discards anything else on the line.
+      level:           { type: string, default: "medium" }
+      elevated-level:  { type: string, default: "high" }
+
+      # Paths that earn `elevated-level`, as an ERE matched against changed files.
+      # The default names concepts rather than a stack, because no two repos here
+      # share a vocabulary. Override per repo: a pattern matching nothing
+      # silently downgrades every review to the base level.
+      sensitive-paths:
+        type: string
+        default: >-
+          (auth|login|signup|session|token|jwt|oauth|saml|password|credential|secret|vault|keystore|
+          payment|billing|invoice|checkout|subscription|payout|
+          permission|role|policy|acl|rbac|tenant|
+          crypt|cipher|sign|hash|
+          migration|schema|
+          middleware|proxy|cors|csp|webhook|
+          Dockerfile|entrypoint|\.github/workflows|deploy)
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN: { required: true }
+      GH_APP_CLIENT_ID:        { required: false }
+      GH_APP_PRIVATE_KEY:      { required: false }
+
+concurrency:
+  group: review-${{ github.repository }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    permissions:
+      contents: read
+      checks: read
+      actions: read
+      pull-requests: read
+    outputs:
+      proceed: ${{ steps.level.outputs.proceed }}
+      level:   ${{ steps.level.outputs.level }}
+      reason:  ${{ steps.level.outputs.reason }}
+      ci:      ${{ steps.ci.outputs.summary }}
+    steps:
+      # Payload-only rules first, before the checkout. agent:no-touch, drafts
+      # and bot PRs are decided without fetching anything. Bot dependency PRs
+      # are rejected here because deps-verify owns them, and reviewing them in
+      # both places double-posts on every Renovate PR.
+      - id: gate
+        uses: dodi-smart/.github/actions/agent-gate@v1
+        with:
+          labels:        ${{ toJson(github.event.pull_request.labels.*.name) }}
+          event-name:    ${{ github.event_name }}
+          event-action:  ${{ github.event.action }}
+          label:         ${{ github.event.label.name }}
+          request-label: 'agent:review'
+          author:        ${{ github.event.pull_request.user.login }}
+          draft:         ${{ github.event.pull_request.draft }}
+          bots:          'reject'
+
+      - if: steps.gate.outputs.proceed == 'true'
+        uses: actions/checkout@v7
+        with: { fetch-depth: 0 }
+
+      - id: level
+        env:
+          PROCEED:   ${{ steps.gate.outputs.proceed }}
+          REASON:    ${{ steps.gate.outputs.reason }}
+          LABELS:    ${{ toJson(github.event.pull_request.labels.*.name) }}
+          BASE:      ${{ github.event.pull_request.base.sha }}
+          HEAD:      ${{ github.event.pull_request.head.sha }}
+          SENSITIVE: ${{ inputs.sensitive-paths }}
+          LEVEL:     ${{ inputs.level }}
+          ELEVATED:  ${{ inputs.elevated-level }}
+        run: |
+          set -euo pipefail
+          proceed="$PROCEED"; level="$LEVEL"; reason="$REASON"
+
+          if [ "$proceed" = "true" ]; then
+            files=$(git diff --name-only "$BASE" "$HEAD" || true)
+            if [ -z "$files" ]; then
+              proceed=false; reason="no changed files"
+            elif ! printf '%s\n' "$files" | grep -qvE '(\.md$|^docs/)'; then
+              proceed=false; reason="docs only"
+            fi
+          fi
+
+          if [ "$proceed" = "true" ]; then
+            # Collapse the multi-line default into one ERE before matching.
+            pattern=$(printf '%s' "$SENSITIVE" | tr -d '[:space:]')
+            if printf '%s\n' "$files" | grep -qiE "$pattern"; then
+              level="$ELEVATED"; reason="sensitive paths touched"
+            fi
+            if printf '%s' "$LABELS" | grep -q '"sec:'; then
+              level="$ELEVATED"; reason="sec: label"
+            fi
+          fi
+
+          {
+            echo "proceed=$proceed"
+            echo "level=$level"
+            echo "reason=$reason"
+          } >> "$GITHUB_OUTPUT"
+          echo "decision: proceed=$proceed level=$level ${reason:+($reason)}"
+
+      # Why CI failed, gathered deterministically and handed to the reviewer, so
+      # it reviews the actual problem rather than the diff in the abstract.
+      # Kept to ONE LINE: the value is interpolated into a shell-style argument,
+      # so a newline or a quote takes the whole step with it.
+      - id: ci
+        if: steps.level.outputs.proceed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO:     ${{ github.repository }}
+          SHA:      ${{ github.event.pull_request.head.sha }}
+        run: |
+          # Steps run as `bash -e {0}` and `set -uo pipefail` does not clear
+          # `-e`. This step must report rather than fail, hence `set +e`.
+          set +e
+          set -uo pipefail
+          runs=$(gh api "/repos/$REPO/commits/$SHA/check-runs?per_page=100" \
+                 --jq '[.check_runs[] | {name, conclusion, id}]' 2>/dev/null || echo '[]')
+          failed=$(jq -c '[.[] | select(.conclusion == "failure" or .conclusion == "timed_out")]' <<<"$runs")
+          n=$(jq 'length' <<<"$failed" 2>/dev/null || echo 0)
+
+          if [ "${n:-0}" = "0" ]; then
+            echo "summary=CI on this PR is green." >> "$GITHUB_OUTPUT"
+            echo "no failing checks"; exit 0
+          fi
+
+          out="CI on this PR is FAILING ($n check(s))."
+          for id in $(jq -r '.[].id' <<<"$failed"); do
+            name=$(jq -r --argjson i "$id" '.[]|select(.id==$i)|.name' <<<"$failed")
+            # Annotations are often just "Process completed with exit code 1",
+            # so pass the run id and let the reviewer fetch the real log.
+            runid=$(gh api "/repos/$REPO/check-runs/$id" \
+                    --jq '.details_url | capture("/runs/(?<r>[0-9]+)") | .r' 2>/dev/null || echo "")
+            out="$out  ||  CHECK '$name'"
+            [ -n "$runid" ] && out="$out (run $runid)"
+            out="$out:"
+            ann=$(gh api "/repos/$REPO/check-runs/$id/annotations" \
+                  --jq '.[] | "\(.path):\(.start_line) \(.annotation_level) \(.message)"' 2>/dev/null \
+                  | head -8 | tr '\n' ' ' | tr -d '"' | cut -c1-700)
+            [ -n "$ann" ] && out="$out $ann"
+          done
+          out="$out  ||  Annotations are often just 'Process completed with exit code 1'. Fetch the real output with: gh run view <run id> --log-failed"
+
+          # Collapse to one line and drop quotes, so it survives interpolation.
+          out=$(printf '%s' "$out" | tr '\n' ' ' | tr -d '"\r' | cut -c1-3000)
+          echo "summary=$out" >> "$GITHUB_OUTPUT"
+          echo "collected $n failing check(s)"
+
+  pick-runner:
+    needs: [gate]
+    if: needs.gate.outputs.proceed == 'true'
+    uses: dodi-smart/.github/.github/workflows/pick-runner.yml@v1
+    with:
+      weight: ${{ inputs.runner-weight }}
+      labels: ${{ inputs.runner-labels }}
+    secrets: inherit
+
+  review:
+    needs: [gate, pick-runner]
+    if: needs.gate.outputs.proceed == 'true'
+    runs-on: ${{ fromJson(needs.pick-runner.outputs.runner) }}
+    timeout-minutes: 25
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: read
+      id-token: write
+      actions: read
+    steps:
+      - uses: actions/checkout@v7
+        with: { fetch-depth: 0 }
+
+      # Stamped before the agent, so the check at the end asks "did THIS run
+      # post" rather than "has anything ever posted".
+      - id: since
+        run: echo "at=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+
+      # Opus: judging whether a change is correct is the expensive half of this
+      # job. Everything except `--comment` travels in the system prompt, so the
+      # slash command stays exactly as the plugin expects it.
+      #
+      # TWO things must both be present or the review posts nothing. `--comment`,
+      # without which the plugin discards its own result, and the inline-comment
+      # tool in the allowlist, without which the action never starts that MCP
+      # server. Fixing either alone still posts nothing. Do not drop one.
+      - uses: dodi-smart/.github/actions/run-agent@v1
+        with:
+          oauth-token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          model: claude-opus-5
+          additional-permissions: |
+            actions: read
+          plugin-marketplaces: 'https://github.com/anthropics/claude-code.git'
+          plugins: 'code-review@claude-code-plugins'
+          # The org default plus the inline-comment tool. Variadic, space
+          # separated. See the run-agent header before changing the shape.
+          allowed-tools: 'Bash "Bash(gh:*)" Read Grep Glob mcp__github_inline_comment__create_inline_comment'
+          # The last clause overrides the plugin's first step, which stops
+          # without posting when Claude has already commented or the change looks
+          # trivial. This workflow only runs because someone asked, and a run
+          # allowed to finish silently cannot be told from one whose posting broke.
+          append-system-prompt: >-
+            ${{ needs.gate.outputs.ci }}
+            Review depth for this run is ${{ needs.gate.outputs.level }}. At low or medium report only what you are confident in. At high, xhigh or max cover more ground, and say plainly when a finding is uncertain.
+            When CI is failing, diagnose the cause and say which change caused it and how to fix it. Lead with that. It is more useful than anything else you could report. Do not repeat a failure the annotations already state verbatim, explain it.
+            A comment you left on this pull request earlier is not a reason to stop, and neither is the diff looking small or obviously correct. Somebody asked for this run by hand. Review it again, and always post the outcome, including when the outcome is that you found nothing.
+          prompt: '/code-review:code-review ${{ github.repository }}/pull/${{ github.event.pull_request.number }} --comment'
+
+      # What this pass actually published, counted rather than assumed.
+      #
+      # Matched on the login, not just .user.type == "Bot": a coverage reporter
+      # commenting in the same window would otherwise look like a review.
+      - id: posted
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO:     ${{ github.repository }}
+          PR:       ${{ github.event.pull_request.number }}
+          SINCE:    ${{ steps.since.outputs.at }}
+        run: |
+          set -euo pipefail
+          # Piped through jq rather than `gh api --jq`, which takes no --arg.
+          count() {
+            gh api "$1?per_page=100" --paginate \
+              | jq --arg s "$SINCE" \
+                   '[.[]
+                     | select(.user.login | ascii_downcase | contains("claude"))
+                     | select(.updated_at >= $s)] | length'
+          }
+          inline=$(count "/repos/$REPO/pulls/$PR/comments")
+          summary=$(count "/repos/$REPO/issues/$PR/comments")
+          {
+            echo "inline=$inline"
+            echo "summary=$summary"
+            echo "total=$((inline + summary))"
+          } >> "$GITHUB_OUTPUT"
+          echo "published: $inline inline, $summary summary"
+
+      # One comment per pull request, rewritten by each pass. The plugin's
+      # INLINE comments are left alone: they are anchored to diff lines, GitHub
+      # collapses them when the line changes, and rewriting a review thread out
+      # from under a reader is worse than a longer page.
+      - name: Build the verdict
+        env:
+          LEVEL:   ${{ needs.gate.outputs.level }}
+          REASON:  ${{ needs.gate.outputs.reason }}
+          SHA:     ${{ github.event.pull_request.head.sha }}
+          INLINE:  ${{ steps.posted.outputs.inline }}
+          SUMMARY: ${{ steps.posted.outputs.summary }}
+          RUN:     ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          if [ "$INLINE" -gt 0 ]; then
+            found="Left $INLINE inline comment(s) on the diff."
+          elif [ "$SUMMARY" -gt 0 ]; then
+            found="Found nothing worth flagging. The review comment on this pull request has the detail."
+          else
+            found="**Published nothing.** That is a bug in this workflow, not a clean bill of health."
+          fi
+          {
+            echo "### Agent review"
+            echo
+            echo "$found"
+            echo
+            echo "Reviewed \`${SHA:0:7}\` at depth \`$LEVEL\`${REASON:+ ($REASON)}. [Run]($RUN)."
+            echo
+            echo "Apply \`agent:review\` again for another pass. The label is cleared when this finishes, so re-applying it is a fresh request."
+          } > "$RUNNER_TEMP/review-verdict.md"
+          cat "$RUNNER_TEMP/review-verdict.md"
+
+      - uses: dodi-smart/.github/actions/sticky-comment@v1
+        with:
+          key:       pr-review
+          number:    ${{ github.event.pull_request.number }}
+          body-file: ${{ runner.temp }}/review-verdict.md
+
+      # A review that published nothing is a failed review and must look like
+      # one. Checked AFTER the verdict is posted, so the pull request carries the
+      # explanation rather than only the run log.
+      - name: The review reached the pull request
+        if: steps.posted.outputs.total == '0'
+        run: |
+          echo "::error title=Review published nothing::The agent ran but wrote nothing to this pull request. Check that the prompt still carries --comment and that mcp__github_inline_comment__create_inline_comment is still in allowed-tools."
+          exit 1
+
+      # `agent:review` is a REQUEST, never a record. Adding a label already
+      # present emits no `labeled` event, so leaving it on is why asking twice
+      # did nothing. Removing it with github.token cannot loop, because GitHub
+      # starts no workflow run from GITHUB_TOKEN activity.
+      - name: Clear the request label
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO:     ${{ github.repository }}
+          PR:       ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          # Percent-encoded: the colon is part of the label name, not a path
+          # separator, and it reaches the API as a single segment either way.
+          if gh api -X DELETE "/repos/$REPO/issues/$PR/labels/agent%3Areview" --silent 2>/dev/null; then
+            echo "removed agent:review, apply it again to request another pass"
+          else
+            echo "agent:review was not on this PR"
+          fi

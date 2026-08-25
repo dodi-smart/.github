@@ -1,0 +1,260 @@
+# Reusable: verify a Renovate/Dependabot PR by actually building it and reading
+# what upstream changed.
+#
+# This job REPORTS. It never merges and never changes mergeability, so
+# Renovate's own automerge rules stay the sole merge policy. Adding evidence to
+# a pull request is useful. Quietly acquiring merge authority is not.
+name: Dependency Verification
+
+on:
+  workflow_call:
+    inputs:
+      runner-weight:
+        type: string
+        default: "heavy"     # light | heavy | apple | hosted
+      runner-labels:
+        type: string
+        default: ""       # explicit selector; wins over runner-weight
+
+      # WHICH TOOLCHAIN. One input, not one template per stack. See
+      # actions/setup-stack for why.
+      #   bun | node | gradle | android | flutter | rust | xcode | none
+      stack:
+        type: string
+        default: ""
+      # DEPRECATED alias for `stack`, kept so callers written against the older
+      # shape keep working. `java` mapped to what is now `gradle`. Remove once
+      # every repo has moved.
+      setup:
+        type: string
+        default: ""
+
+      # Commands. "@stack" is this stack's conventional command; an explicit
+      # empty string skips the step. See actions/setup-stack, which resolves them.
+      install:   { type: string, default: "@stack" }
+      build:     { type: string, default: "@stack" }
+      typecheck: { type: string, default: "@stack" }
+      test:      { type: string, default: "@stack" }
+      smoke:     { type: string, default: "" }
+
+      java-version:    { type: string, default: "21" }
+      node-version:    { type: string, default: "24" }
+      bun-version:     { type: string, default: "latest" }
+      flutter-version: { type: string, default: "" }
+      rust-toolchain:  { type: string, default: "stable" }
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN: { required: true }
+      GH_APP_CLIENT_ID:        { required: false }
+      GH_APP_PRIVATE_KEY:      { required: false }
+
+concurrency:
+  group: deps-${{ github.repository }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      proceed: ${{ steps.gate.outputs.proceed }}
+      stack:   ${{ steps.stack.outputs.stack }}
+    steps:
+      # `bots: only` is the inverse of every other agent workflow: this one runs
+      # for Renovate and Dependabot and nothing else. It also absorbs the author
+      # check every caller used to carry in its own `if:`, byte-identically.
+      - id: gate
+        uses: dodi-smart/.github/actions/agent-gate@v1
+        with:
+          labels:        ${{ toJson(github.event.pull_request.labels.*.name) }}
+          event-name:    ${{ github.event_name }}
+          event-action:  ${{ github.event.action }}
+          label:         ${{ github.event.label.name }}
+          request-label: 'agent:review'
+          author:        ${{ github.event.pull_request.user.login }}
+          draft:         ${{ github.event.pull_request.draft }}
+          bots:          'only'
+
+      - id: stack
+        env:
+          STACK: ${{ inputs.stack }}
+          SETUP: ${{ inputs.setup }}
+        run: |
+          set -euo pipefail
+          s="$STACK"
+          if [ -z "$s" ] && [ -n "$SETUP" ]; then
+            case "$SETUP" in
+              java) s=gradle ;;
+              *)    s="$SETUP" ;;
+            esac
+            echo "::warning title=Deprecated input::'setup: $SETUP' is deprecated; use 'stack: $s'. The alias will be removed once every repo has moved."
+          fi
+          [ -z "$s" ] && s=none
+          echo "stack=$s" >> "$GITHUB_OUTPUT"
+          echo "stack: $s"
+
+  pick-runner:
+    needs: [gate]
+    if: needs.gate.outputs.proceed == 'true'
+    uses: dodi-smart/.github/.github/workflows/pick-runner.yml@v1
+    with:
+      weight: ${{ inputs.runner-weight }}
+      labels: ${{ inputs.runner-labels }}
+    secrets: inherit
+
+  # Deterministic gates FIRST. If the build is red the compiler has already
+  # explained why, and an agent adds nothing but cost.
+  build:
+    needs: [gate, pick-runner]
+    if: needs.gate.outputs.proceed == 'true'
+    runs-on: ${{ fromJson(needs.pick-runner.outputs.runner) }}
+    timeout-minutes: 25
+    outputs:
+      verdict: ${{ steps.result.outputs.verdict }}
+    steps:
+      - uses: actions/checkout@v7
+
+      # Isolation is hard-coded, never a caller input. A verification job that
+      # can see yesterday's tree is not verifying.
+      - id: setup
+        uses: dodi-smart/.github/actions/setup-stack@v1
+        with:
+          stack:           ${{ needs.gate.outputs.stack }}
+          isolate:         true
+          cache:           false
+          install:         ${{ inputs.install }}
+          build:           ${{ inputs.build }}
+          typecheck:       ${{ inputs.typecheck }}
+          test:            ${{ inputs.test }}
+          java-version:    ${{ inputs.java-version }}
+          node-version:    ${{ inputs.node-version }}
+          bun-version:     ${{ inputs.bun-version }}
+          flutter-version: ${{ inputs.flutter-version }}
+          rust-toolchain:  ${{ inputs.rust-toolchain }}
+
+      # Every step runs even after one fails, so the agent below can explain the
+      # whole picture rather than only the first thing that broke.
+      - id: steps
+        continue-on-error: true
+        env:
+          INSTALL:   ${{ steps.setup.outputs.install }}
+          BUILD:     ${{ steps.setup.outputs.build }}
+          TYPECHECK: ${{ steps.setup.outputs.typecheck }}
+          TEST:      ${{ steps.setup.outputs.test }}
+          SMOKE:     ${{ inputs.smoke }}
+        run: |
+          set -x
+          fail=""
+          run() { [ -z "$2" ] && return 0; eval "$2" || fail="$fail $1"; }
+          run install   "$INSTALL"
+          run build     "$BUILD"
+          run typecheck "$TYPECHECK"
+          run test      "$TEST"
+          run smoke     "$SMOKE"
+          echo "failed=${fail# }" >> "$GITHUB_OUTPUT"
+          [ -z "$fail" ]
+
+      - id: result
+        env:
+          FAILED: ${{ steps.steps.outputs.failed }}
+        run: |
+          if [ -z "${FAILED:-}" ]; then
+            echo "verdict=green" >> "$GITHUB_OUTPUT"
+          else
+            echo "verdict=red:$FAILED" >> "$GITHUB_OUTPUT"
+            # The steps are continue-on-error so the agent still gets to explain
+            # the failure, which means this job goes green regardless. Annotate,
+            # or the run summary claims a build passed when it did not.
+            echo "::warning title=Dependency build failed::Failed steps: $FAILED. See the verdict comment on the PR."
+          fi
+
+  review:
+    needs: [gate, pick-runner, build]
+    if: needs.gate.outputs.proceed == 'true'
+    runs-on: ${{ fromJson(needs.pick-runner.outputs.runner) }}
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      pull-requests: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@v7
+
+      # Sonnet: reading changelogs against a verdict the deterministic gate has
+      # already produced is mechanical work, not judgement.
+      #
+      # `allowed-bots` is load-bearing. Without it the action aborts with
+      # "Workflow initiated by non-human actor", and every run here is
+      # bot-initiated. Named explicitly rather than '*'.
+      - uses: dodi-smart/.github/actions/run-agent@v1
+        with:
+          oauth-token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          model: claude-sonnet-5
+          allowed-bots: "renovate[bot],dependabot[bot],app/renovate"
+          allowed-tools: 'Bash "Bash(gh:*)" Read Grep Glob WebFetch'
+          prompt: |
+            Verify dependency PR #${{ github.event.pull_request.number }} in
+            ${{ github.repository }}.
+
+            Deterministic result already in hand: `${{ needs.build.outputs.verdict }}`
+            (`green` = install/build/typecheck/test/smoke all passed; `red:<steps>`
+            = those steps failed).
+
+            Do this:
+
+            1. Read the manifest and lockfile diff. List every package whose version
+               changed, with the old and new version.
+            2. For each one, find what actually changed upstream: release notes,
+               CHANGELOG, or the GitHub compare view between the two tags. Do not
+               speculate about a package you could not find notes for; say you could
+               not find them.
+            3. For each breaking or deprecating change, grep this repo for real
+               usage of the affected API. A breaking change the code never touches
+               is not a risk here, say so explicitly rather than alarming.
+            4. Write one table to `${{ runner.temp }}/deps-verdict.md`:
+               package | old -> new | upstream changes | used here? | verdict.
+
+               Write the FILE. Do not comment on the pull request yourself. A
+               later step posts that file as a single comment and rewrites the
+               same comment on every future run, so Renovate pushing a new commit
+               refreshes the verdict instead of stacking another copy under it.
+               Your final message goes to the job summary, which is not where
+               anyone looks, so anything you leave out of the file is lost. This
+               job FAILS if the file is missing or empty.
+
+            Then apply exactly one label:
+              deps:verified      build green AND no breaking change reaches our usage
+              deps:breaking      a breaking change demonstrably reaches our usage
+              deps:needs-manual  build red, or you could not establish what changed
+
+            Do NOT merge, approve, or change mergeability. Reporting is the whole
+            job; the repo's existing automerge rules decide what lands.
+
+            Be brief. If everything is clean, say so in two lines and stop. A long
+            report on a boring patch bump trains people to ignore the report.
+
+      # One comment per pull request, rewritten by every later run. Renovate
+      # rebases a long-lived PR repeatedly, and stacked verdict tables are how a
+      # report stops being read. sticky-comment FAILS on a missing or empty file,
+      # so a table that was never written cannot pass as SUCCESS.
+      - uses: dodi-smart/.github/actions/sticky-comment@v1
+        with:
+          key:       deps-verify
+          number:    ${{ github.event.pull_request.number }}
+          body-file: ${{ runner.temp }}/deps-verdict.md
+
+      # The other half. A comment with no label leaves nothing for automerge to
+      # read, exactly as a label with no comment leaves nothing for a person.
+      - name: The verdict was recorded as a label
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO:     ${{ github.repository }}
+          PR:       ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          label=$(gh api "/repos/$REPO/issues/$PR/labels" \
+                  --jq '[.[].name | select(. == "deps:verified" or . == "deps:breaking" or . == "deps:needs-manual")] | join(" ")')
+          if [ -z "$label" ]; then
+            echo "::error title=Dependency verification recorded no verdict::The agent ran and wrote its table, but applied no deps:* label, so nothing downstream can act on it."
+            exit 1
+          fi
+          echo "verdict label: $label"

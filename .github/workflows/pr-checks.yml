@@ -1,0 +1,336 @@
+# Reusable: the deterministic checks a pull request must pass.
+#
+# Replaces a hand-written ci.yml per repo. `concurrency:` and the `on:` path
+# filter stay with the CALLER, because both depend on that repo's branches and
+# layout. Set them there, or a README-only PR builds the whole app.
+#
+# Light work (lint, typecheck) goes to the light pool and heavy work (build,
+# tests) to the large one. Any step whose command resolves to empty is skipped.
+# `single-job: true` collapses the split onto the heavy runner; see that input.
+name: PR Checks
+
+on:
+  workflow_call:
+    inputs:
+      stack:
+        type: string
+        required: true      # bun | node | gradle | android | flutter | rust | xcode | none
+
+      # "@stack" = this stack's conventional command; "" = this repo has no such
+      # step. See actions/setup-stack, which resolves these.
+      install:   { type: string, default: "@stack" }
+      lint:      { type: string, default: "@stack" }
+      typecheck: { type: string, default: "@stack" }
+      test:      { type: string, default: "@stack" }
+      build:     { type: string, default: "@stack" }
+
+      light-weight: { type: string, default: "light" }
+      heavy-weight: { type: string, default: "heavy" }
+
+      # Run every step in ONE job on the heavy runner instead of splitting light
+      # work from heavy.
+      #
+      # The split is right for a repo whose lint is cheap and independent, and
+      # wrong for Gradle: three jobs mean three configuration phases and no
+      # shared daemon. One job gives one checkout and one warm GRADLE_USER_HOME.
+      # The split stays the default.
+      single-job: { type: boolean, default: false }
+
+      commitlint:        { type: boolean, default: false }
+      commitlint-config: { type: string,  default: ".commitlintrc.json" }
+
+      coverage:      { type: string, default: "none" }   # none | vitest | kover
+      coverage-path: { type: string, default: "" }
+      coverage-min-overall: { type: number, default: 0 }
+      coverage-min-changed: { type: number, default: 0 }
+
+      # Applied to EVERY command step, via setup-stack's env-file. This is where
+      # build tuning goes: GRADLE_OPTS, JAVA_OPTS, a worker count. Placeholders
+      # and tuning only, never secrets. A value that must stay secret has no
+      # business in a PR build log.
+      env:
+        type: string
+        default: ""      # newline-separated KEY=VALUE
+
+      # Build step only, and kept because callers already depend on it.
+      # `env` is the general one, so prefer it. Both apply when both are set.
+      build-env:
+        type: string
+        default: ""      # newline-separated KEY=VALUE, placeholders only
+      timeout-minutes: { type: number, default: 30 }
+
+      java-version:    { type: string, default: "21" }
+      node-version:    { type: string, default: "24" }
+      bun-version:     { type: string, default: "latest" }
+      flutter-version: { type: string, default: "" }
+      rust-toolchain:  { type: string, default: "stable" }
+    secrets:
+      GH_APP_CLIENT_ID:   { required: false }
+      GH_APP_PRIVATE_KEY: { required: false }
+
+jobs:
+  # The picker carries the same `if:` as the job it feeds. In single-job mode
+  # nothing runs on the light pool, and the picker is itself a hosted job.
+  pick-light:
+    if: ${{ !inputs.single-job }}
+    uses: dodi-smart/.github/.github/workflows/pick-runner.yml@v1
+    with: { weight: "${{ inputs.light-weight }}" }
+    secrets: inherit
+
+  pick-heavy:
+    uses: dodi-smart/.github/.github/workflows/pick-runner.yml@v1
+    with: { weight: "${{ inputs.heavy-weight }}" }
+    secrets: inherit
+
+  # Hosted on purpose: needs full history and no toolchain, so the large pool
+  # would be wasted on it.
+  commitlint:
+    if: inputs.commitlint
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+        with: { fetch-depth: 0 }
+      - uses: wagoid/commitlint-github-action@v6
+        with:
+          configFile: ${{ inputs.commitlint-config }}
+
+  # ---------------------------------------------------------------------------
+  # Split shape: light work on the small pool, heavy work on the large one.
+  # ---------------------------------------------------------------------------
+
+  checks:
+    if: ${{ !inputs.single-job }}
+    needs: [pick-light]
+    runs-on: ${{ fromJson(needs.pick-light.outputs.runner) }}
+    timeout-minutes: ${{ inputs.timeout-minutes }}
+    steps:
+      - uses: actions/checkout@v7
+      - id: setup
+        uses: dodi-smart/.github/actions/setup-stack@v1
+        with:
+          stack:           ${{ inputs.stack }}
+          isolate:         false
+          cache:           auto
+          env:             ${{ inputs.env }}
+          install:         ${{ inputs.install }}
+          lint:            ${{ inputs.lint }}
+          typecheck:       ${{ inputs.typecheck }}
+          java-version:    ${{ inputs.java-version }}
+          node-version:    ${{ inputs.node-version }}
+          bun-version:     ${{ inputs.bun-version }}
+          flutter-version: ${{ inputs.flutter-version }}
+          rust-toolchain:  ${{ inputs.rust-toolchain }}
+
+      # Every command step below sources the env file setup-stack wrote. It is
+      # always written, empty when the caller passed no `env`, so the source is
+      # unconditional and there is no second code path to get wrong.
+      - name: Install
+        if: steps.setup.outputs.install != ''
+        run: |
+          set -euo pipefail
+          . "${{ steps.setup.outputs.env-file }}"
+          ${{ steps.setup.outputs.install }}
+      - name: Lint
+        if: steps.setup.outputs.lint != ''
+        run: |
+          set -euo pipefail
+          . "${{ steps.setup.outputs.env-file }}"
+          ${{ steps.setup.outputs.lint }}
+      - name: Typecheck
+        if: steps.setup.outputs.typecheck != ''
+        run: |
+          set -euo pipefail
+          . "${{ steps.setup.outputs.env-file }}"
+          ${{ steps.setup.outputs.typecheck }}
+
+  test:
+    if: ${{ !inputs.single-job }}
+    needs: [pick-heavy]
+    runs-on: ${{ fromJson(needs.pick-heavy.outputs.runner) }}
+    timeout-minutes: ${{ inputs.timeout-minutes }}
+    permissions:
+      contents: read
+      pull-requests: write     # coverage comment
+    steps:
+      - uses: actions/checkout@v7
+        with: { fetch-depth: 0 }
+      - id: setup
+        uses: dodi-smart/.github/actions/setup-stack@v1
+        with:
+          stack:           ${{ inputs.stack }}
+          isolate:         false
+          cache:           auto
+          env:             ${{ inputs.env }}
+          install:         ${{ inputs.install }}
+          test:            ${{ inputs.test }}
+          java-version:    ${{ inputs.java-version }}
+          node-version:    ${{ inputs.node-version }}
+          bun-version:     ${{ inputs.bun-version }}
+          flutter-version: ${{ inputs.flutter-version }}
+          rust-toolchain:  ${{ inputs.rust-toolchain }}
+      - name: Install
+        if: steps.setup.outputs.install != ''
+        run: |
+          set -euo pipefail
+          . "${{ steps.setup.outputs.env-file }}"
+          ${{ steps.setup.outputs.install }}
+      - name: Test
+        if: steps.setup.outputs.test != ''
+        run: |
+          set -euo pipefail
+          . "${{ steps.setup.outputs.env-file }}"
+          ${{ steps.setup.outputs.test }}
+
+      - if: always() && inputs.coverage == 'vitest'
+        uses: davelosert/vitest-coverage-report-action@v2
+      - if: always() && inputs.coverage == 'kover'
+        uses: mi-kas/kover-report@v2
+        with:
+          path: ${{ inputs.coverage-path }}
+          token: ${{ github.token }}
+          title: Code Coverage
+          update-comment: true
+          min-coverage-overall: ${{ inputs.coverage-min-overall }}
+          min-coverage-changed-files: ${{ inputs.coverage-min-changed }}
+
+  build:
+    if: ${{ !inputs.single-job }}
+    needs: [pick-heavy, checks]
+    runs-on: ${{ fromJson(needs.pick-heavy.outputs.runner) }}
+    timeout-minutes: ${{ inputs.timeout-minutes }}
+    steps:
+      - uses: actions/checkout@v7
+      - id: setup
+        uses: dodi-smart/.github/actions/setup-stack@v1
+        with:
+          stack:           ${{ inputs.stack }}
+          isolate:         false
+          cache:           auto
+          env:             ${{ inputs.env }}
+          install:         ${{ inputs.install }}
+          build:           ${{ inputs.build }}
+          java-version:    ${{ inputs.java-version }}
+          node-version:    ${{ inputs.node-version }}
+          bun-version:     ${{ inputs.bun-version }}
+          flutter-version: ${{ inputs.flutter-version }}
+          rust-toolchain:  ${{ inputs.rust-toolchain }}
+
+      - name: Install
+        if: steps.setup.outputs.install != ''
+        run: |
+          set -euo pipefail
+          . "${{ steps.setup.outputs.env-file }}"
+          ${{ steps.setup.outputs.install }}
+
+      # Placeholders a build needs present but not real, supplied by the caller
+      # in plain sight. Never secrets: a value that must stay secret has no
+      # business in a PR build log.
+      #
+      # Exported into THIS shell, not $GITHUB_ENV, which refuses NODE_OPTIONS
+      # outright, and NODE_OPTIONS is the variable a Next.js build needs here.
+      # setup-stack's env file exists for the same reason. `IFS='='` splits on
+      # the FIRST `=` only, so URLs and base64 survive intact.
+      - name: Build
+        if: steps.setup.outputs.build != ''
+        env:
+          BUILD_ENV: ${{ inputs.build-env }}
+        run: |
+          set -euo pipefail
+          . "${{ steps.setup.outputs.env-file }}"
+          if [ -n "${BUILD_ENV:-}" ]; then
+            while IFS='=' read -r k v; do
+              [ -z "$k" ] && continue
+              export "$k=$v"
+            done <<< "$BUILD_ENV"
+          fi
+          ${{ steps.setup.outputs.build }}
+
+  # ---------------------------------------------------------------------------
+  # Single-job shape: the same steps, in the same order, with the same
+  # skip-on-empty rule. Only the runner and the job boundaries differ.
+  # ---------------------------------------------------------------------------
+
+  all:
+    if: ${{ inputs.single-job }}
+    needs: [pick-heavy]
+    runs-on: ${{ fromJson(needs.pick-heavy.outputs.runner) }}
+    timeout-minutes: ${{ inputs.timeout-minutes }}
+    permissions:
+      contents: read
+      pull-requests: write     # coverage comment
+    steps:
+      - uses: actions/checkout@v7
+        with: { fetch-depth: 0 }
+      - id: setup
+        uses: dodi-smart/.github/actions/setup-stack@v1
+        with:
+          stack:           ${{ inputs.stack }}
+          isolate:         false
+          cache:           auto
+          env:             ${{ inputs.env }}
+          install:         ${{ inputs.install }}
+          lint:            ${{ inputs.lint }}
+          typecheck:       ${{ inputs.typecheck }}
+          test:            ${{ inputs.test }}
+          build:           ${{ inputs.build }}
+          java-version:    ${{ inputs.java-version }}
+          node-version:    ${{ inputs.node-version }}
+          bun-version:     ${{ inputs.bun-version }}
+          flutter-version: ${{ inputs.flutter-version }}
+          rust-toolchain:  ${{ inputs.rust-toolchain }}
+
+      - name: Install
+        if: steps.setup.outputs.install != ''
+        run: |
+          set -euo pipefail
+          . "${{ steps.setup.outputs.env-file }}"
+          ${{ steps.setup.outputs.install }}
+      - name: Lint
+        if: steps.setup.outputs.lint != ''
+        run: |
+          set -euo pipefail
+          . "${{ steps.setup.outputs.env-file }}"
+          ${{ steps.setup.outputs.lint }}
+      - name: Typecheck
+        if: steps.setup.outputs.typecheck != ''
+        run: |
+          set -euo pipefail
+          . "${{ steps.setup.outputs.env-file }}"
+          ${{ steps.setup.outputs.typecheck }}
+      - name: Test
+        if: steps.setup.outputs.test != ''
+        run: |
+          set -euo pipefail
+          . "${{ steps.setup.outputs.env-file }}"
+          ${{ steps.setup.outputs.test }}
+
+      # `build-env` applies exactly as in the split shape; see that step.
+      - name: Build
+        if: steps.setup.outputs.build != ''
+        env:
+          BUILD_ENV: ${{ inputs.build-env }}
+        run: |
+          set -euo pipefail
+          . "${{ steps.setup.outputs.env-file }}"
+          if [ -n "${BUILD_ENV:-}" ]; then
+            while IFS='=' read -r k v; do
+              [ -z "$k" ] && continue
+              export "$k=$v"
+            done <<< "$BUILD_ENV"
+          fi
+          ${{ steps.setup.outputs.build }}
+
+      # Same reporters, in the job that produced the report. A coverage file
+      # written on one runner is not readable from another.
+      - if: always() && inputs.coverage == 'vitest'
+        uses: davelosert/vitest-coverage-report-action@v2
+      - if: always() && inputs.coverage == 'kover'
+        uses: mi-kas/kover-report@v2
+        with:
+          path: ${{ inputs.coverage-path }}
+          token: ${{ github.token }}
+          title: Code Coverage
+          update-comment: true
+          min-coverage-overall: ${{ inputs.coverage-min-overall }}
+          min-coverage-changed-files: ${{ inputs.coverage-min-changed }}

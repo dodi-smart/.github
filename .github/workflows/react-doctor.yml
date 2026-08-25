@@ -1,0 +1,91 @@
+# Reusable: React Doctor, static analysis of React/TS source on a pull request.
+#
+# `concurrency` and `paths:` belong to the CALLER, the same rule pr-checks
+# follows, because both depend on that repo's branches and source layout.
+#
+# The caller's `paths:` filter is POSITIVE, so a pull request touching no React
+# source produces no check run at all. Never make this a required status check.
+#
+# The action already runs its own setup-node, posts its own sticky pull request
+# comment, publishes its own commit status, and skips the comment when a pull
+# request changes no React-eligible files. This workflow adds a validated
+# runner, a timeout and permissions, and otherwise gets out of the way.
+name: React Doctor
+
+on:
+  workflow_call:
+    inputs:
+      runner-weight:
+        description: "light | heavy | apple | hosted"
+        type: string
+        default: light
+      runner-labels:
+        description: "Explicit selector; wins over runner-weight. Validated the same way."
+        type: string
+        default: ""
+      directory:
+        description: "Project directory to scan."
+        type: string
+        default: "."
+      scope:
+        description: >-
+          On PRs: changed (only what this PR introduced) | files | lines | full.
+        type: string
+        default: "changed"
+      blocking:
+        description: >-
+          Severity that fails the run: none (advisory) | warning | error.
+        type: string
+        default: "none"
+      version:
+        description: >-
+          react-doctor npm spec. Empty keeps the vendor's `latest`, exposed so a
+          repo that has been bitten can pin without forking this workflow.
+        type: string
+        default: ""
+      timeout-minutes:
+        description: "Cold npx pulls ~9.4 MB of dist plus oxlint and typescript."
+        type: number
+        default: 15
+    secrets:
+      GH_APP_CLIENT_ID:   { required: false }
+      GH_APP_PRIVATE_KEY: { required: false }
+
+jobs:
+  # No `if:` here. A skipped caller job instantiates neither of these, so the
+  # picker costs nothing for a pull request that will not be scanned.
+  pick:
+    uses: dodi-smart/.github/.github/workflows/pick-runner.yml@v1
+    with:
+      weight: ${{ inputs.runner-weight }}
+      labels: ${{ inputs.runner-labels }}
+    secrets: inherit
+
+  doctor:
+    name: React Doctor
+    needs: [pick]
+    runs-on: ${{ fromJson(needs.pick.outputs.runner) }}
+    timeout-minutes: ${{ inputs.timeout-minutes }}
+    permissions:
+      contents: read
+      pull-requests: write   # the action posts its own sticky comment
+      statuses: write        # and a commit status carrying the score
+    steps:
+      # `fetch-depth: 0` is REQUIRED for `scope: changed`. Without full history
+      # the action cannot reach the merge base and reports every issue in the
+      # changed files rather than the ones this pull request introduced.
+      #
+      # `clean` stays at its default, even though that discards the doctor's own
+      # cache every run. Do NOT set `clean: false`. A workspace holding the
+      # previous pull request's files is how a scan reports on a file this one
+      # deleted. The win on self-hosted is the runner's own ~/.npm volume.
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - uses: millionco/react-doctor@v2
+        with:
+          directory: ${{ inputs.directory }}
+          scope: ${{ inputs.scope }}
+          blocking: ${{ inputs.blocking }}
+          version: ${{ inputs.version }}

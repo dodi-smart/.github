@@ -1,0 +1,183 @@
+# Reusable: cut releases with semantic-release.
+#
+# A multi-module repo releases every module in ONE job, in order. Modules are
+# strictly sequential anyway, so a job per module buys nothing and pays for a
+# checkout, a Node setup and an install each time.
+name: Release
+
+on:
+  workflow_call:
+    inputs:
+      stack:
+        type: string
+        default: "node"      # the toolchain the release scripts need
+
+      # ORDERED list of semantic-release configs, as a JSON array. Each is run in
+      # turn with `--extends`. Order is the dependency order between modules.
+      #   modules: '["./.releaserc.core.js", "./.releaserc.app.js"]'
+      # Leave empty for a single-package repo.
+      modules:
+        type: string
+        default: "[]"
+
+      # For a repo that already wraps semantic-release in its own script
+      # (e.g. `bun run release`). Wins over `modules` when set.
+      release-command:
+        type: string
+        default: ""
+
+      # Run before `release-command`, and only before it. "@stack" is the
+      # stack's conventional install, resolved by setup-stack. An explicit ""
+      # says this repo has no install step.
+      install:
+        type: string
+        default: "@stack"
+
+      # Installed only when `release-command` is empty, i.e. when this workflow
+      # drives semantic-release itself.
+      semantic-release-packages:
+        type: string
+        default: >-
+          semantic-release
+          @semantic-release/git
+          @semantic-release/github
+          @semantic-release/changelog
+          @semantic-release/exec
+          semantic-release-replace-plugin
+          conventional-changelog-conventionalcommits@9
+          @kilianpaquier/semantic-release-backmerge
+          semantic-release-scope-filter
+
+      # Some release configs read a monotonic build number.
+      expose-build-number:
+        type: boolean
+        default: true
+
+      backmerge:      { type: boolean, default: false }
+      backmerge-from: { type: string,  default: "main" }
+      backmerge-to:   { type: string,  default: "develop" }
+
+      node-version:    { type: string, default: "lts/*" }
+      bun-version:     { type: string, default: "latest" }
+      timeout-minutes: { type: number, default: 30 }
+    secrets:
+      GH_APP_CLIENT_ID:   { required: false }
+      GH_APP_PRIVATE_KEY: { required: false }
+
+permissions:
+  contents: write
+  issues: write
+  pull-requests: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ inputs.timeout-minutes }}
+    # A half-applied release is worse than a late one, so a second run queues
+    # behind the first rather than cancelling it.
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN || github.token }}
+
+      - id: setup
+        uses: dodi-smart/.github/actions/setup-stack@v1
+        with:
+          stack:        ${{ inputs.stack }}
+          node-version: ${{ inputs.node-version }}
+          bun-version:  ${{ inputs.bun-version }}
+          cache:        false   # hosted-only; skip package cache. Never bun-on-GitHub.
+          # Resolved here, run below. The release path decides whether it
+          # needs the repo's dependencies, so the action must not run this.
+          install:      ${{ inputs.install }}
+
+      # semantic-release always runs on Node, whatever the repo's stack is.
+      # An Android repo still releases with it.
+      - if: inputs.stack != 'node'
+        uses: actions/setup-node@v7
+        with:
+          node-version: ${{ inputs.node-version }}
+
+      - id: build-number
+        if: inputs.expose-build-number
+        run: echo "number=$(git rev-list --count HEAD)" >> "$GITHUB_OUTPUT"
+
+      # `release-command` runs the repo's own script, so it needs the repo's
+      # own dependencies. The step below covers the other path only, where this
+      # workflow drives semantic-release in a checkout that needs nothing else.
+      # Drop either half and a caller gets no install at all, then fails with
+      # `semantic-release: command not found` while pinning it in
+      # devDependencies.
+      - if: inputs.release-command != '' && steps.setup.outputs.install != ''
+        name: Install dependencies
+        env:
+          INSTALL: ${{ steps.setup.outputs.install }}
+        run: |
+          set -euo pipefail
+          eval "$INSTALL"
+
+      - if: inputs.release-command == ''
+        name: Install semantic-release
+        env:
+          PACKAGES: ${{ inputs.semantic-release-packages }}
+        run: |
+          set -euo pipefail
+          # Unquoted on purpose: PACKAGES is a space-separated list of package
+          # specs, and word-splitting is exactly what is wanted here.
+          # shellcheck disable=SC2086
+          npm install -D $PACKAGES
+
+      - name: Release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN || github.token }}
+          BUILD_NUMBER: ${{ steps.build-number.outputs.number }}
+          MODULES: ${{ inputs.modules }}
+          CMD:     ${{ inputs.release-command }}
+        run: |
+          set -euo pipefail
+          if [ -n "$CMD" ]; then
+            eval "$CMD"
+            exit 0
+          fi
+
+          count=$(jq 'length' <<<"$MODULES")
+          if [ "$count" = "0" ]; then
+            npx semantic-release
+            exit 0
+          fi
+
+          # Sequential and fail-fast. Releasing a module against a dependency
+          # version that failed to publish is worse than stopping.
+          for cfg in $(jq -r '.[]' <<<"$MODULES"); do
+            echo "::group::semantic-release $cfg"
+            npx semantic-release --extends "$cfg"
+            echo "::endgroup::"
+          done
+
+  # A real merge commit, never a force-push. The release commit must stay
+  # reachable from both branches, or the next run recomputes versions from a
+  # history that no longer matches the tags.
+  backmerge:
+    needs: [release]
+    if: inputs.backmerge && github.ref == format('refs/heads/{0}', inputs.backmerge-from)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          ref: ${{ inputs.backmerge-from }}
+          token: ${{ secrets.GITHUB_TOKEN || github.token }}
+      - env:
+          FROM: ${{ inputs.backmerge-from }}
+          TO:   ${{ inputs.backmerge-to }}
+        run: |
+          set -euo pipefail
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git fetch origin "$TO:$TO"
+          git checkout "$TO"
+          # [skip ci] so the merge does not trigger the release workflow again.
+          git merge "$FROM" --no-ff -m "chore(release): merge $FROM into $TO [skip ci]"
+          git push origin "$TO"

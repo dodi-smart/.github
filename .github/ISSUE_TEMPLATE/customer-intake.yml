@@ -1,0 +1,40 @@
+name: Customer request (unrefined)
+description: Raw customer ask. Paste it here and let triage work out the questions
+title: "intake: "
+type: Task
+labels: ["needs:spec"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **This is the low-friction front door.** Do not tidy the request up or
+        guess at requirements. Paste what the customer actually said, and triage will
+        read the code and come back with a specific list of what to ask them,
+        separated from what it needs from you.
+  - type: textarea
+    id: raw
+    attributes:
+      label: What the customer asked for
+      description: Their words, verbatim where possible. Paste the email or message.
+    validations: { required: true }
+  - type: input
+    id: who
+    attributes:
+      label: Who asked
+      description: Customer, company, or account.
+    validations: { required: true }
+  - type: textarea
+    id: impact
+    attributes:
+      label: Business impact
+      description: What happens if we do this, and what happens if we do not.
+  - type: input
+    id: deadline
+    attributes:
+      label: Deadline or commitment
+      description: Anything already promised to them. Say "none promised" if nothing is.
+  - type: textarea
+    id: known
+    attributes:
+      label: What you already know
+      description: Constraints, prior conversations, related issues. Optional.

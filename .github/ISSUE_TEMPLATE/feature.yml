@@ -1,0 +1,41 @@
+name: Feature
+description: A capability that does not exist yet
+title: "feat: "
+type: Feature
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Describe the problem before the solution. Triage can design an approach,
+        but only you can say what outcome actually counts as success.
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: What is hard, impossible, or manual today?
+    validations: { required: true }
+  - type: input
+    id: who
+    attributes:
+      label: Who has this problem
+      description: Which user, role, or customer. "Everyone" is usually a sign the problem is not yet specific.
+    validations: { required: true }
+  - type: textarea
+    id: outcome
+    attributes:
+      label: Desired outcome
+      description: What becomes possible. Describe the result, not the implementation.
+    validations: { required: true }
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      description: How we will know it is done. One checkable statement per line.
+      placeholder: |
+        - [ ] …
+        - [ ] …
+  - type: textarea
+    id: out-of-scope
+    attributes:
+      label: Explicitly out of scope
+      description: What this should NOT grow into. The most useful box on this form.

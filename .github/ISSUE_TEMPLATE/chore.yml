@@ -1,0 +1,21 @@
+name: Chore
+description: Maintenance with no user-visible change
+title: "chore: "
+type: Chore
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What needs doing
+    validations: { required: true }
+  - type: textarea
+    id: why-now
+    attributes:
+      label: Why now
+      description: What forces the timing, such as a deprecation, a blocked upgrade or an incident. "Tidiness" is a valid answer, just say so.
+    validations: { required: true }
+  - type: textarea
+    id: blast-radius
+    attributes:
+      label: Blast radius
+      description: What breaks if this goes wrong, and how it would be noticed.

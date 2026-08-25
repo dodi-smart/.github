@@ -1,0 +1,4 @@
+# Blank issues stay ENABLED on purpose: the gh CLI, the file-issue skill, and
+# agents all create bare issues, and forcing them through a form would break
+# every scripted path.
+blank_issues_enabled: true

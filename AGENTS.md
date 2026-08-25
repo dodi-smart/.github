@@ -109,17 +109,26 @@ The workflows in this repo call each other, and their composite actions, at
 `@v1`, the same ref callers outside are told to pin. Otherwise a
 `@v1` pin holds the workflow bodies but not the picker and actions they call.
 
-Two consequences:
-
-- **A change here is inert until `v1` moves.** That is the point. Merging to
-  `main` no longer changes anyone's CI. Verify on a repo, then move the tag.
-- **Cutting `v2` means updating these internal references too.** They are part of
-  the release, not incidental to it.
-
 `v1` is moved by semantic-release, not by hand. `.releaserc.json` runs a
-`successCmd` that force-moves the major tag onto each new release, so the version
-comes from the commit messages and the tag follows. Write conventional commits or
-nothing is released.
+`successCmd` that force-moves the major tag onto each release, so the version
+comes from the commit messages and the tag follows it. Write conventional commits
+or nothing is released.
+
+Three consequences, and the first one is the one people get wrong:
+
+- **Merging to `main` is a rollout, not a staging step.** The tag moves in the
+  same run, so every caller is on the new code before anyone looks at it. That
+  includes the picker and composite actions these workflows call at `@v1`
+  internally. Verify in the pull request. After the merge it is already live.
+- **Rolling back is a tag move.** `git tag -f v1 <previous tag> && git push -f
+  origin v1`. There is no other undo, because the callers hold no version of
+  their own.
+- **Cutting `v2` means updating these internal references too.** They are part of
+  the release, not incidental to it. The `successCmd` needs no change: it derives
+  the major from the version, so `2.0.0` creates `v2` and leaves `v1` frozen at
+  the last `1.x`. What does need adding is a maintenance branch in
+  `.releaserc.json` if a `1.x` patch will ever be released, because `main` is the
+  only release branch today.
 
 This repo also releases on `chore(deps)`, which the shared Renovate preset
 deliberately makes inert everywhere else. The dependencies here are the action

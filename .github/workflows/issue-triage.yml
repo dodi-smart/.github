@@ -1,0 +1,305 @@
+# Reusable: classify an incoming issue, then either plan it or ask what is missing.
+#
+# Called by a thin wrapper in each repo:
+#   jobs:
+#     triage:
+#       uses: dodi-smart/.github/.github/workflows/issue-triage.yml@v1
+#       secrets: inherit
+#
+# TRIGGERS: the `agent:triage` label, or a `@claude triage` / `@claude plan`
+# comment. There is deliberately no bare `/triage` or `/plan`. Every extra
+# surface has to be excluded again in the assistant workflow, and that list
+# drifts. The verbs live in the `commands:` input below and nowhere else.
+name: Issue Triage
+
+on:
+  workflow_call:
+    inputs:
+      # Runner selection, passed through to the shared picker. Override per repo
+      # when the preset does not fit this stack.
+      runner-weight:
+        type: string
+        default: "light"     # light | heavy | apple | hosted
+      runner-labels:
+        type: string
+        default: ""       # explicit selector; wins over runner-weight
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN: { required: true }
+      GH_APP_CLIENT_ID:        { required: false }
+      GH_APP_PRIVATE_KEY:      { required: false }
+
+# One triage per issue. A second request supersedes the first rather than racing it.
+concurrency:
+  group: triage-${{ github.repository }}-${{ github.event.issue.number }}
+  cancel-in-progress: true
+
+jobs:
+  # Gate BEFORE picking a runner. The picker is itself a hosted job, so it must
+  # never run for an event that will not proceed.
+  gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      proceed: ${{ steps.bots.outputs.proceed }}
+      mode:    ${{ steps.bots.outputs.mode }}
+    steps:
+      # agent:no-touch is evaluated inside this action, first and
+      # unconditionally. Nothing below may run ahead of it. The gate reads the
+      # event payload only, so it needs no checkout and stays cheap enough to
+      # run before the runner picker.
+      - id: gate
+        uses: dodi-smart/.github/actions/agent-gate@v1
+        with:
+          labels:        ${{ toJson(github.event.issue.labels.*.name) }}
+          event-name:    ${{ github.event_name }}
+          event-action:  ${{ github.event.action }}
+          label:         ${{ github.event.label.name }}
+          request-label: 'agent:triage'
+          author:        ${{ github.event.issue.user.login }}
+          comment:       ${{ github.event.comment.body }}
+          commands:      'triage plan'
+          bots:          'allow'
+          skip-draft:    'false'
+
+      # Bots open issues at machine volume. The Renovate Dependency Dashboard
+      # is the one worth reading, and it is a standing issue, so triage it once
+      # on open and never again. This only narrows the gate above. It can never
+      # re-open a run the kill switch stopped.
+      - id: bots
+        env:
+          PROCEED: ${{ steps.gate.outputs.proceed }}
+          MODE:    ${{ steps.gate.outputs.mode }}
+          AUTHOR:  ${{ github.event.issue.user.login }}
+          TITLE:   ${{ github.event.issue.title }}
+          ACTION:  ${{ github.event.action }}
+        run: |
+          set -euo pipefail
+          proceed="$PROCEED"
+          if [ "$proceed" = "true" ] && printf '%s' "$AUTHOR" | grep -qiE 'renovate|dependabot|\[bot\]$'; then
+            proceed=false
+            if printf '%s' "$TITLE" | grep -qi 'dependency dashboard' && [ "$ACTION" = "opened" ]; then
+              proceed=true
+            else
+              echo "bot-authored issue that is not a newly opened Dependency Dashboard, stopping"
+            fi
+          fi
+          echo "proceed=$proceed"          >> "$GITHUB_OUTPUT"
+          echo "mode=${MODE:-triage}"      >> "$GITHUB_OUTPUT"
+
+  pick-runner:
+    needs: [gate]
+    if: needs.gate.outputs.proceed == 'true'
+    uses: dodi-smart/.github/.github/workflows/pick-runner.yml@v1
+    with:
+      weight: ${{ inputs.runner-weight }}
+      labels: ${{ inputs.runner-labels }}
+    secrets: inherit
+
+  triage:
+    needs: [gate, pick-runner]
+    if: needs.gate.outputs.proceed == 'true'
+    runs-on: ${{ fromJson(needs.pick-runner.outputs.runner) }}
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      issues: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@v7
+        with: { fetch-depth: 1 }
+
+      - name: Load repo area vocabulary
+        id: areas
+        run: |
+          if [ -f .github/areas.yml ]; then
+            { echo 'areas<<__EOF__'; cat .github/areas.yml; echo '__EOF__'; } >> "$GITHUB_OUTPUT"
+          else
+            { echo 'areas<<__EOF__'; echo '(no .github/areas.yml, so do NOT invent area labels;'; \
+              echo ' say it is missing and apply none)'; echo '__EOF__'; } >> "$GITHUB_OUTPUT"
+          fi
+
+      # Opus for triage. It reads unfamiliar code and decides between a plan
+      # and questions, which is judgement work.
+      - uses: dodi-smart/.github/actions/run-agent@v1
+        with:
+          oauth-token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          model: claude-opus-5
+          # Live progress comment, so a run in flight is visible. Silence reads
+          # the same whether the job is working or broken.
+          track-progress: 'true'
+          prompt: |
+            Triage issue #${{ github.event.issue.number }} in ${{ github.repository }}.
+            Mode: ${{ needs.gate.outputs.mode }}
+
+            The repo's area vocabulary (each area lists the paths that define it,
+            plus disambiguation rules that exist because some paths mislead):
+            ---
+            ${{ steps.areas.outputs.areas }}
+            ---
+
+            ## Always do
+
+            1. Read the issue and anything it links to.
+            2. Explore the code enough to know where the work lands. Map changed or
+               relevant files to areas using the paths above. Follow the
+               disambiguation rules literally. They exist because the obvious
+               guess is wrong.
+            3. Apply the `area:*` labels. Several is normal. If areas.yml was
+               missing, apply none and say so.
+            4. Set the issue type:
+               gh api -X PATCH /repos/${{ github.repository }}/issues/${{ github.event.issue.number }} -f type='<Type>'
+               Bug only for a real regression or a violated spec, not for
+               something that never worked and was never specified.
+
+            ## Then decide, and be honest about which
+
+            Ask yourself: could a competent engineer start implementing this today
+            without asking anyone anything?
+
+            **If yes**, post the plan in exactly this shape:
+
+              ### Plan
+
+              #### Files
+              Real paths you opened, one line each: the path, then why it
+              changes.
+
+              #### Approach
+              The shape of the change, not a diff. Three to six sentences.
+
+              #### Tests
+              What proves it works. Name the runner if the repo has one.
+
+              #### Risks
+              The specific thing that could break. Omit this section when
+              there is nothing worth naming.
+
+            Under 30 lines. Do not write an Effort, Priority or Risk level line.
+            Those are fields, you set them below, and a fact written in two
+            places disagrees with itself within weeks.
+            Then set:
+              Triage state = Plan ready
+
+            **If no**, do NOT write a speculative plan. Post numbered blocking
+            questions in exactly two groups:
+              ### Questions for the team
+              ### Questions to ask the customer
+            At most five questions per group. Omit a group entirely if it would
+            be empty, and never leave a heading with nothing under it. The
+            customer group must be phrased so it can be pasted into an email
+            verbatim: no internal jargon, no ticket numbers, no code paths.
+            Then set:
+              Triage state = Needs info
+            and add the most specific `needs:*` label
+            (needs:info, needs:repro, needs:decision, needs:design, needs:customer, needs:spec).
+
+            Prefer questions over a guessed plan. A confident plan built on an
+            assumption you never checked costs far more than one extra round-trip.
+
+            ## Labels are requests; fields are state
+
+            Set `Triage state` and STOP THERE. Do NOT add an `agent:plan` label.
+            It no longer exists. The field already says the issue is planned,
+            and writing the same fact twice means the two disagree within weeks.
+
+            `Triage state = Plan ready` is what makes an issue eligible for
+            `agent:implement`, so setting it accurately is the whole contract.
+
+            ## Fields
+
+            Set Priority, Effort and Risk only where you can justify them from what
+            you read. Leave a field unset rather than guessing. Triage output is
+            read as evidence, and an unjustified value is worse than an empty one.
+            Risk is at least High for auth, payments, RLS, migrations, or anything
+            that loses data.
+
+            Never invent an option name. The valid ones, exactly:
+
+              Triage state  Needs triage | Needs info | Ready for plan |
+                            Plan ready | Ready for agent | Blocked
+              Priority      Urgent | High | Medium | Low
+              Effort        High | Medium | Low
+              Risk          Low | Medium | High | Critical
+
+            Set them with the GraphQL setIssueFieldValue mutation. Resolve the ids
+            from the REPOSITORY, not the organisation:
+
+              gh api graphql -f query='query($o:String!,$r:String!){
+                repository(owner:$o,name:$r){ issueFields(first:50){ nodes{
+                  ... on IssueFieldSingleSelect { id name options{ id name } }
+                } } } }' -f o='${{ github.repository_owner }}' -f r='${{ github.event.repository.name }}'
+
+            Three things that will otherwise cost you the whole triage:
+
+            - `/orgs/${{ github.repository_owner }}/issue-fields` returns
+              403 `Resource not accessible by integration` for THIS token. The
+              GitHub App this job runs as holds repo-scoped permissions only and
+              has no organisation permission at all, so every /orgs/* endpoint is
+              closed to it, REST and GraphQL alike. The repository query above
+              returns the same org-level fields with the same ids. Do not fall
+              back to the org path, and do not report the fields as unsettable:
+              if the query above fails, say so and fail, because the fallback you
+              are reaching for cannot work.
+            - The ids must be GRAPHQL NODE IDS (`IFSS_…`, `IFSSO_…`). The REST
+              catalog hands out numeric database ids and the mutation rejects
+              them with "Could not resolve to a node with the global id of ...".
+              The query above already returns the right kind.
+            - The mutation argument is `issueFields`, but the key INSIDE each
+              entry is `fieldId`, not `issueFieldId`. Easy to misread, and the
+              error it produces does not point at the cause.
+
+            A worked call, both fields in one mutation:
+
+              gh api graphql -f query='mutation{ setIssueFieldValue(input:{
+                issueId:"<issue node id>", issueFields:[
+                  {fieldId:"IFSS_…", singleSelectOptionId:"IFSSO_…"},
+                  {fieldId:"IFSS_…", singleSelectOptionId:"IFSSO_…"}
+                ]}){ clientMutationId } }'
+
+            `Triage state` is not optional. This job FAILS if it is still unset
+            when you finish, and it is right to. A triage pass that did not
+            record its own state is a triage pass nobody downstream can act on.
+
+            ## Finally
+
+            Remove the `agent:triage` label if it is present. It means "triage
+            requested / in progress"; leaving it on makes a finished issue look
+            like it is still being worked. Do NOT add it yourself. It is an
+            input, not a record of what you did.
+
+            Keep the comment tight. No preamble, no restating the issue back.
+
+      # A triage pass that did not record its own state is a failed triage and
+      # must look like one. Without this the job reports SUCCESS with the fields
+      # unwritten, and the break surfaces days later as `agent:implement`
+      # refusing the issue, long after the run that caused it.
+      #
+      # The read is repo-scoped on purpose. It must use the same token the agent
+      # had, or it would pass where the agent failed. No `if:`, so it runs only
+      # when the agent step succeeded, which is the one case where a green job
+      # would otherwise mislead.
+      - name: Verify triage recorded its state
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO:     ${{ github.repository }}
+          NUM:      ${{ github.event.issue.number }}
+        run: |
+          set -euo pipefail
+          owner="${REPO%%/*}"; name="${REPO##*/}"
+          # shellcheck disable=SC2016  # $o/$r/$n are GraphQL variables, not shell
+          state=$(gh api graphql -f query='query($o:String!,$r:String!,$n:Int!){
+            repository(owner:$o,name:$r){ issue(number:$n){
+              issueFieldValues(first:50){ nodes{
+                ... on IssueFieldSingleSelectValue {
+                  name field { ... on IssueFieldSingleSelect { name } } } } } } } }' \
+            -f o="$owner" -f r="$name" -F n="$NUM" \
+            --jq '[.data.repository.issue.issueFieldValues.nodes[]
+                   | select(.field.name == "Triage state") | .name] | first // ""')
+
+          if [ -n "$state" ]; then
+            echo "Triage state = $state"
+            exit 0
+          fi
+
+          echo "::error title=Triage did not set Triage state::$REPO#$NUM came out of triage with \`Triage state\` unset, so it is not eligible for \`agent:implement\` and no one downstream can act on it. Usual cause: the agent could not resolve issue-field ids. Resolve them from repository(owner,name){ issueFields }, because /orgs/*/issue-fields is 403 for this token."
+          exit 1

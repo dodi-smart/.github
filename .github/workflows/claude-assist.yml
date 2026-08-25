@@ -1,0 +1,106 @@
+# Reusable: the general-purpose assistant, for `@claude <anything>`.
+#
+# This is the widest agent surface in the org. It answers any mention, so it
+# checks `agent:no-touch` like every other agent workflow. A kill switch with
+# one hole in it is not a kill switch.
+#
+# It also has to decline the verbs other workflows own, or `@claude triage`
+# runs both this and triage on the same comment. That list is
+# `reserved-commands` below, and it lives here rather than in each repo.
+#
+# Called by a thin wrapper in each repo:
+#   jobs:
+#     assist:
+#       uses: dodi-smart/.github/.github/workflows/claude-assist.yml@v1
+#       secrets: inherit
+name: Claude Assist
+
+on:
+  workflow_call:
+    inputs:
+      runner-weight:
+        type: string
+        default: "light"     # light | heavy | apple | hosted
+      runner-labels:
+        type: string
+        default: ""
+      # Verbs owned by another workflow. Adding one here is the only change
+      # needed to teach every repo about a new command.
+      reserved-commands:
+        type: string
+        default: "triage plan implement"
+      model:
+        type: string
+        default: "claude-opus-5"
+      timeout-minutes:
+        type: number
+        default: 20
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN: { required: true }
+      GH_APP_CLIENT_ID:        { required: false }
+      GH_APP_PRIVATE_KEY:      { required: false }
+
+concurrency:
+  group: assist-${{ github.repository }}-${{ github.event.issue.number || github.event.pull_request.number || github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      proceed: ${{ steps.gate.outputs.proceed }}
+    steps:
+      - id: gate
+        uses: dodi-smart/.github/actions/agent-gate@v1
+        with:
+          # An issue and a PR keep their labels in different places. Whichever
+          # is absent is an empty list, so the kill switch reads the right one.
+          labels: ${{ github.event.issue.number && toJson(github.event.issue.labels.*.name) || toJson(github.event.pull_request.labels.*.name) }}
+          event-name:   ${{ github.event_name }}
+          event-action: ${{ github.event.action }}
+          author:       ${{ github.event.issue.user.login || github.event.pull_request.user.login }}
+          # The body to search differs by event. `||` takes the first
+          # non-empty of comment, review, or the issue itself.
+          comment: >-
+            ${{ github.event.comment.body
+             || github.event.review.body
+             || format('{0} {1}', github.event.issue.title, github.event.issue.body) }}
+          mention: '@claude'
+          exclude-commands: ${{ inputs.reserved-commands }}
+          bots: 'reject'
+          skip-draft: 'false'
+
+  pick-runner:
+    needs: [gate]
+    if: needs.gate.outputs.proceed == 'true'
+    uses: dodi-smart/.github/.github/workflows/pick-runner.yml@v1
+    with:
+      weight: ${{ inputs.runner-weight }}
+      labels: ${{ inputs.runner-labels }}
+    secrets: inherit
+
+  assist:
+    needs: [gate, pick-runner]
+    if: needs.gate.outputs.proceed == 'true'
+    runs-on: ${{ fromJson(needs.pick-runner.outputs.runner) }}
+    timeout-minutes: ${{ inputs.timeout-minutes }}
+    permissions:
+      contents: read
+      pull-requests: read
+      issues: read
+      id-token: write
+      actions: read
+    steps:
+      - uses: actions/checkout@v7
+        with: { fetch-depth: 1 }
+
+      # No `prompt`. With none supplied the action follows the instruction in
+      # the comment that mentioned it, which is the point of this workflow.
+      - uses: dodi-smart/.github/actions/run-agent@v1
+        with:
+          oauth-token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          model: ${{ inputs.model }}
+          prompt: ''
+          additional-permissions: |
+            actions: read

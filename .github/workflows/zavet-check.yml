@@ -1,0 +1,212 @@
+# Reusable: verify a repo's .zavet/ knowledge layer on a pull request.
+#
+# Local git hooks alone hold only as long as every contributor has them
+# installed and never passes --no-verify. Without this, a decision check can rot
+# for months with nothing failing.
+#
+# SEVERITY MIRRORS THE LOCAL HOOKS, deliberately:
+#
+#   decision checks   FAIL   (a decision that no longer holds is wrong, not stale)
+#   guard trailers    FAIL   (the commit-msg hook blocks locally; so does this)
+#   spec currency     WARN   (the pre-commit hook is warn-only and always exits 0)
+#
+# Inverting either of those makes CI disagree with the hooks, and then people
+# learn to distrust one of them.
+#
+# Some decision checks reach the GitHub API on purpose, because a decision
+# about a file in another repo should be verified rather than asserted. So this
+# workflow needs a token and network.
+name: Zavet Check
+
+on:
+  workflow_call:
+    inputs:
+      checks: { type: boolean, default: true }   # run every decision's `checks:`
+      guards: { type: boolean, default: true }   # require trailers on guarded paths
+      audit:  { type: boolean, default: false }  # report-only health sweep
+      zavet-dir:     { type: string, default: ".zavet" }
+      runner-weight: { type: string, default: "light" }
+      runner-labels: { type: string, default: "" }
+      yq-version:    { type: string, default: "v4.53.3" }
+    secrets:
+      GH_APP_CLIENT_ID:   { required: false }
+      GH_APP_PRIVATE_KEY: { required: false }
+
+jobs:
+  pick-runner:
+    uses: dodi-smart/.github/.github/workflows/pick-runner.yml@v1
+    with:
+      weight: ${{ inputs.runner-weight }}
+      labels: ${{ inputs.runner-labels }}
+    secrets: inherit
+
+  check:
+    needs: [pick-runner]
+    runs-on: ${{ fromJson(needs.pick-runner.outputs.runner) }}
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v7
+        with: { fetch-depth: 0 }
+
+      - id: present
+        env:
+          DIR: ${{ inputs.zavet-dir }}
+        run: |
+          set -euo pipefail
+          if [ -d "$DIR" ]; then
+            echo "yes=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "yes=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::no $DIR/ in this repository, nothing to check"
+          fi
+
+      # mikefarah yq specifically. check.sh reads decision frontmatter with it,
+      # and the python `yq` of the same name takes different arguments. An
+      # easy and confusing way for every check to report NONE.
+      - if: steps.present.outputs.yes == 'true'
+        env:
+          YQ: ${{ inputs.yq-version }}
+        run: |
+          set -euo pipefail
+          if ! command -v yq >/dev/null || ! yq --version 2>&1 | grep -q mikefarah; then
+            sudo curl -fsSL -o /usr/local/bin/yq \
+              "https://github.com/mikefarah/yq/releases/download/${YQ}/yq_linux_amd64"
+            sudo chmod +x /usr/local/bin/yq
+          fi
+          yq --version
+
+      - id: checks
+        if: steps.present.outputs.yes == 'true' && inputs.checks
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DIR: ${{ inputs.zavet-dir }}
+        run: |
+          # `set +e` is REQUIRED and must come first.
+          #
+          # GitHub runs every `run:` step as `bash -e {0}`. `set -uo pipefail`
+          # does NOT clear `-e`, so `out=$(check.sh); rc=$?` aborted the step at
+          # the assignment with check.sh's exit code, before printf ever ran.
+          # The result was a failed check with NO diagnostic output at all, which
+          # is the exact failure mode this whole standard exists to eliminate.
+          set +e
+          set -uo pipefail
+          out=$("$DIR/check.sh" 2>&1); rc=$?
+          printf '%s\n' "$out"
+          {
+            echo "### Decision checks"
+            echo '```'
+            printf '%s\n' "$out"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          # `|| true` is the point, not decoration. With zero failures this grep
+          # matches nothing and exits 1, which under `-e` killed the step, so the
+          # job failed precisely BECAUSE every check had passed. The step's verdict
+          # is $rc from check.sh, never the annotation pass.
+          printf '%s\n' "$out" | grep -E '^\s*FAIL' | while read -r line; do
+            echo "::error title=Decision check failed::$line"
+          done || true
+          echo "rc=$rc" >> "$GITHUB_OUTPUT"
+          exit "$rc"
+
+      # Guards are per-commit: the trailer belongs to the commit that touched
+      # the guarded path, so checking the squashed diff would let one trailer
+      # cover changes it never described.
+      - id: guards
+        if: steps.present.outputs.yes == 'true' && inputs.guards && github.event_name == 'pull_request'
+        continue-on-error: true
+        env:
+          DIR:  ${{ inputs.zavet-dir }}
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set +e            # see the checks step: GitHub's `bash -e` would abort early
+          set -uo pipefail
+          zavet="$DIR/bin/zavet"
+          if [ ! -x "$zavet" ]; then
+            echo "::notice::$zavet not present or not executable, skipping guard check"
+            exit 0
+          fi
+          blocked=0
+          for sha in $(git rev-list "$BASE".."$HEAD"); do
+            subject=$(git log -1 --format=%s "$sha")
+            # Merge commits touch paths their author never edited.
+            if [ "$(git rev-list --parents -n 1 "$sha" | wc -w)" -gt 2 ]; then
+              echo "skip (merge) $sha $subject"; continue
+            fi
+            git show --name-only --format= "$sha" > "$RUNNER_TEMP/paths.txt"
+            git log -1 --format=%B "$sha" > "$RUNNER_TEMP/msg.txt"
+            if reason=$("$zavet" gate --paths-from "$RUNNER_TEMP/paths.txt" \
+                          --message-file "$RUNNER_TEMP/msg.txt" --guards-only 2>&1); then
+              echo "ok   $sha $subject"
+            else
+              blocked=1
+              echo "::error title=Guarded change without a trailer::$sha $subject: $reason"
+              { echo "### Guard wall"; echo "- \`$sha\` $subject"; echo "  - $reason"; } >> "$GITHUB_STEP_SUMMARY"
+            fi
+          done
+          exit "$blocked"
+
+      - id: audit
+        if: steps.present.outputs.yes == 'true' && inputs.audit
+        continue-on-error: true
+        env:
+          DIR: ${{ inputs.zavet-dir }}
+        run: |
+          set +e            # see the checks step
+          set -uo pipefail
+          out=$("$DIR/bin/zavet" audit 2>&1 || true)
+          printf '%s\n' "$out"
+          { echo "### Audit (report only)"; echo '```'; printf '%s\n' "$out"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+
+      # One comment, updated in place. A new comment per push turns a useful
+      # signal into something people collapse and stop reading.
+      - if: always() && steps.present.outputs.yes == 'true' && github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          NUM:  ${{ github.event.pull_request.number }}
+          CHECKS: ${{ steps.checks.outcome }}
+          GUARDS: ${{ steps.guards.outcome }}
+        run: |
+          set +e            # see the checks step
+          set -uo pipefail
+          marker="<!-- zavet-check -->"
+          status() { case "$1" in success) echo "passed";; skipped) echo "skipped";; *) echo "**FAILED**";; esac; }
+          body="$marker
+          **Knowledge layer**
+
+          | Check | Result |
+          |---|---|
+          | Decision checks | $(status "$CHECKS") |
+          | Guard trailers | $(status "$GUARDS") |
+
+          Spec currency is reported in the job summary and never fails a build, the same severity the local pre-commit hook uses."
+
+          id=$(gh api "/repos/$REPO/issues/$NUM/comments" --paginate \
+                --jq "[.[] | select(.body | startswith(\"$marker\"))] | .[0].id" 2>/dev/null || echo "")
+          if [ -n "$id" ] && [ "$id" != "null" ]; then
+            gh api -X PATCH "/repos/$REPO/issues/comments/$id" -f body="$body" >/dev/null
+          else
+            gh api -X POST "/repos/$REPO/issues/$NUM/comments" -f body="$body" >/dev/null
+          fi
+
+      - name: Fail if a decision check or guard failed
+        if: always() && steps.present.outputs.yes == 'true'
+        env:
+          CHECKS: ${{ steps.checks.outcome }}
+          GUARDS: ${{ steps.guards.outcome }}
+        run: |
+          set -euo pipefail
+          # `if` over `[ x ] && y` for legibility, and the values are echoed
+          # because "knowledge-layer checks failed" alone does not say WHICH.
+          # (For the record, `[ x ] && y` was NOT the bug. bash's `set -e` does
+          # not exit on it. The real cause was the annotation grep above.)
+          if [ "$CHECKS" = "failure" ] || [ "$GUARDS" = "failure" ]; then
+            echo "knowledge-layer checks failed (checks=$CHECKS guards=$GUARDS)"
+            exit 1
+          fi
+          echo "knowledge layer is consistent (checks=$CHECKS guards=$GUARDS)"

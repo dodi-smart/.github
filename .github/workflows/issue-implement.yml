@@ -1,0 +1,239 @@
+# Reusable: implement a PLANNED issue, as a draft PR.
+#
+# Requested with the `agent:implement` label or `@claude implement`.
+#
+# The gate is deterministic and runs before anything costs money. An issue is
+# implemented only when `Triage state` is `Plan ready`, checked with jq against
+# the field. Never ask the agent whether a plan looks good enough. It will
+# sometimes accept a two-line issue body, and the result is twenty minutes of
+# confident work on the wrong thing.
+#
+# There is no override. Not workflow_dispatch, not a maintainer. If an issue is
+# not planned, the answer is to plan it.
+#
+# `Agent mode` decides who may trigger it. This workflow is what enforces it.
+#
+# THE AGENT NEVER MERGES. It opens a draft PR and stops. Review happens through
+# the normal PR Review path once a human marks it ready.
+name: Issue Implement
+
+on:
+  workflow_call:
+    inputs:
+      runner-weight:
+        type: string
+        default: "heavy"     # implementing means building, not linting
+      runner-labels:
+        type: string
+        default: ""
+      # Which Triage state makes an issue eligible. Overridable, but think hard
+      # before widening it. This is the whole safety property.
+      required-state:
+        type: string
+        default: "Plan ready"
+      base-branch:
+        type: string
+        default: ""       # defaults to the repo's default branch
+      model:
+        type: string
+        default: "claude-opus-5"
+      timeout-minutes:
+        type: number
+        default: 45
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN: { required: true }
+      GH_APP_CLIENT_ID:        { required: false }
+      GH_APP_PRIVATE_KEY:      { required: false }
+
+concurrency:
+  group: implement-${{ github.repository }}-${{ github.event.issue.number }}
+  cancel-in-progress: false      # never kill a run that may have pushed a branch
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: write            # to explain a refusal and clear the request label
+    outputs:
+      proceed: ${{ steps.check.outputs.proceed }}
+    steps:
+      # agent:no-touch first, unconditionally.
+      - id: gate
+        uses: dodi-smart/.github/actions/agent-gate@v1
+        with:
+          labels:        ${{ toJson(github.event.issue.labels.*.name) }}
+          event-name:    ${{ github.event_name }}
+          event-action:  ${{ github.event.action }}
+          label:         ${{ github.event.label.name }}
+          request-label: 'agent:implement'
+          author:        ${{ github.event.issue.user.login }}
+          comment:       ${{ github.event.comment.body }}
+          commands:      'implement'
+          bots:          'reject'
+          skip-draft:    'false'
+
+      # Is there a plan, and may this actor trigger it? Both answers come from
+      # fields the triage workflow already wrote. That is the payoff for keeping
+      # state on exactly one axis.
+      - id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PROCEED:  ${{ steps.gate.outputs.proceed }}
+          REPO:     ${{ github.repository }}
+          NUM:      ${{ github.event.issue.number }}
+          ACTOR:    ${{ github.actor }}
+          REQUIRED: ${{ inputs.required-state }}
+        run: |
+          set -euo pipefail
+          if [ "$PROCEED" != "true" ]; then
+            echo "proceed=false" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+
+          owner="${REPO%%/*}"; name="${REPO##*/}"
+          # shellcheck disable=SC2016  # $o/$r/$n are GraphQL variables, not shell
+          values=$(gh api graphql -f query='query($o:String!,$r:String!,$n:Int!){
+            repository(owner:$o,name:$r){ issue(number:$n){
+              issueFieldValues(first:50){ nodes{
+                ... on IssueFieldSingleSelectValue {
+                  name field { ... on IssueFieldSingleSelect { name } } } } } } } }' \
+            -f o="$owner" -f r="$name" -F n="$NUM" \
+            --jq '[.data.repository.issue.issueFieldValues.nodes[] | select(.field.name != null)]')
+
+          get() { jq -r --arg f "$1" '.[]|select(.field.name==$f)|.name' <<<"$values" | head -1; }
+          state=$(get "Triage state")
+          mode=$(get "Agent mode")
+          echo "Triage state='${state:-<unset>}'  Agent mode='${mode:-<unset>}'"
+
+          refuse() {
+            echo "proceed=false" >> "$GITHUB_OUTPUT"
+            gh issue comment "$NUM" --repo "$REPO" --body "$1" || true
+            # Clear the request label so the issue does not look like work in
+            # flight. Request labels are self-clearing on every path.
+            gh issue edit "$NUM" --repo "$REPO" --remove-label 'agent:implement' 2>/dev/null || true
+            echo "REFUSED: $1"
+            exit 0
+          }
+
+          if [ "$state" != "$REQUIRED" ]; then
+            refuse "**Not implementing this yet.** \`Triage state\` is \`${state:-unset}\`, and implementation requires \`$REQUIRED\`.
+
+          Implementing an unplanned issue produces a confident PR built on assumptions nobody checked. Run triage first, by applying \`agent:triage\` or commenting \`@claude triage\`, and once a plan is posted and the state reaches \`$REQUIRED\`, ask again."
+          fi
+
+          case "${mode:-}" in
+            "Human only")
+              refuse "**Not implementing this.** \`Agent mode\` is \`Human only\` on this issue, which is a deliberate instruction that no agent should write the code. Change the field if that is no longer intended." ;;
+            "Supervised"|"")
+              # Supervised (and unset, which is treated as supervised) requires a
+              # human with write access to have asked. The action already refuses
+              # actors without write access; this is the same bar, applied before
+              # the expensive part rather than inside it.
+              perm=$(gh api "/repos/$REPO/collaborators/$ACTOR/permission" --jq '.permission' 2>/dev/null || echo none)
+              case "$perm" in
+                admin|write|maintain) echo "actor $ACTOR has $perm, proceeding" ;;
+                *) refuse "**Not implementing this.** \`Agent mode\` is \`${mode:-Supervised (unset)}\`, which requires someone with write access to request it. \`$ACTOR\` has \`$perm\`." ;;
+              esac ;;
+            "Autonomous")
+              echo "Agent mode is Autonomous, proceeding" ;;
+            *)
+              refuse "**Not implementing this.** \`Agent mode\` is \`$mode\`, which this workflow does not recognise." ;;
+          esac
+
+          echo "proceed=true" >> "$GITHUB_OUTPUT"
+
+  pick-runner:
+    needs: [gate]
+    if: needs.gate.outputs.proceed == 'true'
+    uses: dodi-smart/.github/.github/workflows/pick-runner.yml@v1
+    with:
+      weight: ${{ inputs.runner-weight }}
+      labels: ${{ inputs.runner-labels }}
+    secrets: inherit
+
+  implement:
+    needs: [gate, pick-runner]
+    if: needs.gate.outputs.proceed == 'true'
+    runs-on: ${{ fromJson(needs.pick-runner.outputs.runner) }}
+    timeout-minutes: ${{ inputs.timeout-minutes }}
+    permissions:
+      contents: write          # to push the branch
+      pull-requests: write     # to open the draft PR
+      issues: write            # to report back and clear the request label
+      id-token: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          ref: ${{ inputs.base-branch }}
+
+      - uses: dodi-smart/.github/actions/run-agent@v1
+        with:
+          oauth-token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          model: ${{ inputs.model }}
+          track-progress: 'true'
+          prompt: |
+            Implement issue #${{ github.event.issue.number }} in ${{ github.repository }}.
+
+            A plan for this issue already exists. `Triage state` is
+            `${{ inputs.required-state }}`, which is why this run was allowed to
+            start. Read the issue and its comments and find that plan. Follow it.
+
+            If, having read the code, you believe the plan is wrong, DO NOT
+            quietly implement something else. Say so on the issue, explain what
+            you found, and stop. A plan that survived triage and then turns out
+            to be wrong is worth a conversation, not a silent substitution.
+
+            ## How to work
+
+            1. Create a branch off the current HEAD. Name it conventionally,
+               `feat/`, `fix/`, `chore/`, `refactor/`, `test/`, and include the
+               issue number, e.g. `fix/158-company-prefill`.
+            2. Read the repo's CLAUDE.md / AGENTS.md first if present, and match
+               the surrounding code: its naming, its comment density, its idiom.
+            3. Follow the repo's commit conventions. If it has a commitlint
+               config, read it. Some repos enforce a scope-enum and will reject
+               a scope you invented.
+            4. Write or update tests. A change with no test is not finished
+               unless the repo genuinely has no test setup, in which case say so.
+            5. Run whatever the repo uses to check itself (lint, typecheck,
+               tests) and fix what you broke.
+
+            ## Opening the PR
+
+            Open it as a **DRAFT**, targeting the branch you started from, with
+            `Closes #${{ github.event.issue.number }}` in the body.
+
+            Draft is not a formality. It means a human marks it ready when they
+            have looked, and marking it ready is what triggers PR Review. Do NOT
+            merge, approve, or mark it ready yourself.
+
+            The PR body goes in this shape:
+
+              ## What changed
+              One paragraph. The change, not a file list.
+
+              ## Why
+              The issue's constraint, in your own words. Link the issue.
+
+              ## Tested
+              What you ran and what it showed. Name the command.
+
+              ## Not verified
+              What you could not check, and why. Write "nothing" only when
+              that is true.
+
+            An honest "I could not verify X" is worth more than a confident
+            summary. Do not restate the issue's Priority, Effort or Risk
+            fields in the body. Those live on the issue.
+
+            ## Finally
+
+            Remove the `agent:implement` label. It means "implementation
+            requested / in progress"; leaving it on makes finished work look like
+            it is still running.
+
+            Do NOT change `Triage state`. Triage state stops at "Ready for
+            agent" and never mirrors execution. The open PR and the closed issue
+            already track that.

@@ -237,12 +237,29 @@ That path does not read `fallback`.
 
 ## Versioning
 
-Pin `@v1`. It is a moving tag, advanced only after a change has run green on a
-real repo. A breaking input change cuts `v2` rather than redefining `v1`.
+Pin `@v1`. It is a moving tag, and it moves on its own: every release from
+`main` force-advances it to the new version. A breaking input change cuts `v2`
+rather than redefining `v1`.
+
+**So merging to `main` is a rollout.** There is no staging step. The moment a
+release is cut, every repo pinned to `@v1` is running the new code, including the
+picker and composite actions this repo's own workflows call internally. Verify in
+the pull request, because after the merge it is already live everywhere.
 
 Releases are cut by semantic-release from `main`, so the version comes from the
 commit messages. `feat:` opens a minor, `fix:` a patch, and a breaking change
 footer a major.
+
+The major tag is derived from the version, so this works unchanged at `v2` and
+beyond. Releasing `2.0.0` creates `v2` and **stops touching `v1`**, which freezes
+at the last `1.x`. Callers pinned to `@v1` keep the old major until they choose
+to move, which is the whole point of pinning a major.
+
+One consequence to know before you cut a `v2`: `main` is the only release branch,
+so once `2.0.0` ships there is no way to release a `1.x` patch. That needs a
+maintenance branch added to `.releaserc.json`, for example
+`"branches": ["main", "1.x"]`, and it is easier to add before you need it than
+during an incident.
 
 `chore(deps)` also cuts a patch, which is specific to this repo. Renovate labels
 every dependency update `chore(deps)`, and elsewhere that deliberately releases
@@ -250,15 +267,22 @@ nothing. Here the dependencies are the action versions these workflows run on, s
 a bump that never reached a release would leave every caller pinned to `@v1` on
 the old ones. A plain `chore:` with no `deps` scope still releases nothing.
 
-Do not pin `@main`. Every caller used to, which meant one commit here took effect
-everywhere at once, with no staging and no way back except another commit while
-CI was already broken.
+Do not pin `@main` even so. `@v1` still moves only when a release is cut, so a
+commit that releases nothing, a `docs:` or a `ci:` change, never reaches a
+caller. `@main` picks up every commit. `@v1` is also a version you can name in a
+rollback, and `@main` is not.
 
-Pinning is also what makes a change testable. `claude-code-action` refuses to run
-when the workflow file differs from the default-branch copy, which is a correct
+To roll back, point the tag at the previous release and force it:
+
+```bash
+git tag -f v1 v1.0.1 && git push -f origin v1
+```
+
+One thing pinning does not buy you here. `claude-code-action` refuses to run when
+the workflow file differs from the default-branch copy, which is a correct
 control, since a pull request could otherwise edit the reviewer to exfiltrate its
-token. So verify after merging: merge to `main`, verify on one repo pinned to
-`main`, then let the tag move.
+token. It means a change to an agent workflow cannot be exercised on the pull
+request that makes it, only after merging.
 
 ## Renovate
 

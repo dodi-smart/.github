@@ -121,6 +121,13 @@ Two consequences:
 comes from the commit messages and the tag follows. Write conventional commits or
 nothing is released.
 
+This repo also releases on `chore(deps)`, which the shared Renovate preset
+deliberately makes inert everywhere else. The dependencies here are the action
+versions these workflows run on, so a bump that never reached a release would
+leave every caller pinned to `@v1` on the old ones. The rule is scoped to the
+`deps` scope, so a plain `chore:` still releases nothing, and `Self test` fails
+if the rule is removed.
+
 ## This repo's own CI is hosted, and has to be
 
 `Self test` and `Publish release` both run on `ubuntu-latest`. That is not a

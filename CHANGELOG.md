@@ -1,3 +1,9 @@
+## [1.0.3](https://github.com/dodi-smart/.github/compare/v1.0.2...v1.0.3) (2026-08-25)
+
+### 🐛 Bug Fixes
+
+* **setup-stack:** name a channel in the rust ref, and drop a vendor name from the bug template ([b0cf573](https://github.com/dodi-smart/.github/commit/b0cf573635bacaef84338b4fac070a13337de7bc))
+
 ## [1.0.2](https://github.com/dodi-smart/.github/compare/v1.0.1...v1.0.2) (2026-08-25)
 
 ### 🐛 Bug Fixes

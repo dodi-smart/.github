@@ -24,28 +24,36 @@
           "types": [
             {
               "type": "feat",
-              "section": "Features"
+              "section": "✨ Features",
+              "hidden": false
             },
             {
               "type": "fix",
-              "section": "Bug Fixes"
+              "section": "🐛 Bug Fixes",
+              "hidden": false
             },
             {
               "type": "perf",
-              "section": "Performance"
+              "section": "⚡ Performance Improvements",
+              "hidden": false
             },
             {
-              "type": "chore",
-              "scope": "deps",
-              "section": "Dependencies",
+              "type": "revert",
+              "section": "⏪ Reverts",
               "hidden": false
             },
             {
               "type": "chore",
-              "hidden": true
+              "scope": "deps",
+              "section": "⬆️ Dependencies",
+              "hidden": false
             },
             {
               "type": "docs",
+              "hidden": true
+            },
+            {
+              "type": "style",
               "hidden": true
             },
             {
@@ -57,9 +65,23 @@
               "hidden": true
             },
             {
+              "type": "build",
+              "hidden": true
+            },
+            {
               "type": "ci",
               "hidden": true
+            },
+            {
+              "type": "chore",
+              "hidden": true
             }
+          ]
+        },
+        "writerOpts": {
+          "commitsSort": [
+            "scope",
+            "subject"
           ]
         }
       }

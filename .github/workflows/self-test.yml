@@ -176,6 +176,20 @@ jobs:
             const analyzer = rel.plugins.find(p => Array.isArray(p) && p[0] === "@semantic-release/commit-analyzer");
             const deps = (analyzer[1].releaseRules || []).some(r => r.type === "chore" && r.scope === "deps" && r.release === "patch");
             if (!deps) throw new Error("releaserc: chore(deps) no longer cuts a patch, so v1 stops moving on dependency updates");
+            const notes = rel.plugins.find(p => Array.isArray(p) && p[0] === "@semantic-release/release-notes-generator");
+            const types = ((notes[1].presetConfig || {}).types) || [];
+            if (!types.length) throw new Error("releaserc: no changelog sections configured");
+            // Written as literal UTF-8. An earlier attempt lost every emoji in
+            // transit and produced a plain changelog that looked deliberate,
+            // so this asserts they survived rather than trusting the file.
+            const plain = types.filter(t => !t.hidden && !/[^\x00-\x7F]/.test(t.section || ""));
+            if (plain.length) throw new Error("releaserc: changelog section without an emoji: " + plain.map(t => t.section).join(", "));
+            // conventional-changelog takes the FIRST matching entry, so a bare
+            // chore listed before the scoped one swallows chore(deps) and hides it.
+            const depsAt = types.findIndex(t => t.type === "chore" && t.scope === "deps");
+            const choreAt = types.findIndex(t => t.type === "chore" && !t.scope);
+            if (depsAt === -1) throw new Error("releaserc: chore(deps) has no changelog section, so a dependency release would be empty");
+            if (choreAt !== -1 && choreAt < depsAt) throw new Error("releaserc: bare chore is listed before chore(deps), which hides dependency updates");
             const ren = JSON.parse(fs.readFileSync("renovate.json", "utf8"));
             if (!ren.baseBranchPatterns.includes("main")) throw new Error("renovate: baseBranchPatterns must name main, the preset says develop");
             JSON.parse(fs.readFileSync("package.json", "utf8"));

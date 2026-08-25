@@ -44,7 +44,10 @@ inputs:
     description: 'For stack=flutter'
     default: 'stable'
   rust-toolchain:
-    description: 'For stack=rust'
+    # NO LONGER READ. The rust step pins the channel in the action ref, which
+    # takes no toolchain input. Declared rather than removed, because removing
+    # an input breaks every caller already pinned at @v1.
+    description: 'Ignored. The rust toolchain is pinned to stable in the action ref.'
     default: 'stable'
   rust-components:
     description: 'For stack=rust, e.g. "clippy, rustfmt"'
@@ -220,13 +223,15 @@ runs:
         channel: ${{ inputs.flutter-channel }}
         cache: ${{ steps.resolve.outputs.cache_enabled == 'true' }}
 
-    # Pinned to @master with an explicit `toolchain`, which is how this action
-    # is meant to be parameterised. The `@stable` form the README leads with
-    # hardcodes the channel in the ref and cannot be overridden by an input.
+    # `@stable` rather than `@master`, so the one floating ref in this repo names
+    # a channel instead of a moving branch of the action. This action publishes a
+    # branch per channel and the channel IS the ref, so `@stable` accepts no
+    # `toolchain` input and `rust-toolchain` below is inert: every repo gets
+    # stable. A repo needing a pinned version or nightly changes this step back
+    # to `@master` with an explicit `toolchain`, here, rather than forking.
     - if: inputs.stack == 'rust'
-      uses: dtolnay/rust-toolchain@master
+      uses: dtolnay/rust-toolchain@stable
       with:
-        toolchain: ${{ inputs.rust-toolchain }}
         components: ${{ inputs.rust-components }}
 
     - if: inputs.stack == 'rust' && steps.resolve.outputs.cache_enabled == 'true'

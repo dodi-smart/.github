@@ -1,16 +1,85 @@
 {
-  "branches": ["main"],
+  "branches": [
+    "main"
+  ],
   "plugins": [
-    ["@semantic-release/commit-analyzer", { "preset": "conventionalcommits" }],
-    ["@semantic-release/release-notes-generator", { "preset": "conventionalcommits" }],
+    [
+      "@semantic-release/commit-analyzer",
+      {
+        "preset": "conventionalcommits",
+        "releaseRules": [
+          {
+            "type": "chore",
+            "scope": "deps",
+            "release": "patch"
+          }
+        ]
+      }
+    ],
+    [
+      "@semantic-release/release-notes-generator",
+      {
+        "preset": "conventionalcommits",
+        "presetConfig": {
+          "types": [
+            {
+              "type": "feat",
+              "section": "Features"
+            },
+            {
+              "type": "fix",
+              "section": "Bug Fixes"
+            },
+            {
+              "type": "perf",
+              "section": "Performance"
+            },
+            {
+              "type": "chore",
+              "scope": "deps",
+              "section": "Dependencies",
+              "hidden": false
+            },
+            {
+              "type": "chore",
+              "hidden": true
+            },
+            {
+              "type": "docs",
+              "hidden": true
+            },
+            {
+              "type": "refactor",
+              "hidden": true
+            },
+            {
+              "type": "test",
+              "hidden": true
+            },
+            {
+              "type": "ci",
+              "hidden": true
+            }
+          ]
+        }
+      }
+    ],
     "@semantic-release/changelog",
-    ["@semantic-release/git", {
-      "assets": ["CHANGELOG.md"],
-      "message": "chore(release): ${nextRelease.version} [skip ci]\n\n${nextRelease.notes}"
-    }],
+    [
+      "@semantic-release/git",
+      {
+        "assets": [
+          "CHANGELOG.md"
+        ],
+        "message": "chore(release): ${nextRelease.version} [skip ci]\n\n${nextRelease.notes}"
+      }
+    ],
     "@semantic-release/github",
-    ["@semantic-release/exec", {
-      "successCmd": "git tag -f v${nextRelease.version.split('.')[0]} ${nextRelease.gitTag} && git push -f origin v${nextRelease.version.split('.')[0]}"
-    }]
+    [
+      "@semantic-release/exec",
+      {
+        "successCmd": "git tag -f v${nextRelease.version.split('.')[0]} ${nextRelease.gitTag} && git push -f origin v${nextRelease.version.split('.')[0]}"
+      }
+    ]
   ]
 }

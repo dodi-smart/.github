@@ -173,6 +173,9 @@ jobs:
             }
             const exec = rel.plugins.find(p => Array.isArray(p) && p[0] === "@semantic-release/exec");
             if (!/git tag -f v/.test(exec[1].successCmd)) throw new Error("releaserc: the major tag is never moved");
+            const analyzer = rel.plugins.find(p => Array.isArray(p) && p[0] === "@semantic-release/commit-analyzer");
+            const deps = (analyzer[1].releaseRules || []).some(r => r.type === "chore" && r.scope === "deps" && r.release === "patch");
+            if (!deps) throw new Error("releaserc: chore(deps) no longer cuts a patch, so v1 stops moving on dependency updates");
             const ren = JSON.parse(fs.readFileSync("renovate.json", "utf8"));
             if (!ren.baseBranchPatterns.includes("main")) throw new Error("renovate: baseBranchPatterns must name main, the preset says develop");
             JSON.parse(fs.readFileSync("package.json", "utf8"));

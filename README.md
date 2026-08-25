@@ -244,6 +244,12 @@ Releases are cut by semantic-release from `main`, so the version comes from the
 commit messages. `feat:` opens a minor, `fix:` a patch, and a breaking change
 footer a major.
 
+`chore(deps)` also cuts a patch, which is specific to this repo. Renovate labels
+every dependency update `chore(deps)`, and elsewhere that deliberately releases
+nothing. Here the dependencies are the action versions these workflows run on, so
+a bump that never reached a release would leave every caller pinned to `@v1` on
+the old ones. A plain `chore:` with no `deps` scope still releases nothing.
+
 Do not pin `@main`. Every caller used to, which meant one commit here took effect
 everywhere at once, with no staging and no way back except another commit while
 CI was already broken.

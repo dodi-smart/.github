@@ -63,6 +63,8 @@ on:
       node-version:    { type: string, default: "24" }
       bun-version:     { type: string, default: "latest" }
       flutter-version: { type: string, default: "" }
+      # Ignored: setup-stack pins the rust channel in the action ref. Declared
+      # so a caller already passing it does not break.
       rust-toolchain:  { type: string, default: "stable" }
     secrets:
       GH_APP_CLIENT_ID:   { required: false }

@@ -46,4 +46,4 @@ body:
     id: evidence
     attributes:
       label: Evidence
-      description: Logs, stack traces, screenshots, PostHog links, request ids. Paste freely, because an agent will read it.
+      description: Logs, stack traces, screenshots, analytics or tracing links, request ids. Paste freely, because an agent will read it.

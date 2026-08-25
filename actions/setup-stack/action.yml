@@ -196,7 +196,7 @@ runs:
         # action never uploads a package store under restore-keys.
 
     - if: (inputs.stack == 'gradle' || inputs.stack == 'android') || (inputs.stack == 'flutter' && inputs.java-version != '')
-      uses: actions/setup-java@v5
+      uses: actions/setup-java@v6
       with:
         java-version: ${{ inputs.java-version }}
         distribution: temurin

@@ -51,6 +51,8 @@ why, not history.
 | `.github/workflows/pr-checks.yml` | PR checks use local home on self-hosted, `cache: auto` | All three `setup-stack` calls pass `isolate: false` and `cache: auto`. Auto becomes true only on `github-hosted`. |
 | `.github/workflows/deps-verify.yml` | Verification isolates and never uses GitHub package cache | Hard-coded `isolate: true` and `cache: false`. Not a caller-facing input: a verification job that can see yesterday's tree is not verifying. |
 | all workflows | Callers pin a released tag | `v1` moves only after a change runs green on a real repo. Changing or removing an input is breaking. Add an alias and warn, as `deps-verify` does for `setup:`, or cut `v2`. |
+| `README.md` | The onboarding badge says `v1`, and it moves only when the tag it names does | The badge in a consuming repo's README asserts that repo calls these workflows at `@v1`. It is verified against live state by the onboarding tooling, which fails a repo displaying it while its workflows are disabled or its properties unset. Changing the badge's version here without cutting that version is how every onboarded repo starts advertising something untrue at once. |
+| `README.md` | The badge names no repo but this one | It is rendered inside repos this org does not control the visibility of, and it is the one artefact from here that a reader outside the org may see in context. Keep its text to what these workflows are, never who uses them. |
 
 ## Facts worth not rediscovering
 

@@ -97,6 +97,38 @@ Adopting a workflow here removes a class of problem rather than a file.
 - **Silent breakage.** The picker checks its own selector against the live fleet
   and annotates the run when it matches nothing.
 
+## The badge that brought you here
+
+A repo wired up to these workflows carries this badge in its README:
+
+[![shared workflows v1](https://img.shields.io/badge/shared_workflows-v1-0969da)](https://github.com/dodi-smart/.github)
+
+It is a claim about that repo, so it is worth knowing what backs it. The badge
+means the repo calls the workflows above at `@v1`, that those workflows are
+`active` rather than sitting disabled, that it carries the shared label set and
+an area map, and that its bot configs emit the label names the workflows expect.
+An onboarding tool asserts all of it and **fails** the repo if the badge is
+present while any of it is not. A badge nobody checks is decoration within one
+drift, and worse than none, because it is read as a guarantee by everyone who
+does not go and look.
+
+Two org-level repository custom properties carry the same facts in queryable
+form:
+
+| Property | Answers |
+|---|---|
+| `onboarded` | Which generation of these workflows the repo is on: `v1`, or `none` |
+| `client` | Which body of work the repo belongs to |
+
+`onboarded` holds a version rather than a yes/no, because the question actually
+worth asking is which repos still need migrating, and a version answers it as a
+single search instead of an audit. It is required with a default of `none`, so a
+repo created next year answers it too rather than being quietly absent from
+every count.
+
+Property *values* are visible to org members only. The badge is the public half,
+and it deliberately names no repo but this one.
+
 ## Two things you can rely on
 
 **`agent:no-touch` stops everything.** Checked before every other condition, in

@@ -1,3 +1,10 @@
+## [1.0.4](https://github.com/dodi-smart/.github/compare/v1.0.3...v1.0.4) (2026-08-28)
+
+### 🐛 Bug Fixes
+
+* **zavet-check:** report a check that could not run apart from one that failed ([d1769c5](https://github.com/dodi-smart/.github/commit/d1769c50cc890b9b7892a4a4b712c9f4339347ed))
+* **zavet-check:** run the real check runner, and separate cannot-run from failed ([644c290](https://github.com/dodi-smart/.github/commit/644c29003ba439bff895ce840b03d88736d2fd44))
+
 ## [1.0.3](https://github.com/dodi-smart/.github/compare/v1.0.2...v1.0.3) (2026-08-25)
 
 ### 🐛 Bug Fixes

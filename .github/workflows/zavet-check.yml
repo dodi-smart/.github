@@ -28,6 +28,21 @@ on:
       runner-weight: { type: string, default: "light" }
       runner-labels: { type: string, default: "" }
       yq-version:    { type: string, default: "v4.53.3" }
+
+      # The toolchain the decision checks THEMSELVES run on. Default `none` suits
+      # a repo whose checks are plain shell. A check that shells out to a test
+      # runner or a build tool needs its stack here, or the command is not found
+      # and the job reports a decision that stopped holding when in fact nothing
+      # ran. Same input and same values as pr-checks.
+      stack:   { type: string, default: "none" }
+      # `@stack` installs dependencies the conventional way for that stack, which
+      # is what a check running a test file needs. Set to "" for a stack whose
+      # tooling resolves on demand.
+      install: { type: string, default: "@stack" }
+      node-version:    { type: string, default: "24" }
+      bun-version:     { type: string, default: "latest" }
+      java-version:    { type: string, default: "21" }
+      flutter-version: { type: string, default: "" }
     secrets:
       GH_APP_CLIENT_ID:   { required: false }
       GH_APP_PRIVATE_KEY: { required: false }
@@ -63,7 +78,7 @@ jobs:
             echo "::notice::no $DIR/ in this repository, nothing to check"
           fi
 
-      # mikefarah yq specifically. check.sh reads decision frontmatter with it,
+      # mikefarah yq specifically. zavet reads decision frontmatter with it,
       # and the python `yq` of the same name takes different arguments. An
       # easy and confusing way for every check to report NONE.
       - if: steps.present.outputs.yes == 'true'
@@ -78,24 +93,92 @@ jobs:
           fi
           yq --version
 
+      # Installed before the checks run, because a decision's `checks:` command is
+      # arbitrary and usually belongs to the repo's own toolchain. `none` is a
+      # real value here, so this runs unconditionally and the env file below is
+      # always written; a conditional setup would give the step two code paths
+      # and one of them would rot.
+      - id: setup
+        if: steps.present.outputs.yes == 'true' && inputs.checks
+        uses: dodi-smart/.github/actions/setup-stack@v1
+        with:
+          stack:           ${{ inputs.stack }}
+          isolate:         false
+          cache:           auto
+          install:         ${{ inputs.install }}
+          node-version:    ${{ inputs.node-version }}
+          bun-version:     ${{ inputs.bun-version }}
+          java-version:    ${{ inputs.java-version }}
+          flutter-version: ${{ inputs.flutter-version }}
+
+      - name: Install dependencies for the decision checks
+        if: steps.present.outputs.yes == 'true' && inputs.checks && steps.setup.outputs.install != ''
+        run: |
+          set -euo pipefail
+          . "${{ steps.setup.outputs.env-file }}"
+          ${{ steps.setup.outputs.install }}
+
       - id: checks
         if: steps.present.outputs.yes == 'true' && inputs.checks
         continue-on-error: true
         env:
           GH_TOKEN: ${{ github.token }}
           DIR: ${{ inputs.zavet-dir }}
+          ENV_FILE: ${{ steps.setup.outputs.env-file }}
         run: |
           # `set +e` is REQUIRED and must come first.
           #
           # GitHub runs every `run:` step as `bash -e {0}`. `set -uo pipefail`
-          # does NOT clear `-e`, so `out=$(check.sh); rc=$?` aborted the step at
-          # the assignment with check.sh's exit code, before printf ever ran.
+          # does NOT clear `-e`, so `out=$(...); rc=$?` aborted the step at
+          # the assignment with the runner's exit code, before printf ever ran.
           # The result was a failed check with NO diagnostic output at all, which
           # is the exact failure mode this whole standard exists to eliminate.
           set +e
           set -uo pipefail
-          out=$("$DIR/check.sh" 2>&1); rc=$?
+
+          # `zavet verify` is the runner. It prints one "FAIL<TAB>id<TAB>label"
+          # row per broken check, which is what the annotation grep below reads,
+          # and exits 1 if any failed. This step used to invoke `$DIR/check.sh`,
+          # a script the tool has never shipped, so it could only ever have
+          # worked in a repo that wrote one by hand.
+          #
+          # A missing runner is NOT a passing check, and it is not the same event
+          # as a check that ran and failed. Without the guard the step exited 127
+          # from bash's own "No such file or directory", surfacing as a bare
+          # "Process completed with exit code 127" naming nothing. A reader then
+          # goes looking for the decision that broke, and there isn't one.
+          #
+          # Severity splits on whether anything was actually meant to run:
+          # a knowledge layer carrying no `checks:` at all has nothing to verify,
+          # while one that declares them and cannot run them is unverified, which
+          # fails closed like any other unmet check.
+          zavet="$DIR/bin/zavet"
+          if [ ! -x "$zavet" ]; then
+            declared=$(grep -rlE '^checks:' "$DIR/decisions" 2>/dev/null | wc -l | tr -d ' ')
+            if [ "$declared" -eq 0 ]; then
+              echo "::notice::$zavet not present or not executable, and no decision declares checks:. Nothing to run."
+              exit 0
+            fi
+            echo "::error title=Decision checks could not run::$zavet is not present or not executable, but $declared decision(s) declare checks:. Those checks are unverified. The CLI is vendored into the repo, so commit it."
+            { echo "### Decision checks"; echo "Could not run: \`$zavet\` is missing or not executable, while $declared decision(s) declare \`checks:\`."; } >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+
+          # setup-stack always writes this, so the guard is for the case where
+          # that step itself failed and left the output empty. The directive
+          # below is required, because the path is only known at run time and
+          # SC1090 is an error here. Keep any prose above it from starting a
+          # line with the linter's name, or that line parses as a directive too.
+          # shellcheck source=/dev/null
+          [ -n "$ENV_FILE" ] && [ -f "$ENV_FILE" ] && . "$ENV_FILE"
+          out=$("$zavet" verify 2>&1); rc=$?
           printf '%s\n' "$out"
+          # 127 is bash for "command not found". Reported apart from a real
+          # failure, because the fix is a missing toolchain and not a decision
+          # that stopped holding. `stack:` on this workflow is what supplies it.
+          if [ "$rc" -eq 127 ]; then
+            echo "::error title=Decision check could not run::a check exited 127, command not found. Set the 'stack' input to the toolchain these checks need."
+          fi
           {
             echo "### Decision checks"
             echo '```'
@@ -105,7 +188,7 @@ jobs:
           # `|| true` is the point, not decoration. With zero failures this grep
           # matches nothing and exits 1, which under `-e` killed the step, so the
           # job failed precisely BECAUSE every check had passed. The step's verdict
-          # is $rc from check.sh, never the annotation pass.
+          # is $rc from the runner, never the annotation pass.
           printf '%s\n' "$out" | grep -E '^\s*FAIL' | while read -r line; do
             echo "::error title=Decision check failed::$line"
           done || true

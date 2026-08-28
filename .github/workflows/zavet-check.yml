@@ -78,7 +78,7 @@ jobs:
             echo "::notice::no $DIR/ in this repository, nothing to check"
           fi
 
-      # mikefarah yq specifically. check.sh reads decision frontmatter with it,
+      # mikefarah yq specifically. zavet reads decision frontmatter with it,
       # and the python `yq` of the same name takes different arguments. An
       # easy and confusing way for every check to report NONE.
       - if: steps.present.outputs.yes == 'true'
@@ -129,16 +129,22 @@ jobs:
           # `set +e` is REQUIRED and must come first.
           #
           # GitHub runs every `run:` step as `bash -e {0}`. `set -uo pipefail`
-          # does NOT clear `-e`, so `out=$(check.sh); rc=$?` aborted the step at
-          # the assignment with check.sh's exit code, before printf ever ran.
+          # does NOT clear `-e`, so `out=$(...); rc=$?` aborted the step at
+          # the assignment with the runner's exit code, before printf ever ran.
           # The result was a failed check with NO diagnostic output at all, which
           # is the exact failure mode this whole standard exists to eliminate.
           set +e
           set -uo pipefail
 
+          # `zavet verify` is the runner. It prints one "FAIL<TAB>id<TAB>label"
+          # row per broken check, which is what the annotation grep below reads,
+          # and exits 1 if any failed. This step used to invoke `$DIR/check.sh`,
+          # a script the tool has never shipped, so it could only ever have
+          # worked in a repo that wrote one by hand.
+          #
           # A missing runner is NOT a passing check, and it is not the same event
-          # as a check that ran and failed. Without this the step exited 127 from
-          # bash's own "No such file or directory", which surfaces as a bare
+          # as a check that ran and failed. Without the guard the step exited 127
+          # from bash's own "No such file or directory", surfacing as a bare
           # "Process completed with exit code 127" naming nothing. A reader then
           # goes looking for the decision that broke, and there isn't one.
           #
@@ -146,14 +152,15 @@ jobs:
           # a knowledge layer carrying no `checks:` at all has nothing to verify,
           # while one that declares them and cannot run them is unverified, which
           # fails closed like any other unmet check.
-          if [ ! -x "$DIR/check.sh" ]; then
+          zavet="$DIR/bin/zavet"
+          if [ ! -x "$zavet" ]; then
             declared=$(grep -rlE '^checks:' "$DIR/decisions" 2>/dev/null | wc -l | tr -d ' ')
             if [ "$declared" -eq 0 ]; then
-              echo "::notice::$DIR/check.sh not present or not executable, and no decision declares checks:. Nothing to run."
+              echo "::notice::$zavet not present or not executable, and no decision declares checks:. Nothing to run."
               exit 0
             fi
-            echo "::error title=Decision checks could not run::$DIR/check.sh is not present or not executable, but $declared decision(s) declare checks:. Those checks are unverified."
-            { echo "### Decision checks"; echo "Could not run: \`$DIR/check.sh\` is missing or not executable, while $declared decision(s) declare \`checks:\`."; } >> "$GITHUB_STEP_SUMMARY"
+            echo "::error title=Decision checks could not run::$zavet is not present or not executable, but $declared decision(s) declare checks:. Those checks are unverified. The CLI is vendored into the repo, so commit it."
+            { echo "### Decision checks"; echo "Could not run: \`$zavet\` is missing or not executable, while $declared decision(s) declare \`checks:\`."; } >> "$GITHUB_STEP_SUMMARY"
             exit 1
           fi
 
@@ -164,7 +171,7 @@ jobs:
           # line with the linter's name, or that line parses as a directive too.
           # shellcheck source=/dev/null
           [ -n "$ENV_FILE" ] && [ -f "$ENV_FILE" ] && . "$ENV_FILE"
-          out=$("$DIR/check.sh" 2>&1); rc=$?
+          out=$("$zavet" verify 2>&1); rc=$?
           printf '%s\n' "$out"
           # 127 is bash for "command not found". Reported apart from a real
           # failure, because the fix is a missing toolchain and not a decision
@@ -181,7 +188,7 @@ jobs:
           # `|| true` is the point, not decoration. With zero failures this grep
           # matches nothing and exits 1, which under `-e` killed the step, so the
           # job failed precisely BECAUSE every check had passed. The step's verdict
-          # is $rc from check.sh, never the annotation pass.
+          # is $rc from the runner, never the annotation pass.
           printf '%s\n' "$out" | grep -E '^\s*FAIL' | while read -r line; do
             echo "::error title=Decision check failed::$line"
           done || true

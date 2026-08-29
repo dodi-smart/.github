@@ -212,8 +212,28 @@ jobs:
             3. For each breaking or deprecating change, grep this repo for real
                usage of the affected API. A breaking change the code never touches
                is not a risk here, say so explicitly rather than alarming.
-            4. Write one table to `${{ runner.temp }}/deps-verdict.md`:
-               package | old -> new | upstream changes | used here? | verdict.
+            4. Write the report to `${{ runner.temp }}/deps-verdict.md`, in this
+               order:
+
+               - One verdict line first, because "can this merge" is the only
+                 question most readers have:
+                 `**deps:verified** — build green, nothing breaking reaches this repo.`
+                 (bold label, then one plain sentence of why).
+               - Then a compact table, one row per package. Cells hold a few
+                 words, NEVER a sentence — a sentence in a cell wraps into an
+                 unreadable wall on GitHub:
+
+                 | Package | Version | Change | Reach here |
+                 |---|---|---|---|
+                 | `example-pkg` | `8.2 → 9.0` | major, ESM-only | none, API unused |
+
+               - Then, only for a package with a story (major bump, breaking
+                 change, notes you could not find), a short section:
+                 `**example-pkg 8.2 → 9.0**` as a bold lead, followed by 2–4
+                 plain sentences: what changed upstream, whether this repo's
+                 code touches it, and a link to the release notes. A patch or
+                 minor bump with nothing notable gets a table row and no
+                 section.
 
                Write the FILE. Do not comment on the pull request yourself. A
                later step posts that file as a single comment and rewrites the

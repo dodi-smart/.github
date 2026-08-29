@@ -1,3 +1,10 @@
+## [1.0.5](https://github.com/dodi-smart/.github/compare/v1.0.4...v1.0.5) (2026-08-29)
+
+### 🐛 Bug Fixes
+
+* **deps-verify:** lead the verdict comment with the verdict and keep prose out of table cells ([4a645fb](https://github.com/dodi-smart/.github/commit/4a645fb13f201afd7654e296e3a0383088317baf))
+* **zavet-check:** report without failing the job on dependency bot PRs ([415ac95](https://github.com/dodi-smart/.github/commit/415ac95c118e8bbd9cfafa37958f15aa89a53870))
+
 ## [1.0.4](https://github.com/dodi-smart/.github/compare/v1.0.3...v1.0.4) (2026-08-28)
 
 ### 🐛 Bug Fixes

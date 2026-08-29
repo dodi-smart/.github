@@ -1,3 +1,9 @@
+## [1.0.6](https://github.com/dodi-smart/.github/compare/v1.0.5...v1.0.6) (2026-08-29)
+
+### 🐛 Bug Fixes
+
+* **agent-gate:** make 'bots: only' mean dependency bots, not any [bot] author ([f047672](https://github.com/dodi-smart/.github/commit/f047672e2cdc074e2c179b8ef679917eba9c293c))
+
 ## [1.0.5](https://github.com/dodi-smart/.github/compare/v1.0.4...v1.0.5) (2026-08-29)
 
 ### 🐛 Bug Fixes

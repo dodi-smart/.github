@@ -13,6 +13,11 @@
 # Inverting either of those makes CI disagree with the hooks, and then people
 # learn to distrust one of them.
 #
+# The one exception is a dependency bot's pull request (Renovate, Dependabot):
+# everything runs and reports as usual, but nothing fails the job. A bot can
+# neither write a decision trailer nor repair a decision, so a red check there
+# blocks automerge without producing anyone who can act on it.
+#
 # Some decision checks reach the GitHub API on purpose, because a decision
 # about a file in another repo should be verified rather than asserted. So this
 # workflow needs a token and network.
@@ -65,6 +70,21 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with: { fetch-depth: 0 }
+
+      # Renovate and Dependabot bump manifests and lockfiles, and no bot will
+      # ever write a decision trailer or fix a decision that stopped holding.
+      # Failing their PRs here blocks automerge on a signal the author cannot
+      # act on, so on a dependency-bot PR everything below still runs and
+      # reports, but nothing fails the job. Same bot list as deps-verify.
+      - id: mode
+        env:
+          AUTHOR: ${{ github.event.pull_request.user.login }}
+        run: |
+          set -euo pipefail
+          case "${AUTHOR:-}" in
+            'renovate[bot]'|'dependabot[bot]'|'app/renovate') echo "enforce=false" >> "$GITHUB_OUTPUT" ;;
+            *)                                                echo "enforce=true"  >> "$GITHUB_OUTPUT" ;;
+          esac
 
       - id: present
         env:
@@ -254,11 +274,18 @@ jobs:
           NUM:  ${{ github.event.pull_request.number }}
           CHECKS: ${{ steps.checks.outcome }}
           GUARDS: ${{ steps.guards.outcome }}
+          ENFORCE: ${{ steps.mode.outputs.enforce }}
         run: |
           set +e            # see the checks step
           set -uo pipefail
           marker="<!-- zavet-check -->"
           status() { case "$1" in success) echo "passed";; skipped) echo "skipped";; *) echo "**FAILED**";; esac; }
+          note=""
+          if [ "$ENFORCE" = "false" ] && { [ "$CHECKS" = "failure" ] || [ "$GUARDS" = "failure" ]; }; then
+            note="
+
+          Report only: this is a dependency bot's pull request, so the failure above is recorded here without failing the job."
+          fi
           body="$marker
           **Knowledge layer**
 
@@ -267,7 +294,7 @@ jobs:
           | Decision checks | $(status "$CHECKS") |
           | Guard trailers | $(status "$GUARDS") |
 
-          Spec currency is reported in the job summary and never fails a build, the same severity the local pre-commit hook uses."
+          Spec currency is reported in the job summary and never fails a build, the same severity the local pre-commit hook uses.$note"
 
           id=$(gh api "/repos/$REPO/issues/$NUM/comments" --paginate \
                 --jq "[.[] | select(.body | startswith(\"$marker\"))] | .[0].id" 2>/dev/null || echo "")
@@ -282,6 +309,7 @@ jobs:
         env:
           CHECKS: ${{ steps.checks.outcome }}
           GUARDS: ${{ steps.guards.outcome }}
+          ENFORCE: ${{ steps.mode.outputs.enforce }}
         run: |
           set -euo pipefail
           # `if` over `[ x ] && y` for legibility, and the values are echoed
@@ -289,6 +317,10 @@ jobs:
           # (For the record, `[ x ] && y` was NOT the bug. bash's `set -e` does
           # not exit on it. The real cause was the annotation grep above.)
           if [ "$CHECKS" = "failure" ] || [ "$GUARDS" = "failure" ]; then
+            if [ "$ENFORCE" = "false" ]; then
+              echo "::warning title=Knowledge-layer checks failed, report only::Dependency-bot PR, so the failure is recorded without failing the job (checks=$CHECKS guards=$GUARDS)."
+              exit 0
+            fi
             echo "knowledge-layer checks failed (checks=$CHECKS guards=$GUARDS)"
             exit 1
           fi

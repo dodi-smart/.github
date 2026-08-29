@@ -69,7 +69,7 @@ exactly like a busy fleet.
 | `claude-assist.yml` | `@claude <anything else>` | The general assistant |
 | `release.yml` | push to a release branch | semantic-release, single or multi-module |
 | `react-doctor.yml` | pull request, React repos | Static analysis of React/TS source. Advisory by default. |
-| `zavet-check.yml` | pull request | Knowledge-layer checks, for repos that have one |
+| `zavet-check.yml` | pull request | Knowledge-layer checks, for repos that have one. Report-only on dependency bot PRs |
 | `pick-runner.yml` | called by the others | Chooses a runner and validates the choice |
 
 ### Composite actions

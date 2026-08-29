@@ -63,6 +63,8 @@ case_ false "human PR"                          '[]' pull_request opened '' agen
 case_ true  "dependabot PR"                     '[]' pull_request synchronize '' agent:review 'dependabot[bot]' false '' '' only true ''
 case_ true  "renovate + labeled agent:review"   '[]' pull_request labeled agent:review agent:review 'renovate[bot]' false '' '' only true ''
 case_ false "renovate + labeled deps:major"     '[]' pull_request labeled deps:major agent:review 'renovate[bot]' false '' '' only true ''
+case_ false "claude[bot] PR"                    '[]' pull_request opened '' agent:review 'claude[bot]' false '' '' only true ''
+case_ false "claude[bot] + labeled agent:review" '[]' pull_request labeled agent:review agent:review 'claude[bot]' false '' '' only true ''
 
 echo "== claude-assist (mention, minus the verbs other workflows own) =="
 assist() { case_ "$1" "$2" '[]' issue_comment created '' '' alice false "$3" '' allow false '' '@claude' 'triage plan implement'; }

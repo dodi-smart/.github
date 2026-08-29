@@ -43,14 +43,22 @@ fi
 
 # RULE 2, bot authors. `reject` keeps human-review workflows off
 # Renovate PRs (deps-verify owns those, and covering both double-posts).
-# `only` is the inverse, for deps-verify itself.
+# `only` is the inverse, for deps-verify itself — and it means DEPENDENCY
+# bots, not any bot. claude[bot] authors PRs too, and a generic [bot]
+# match sent one of those through deps-verify, where a "verify this
+# dependency PR" prompt with no lockfile diff produced no verdict file
+# and failed the job.
 is_bot=false
 if printf '%s' "$AUTHOR" | grep -qiE 'renovate|dependabot|\[bot\]$'; then
   is_bot=true
 fi
+is_dep_bot=false
+if printf '%s' "$AUTHOR" | grep -qiE 'renovate|dependabot'; then
+  is_dep_bot=true
+fi
 case "$BOTS" in
   reject) [ "$is_bot" = "true" ] && stop "bot author: $AUTHOR" ;;
-  only)   [ "$is_bot" = "true" ] || stop "not a bot dependency PR" ;;
+  only)   [ "$is_dep_bot" = "true" ] || stop "not a dependency-bot PR (author: $AUTHOR)" ;;
   allow)  : ;;
   *)      echo "::error::unknown bots value '$BOTS' (expected reject|only|allow)"; exit 1 ;;
 esac

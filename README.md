@@ -72,6 +72,20 @@ exactly like a busy fleet.
 | `zavet-check.yml` | pull request | Knowledge-layer checks, for repos that have one. Report-only on dependency bot PRs |
 | `pick-runner.yml` | called by the others | Chooses a runner and validates the choice |
 
+`release.yml` reports what it did through `workflow_call` outputs, so a caller
+can chain a deploy job on an actual release rather than a green job:
+
+| Output | Meaning |
+|---|---|
+| `released` | `'true'` when at least one new version tag was pushed, `'false'` otherwise |
+| `version` | Newest released version, without the `v` prefix (e.g. `1.4.0`) |
+| `tag` | Newest released tag (e.g. `v1.4.0`) |
+| `tags` | JSON array of ALL new tags this run, for multi-module repos |
+
+They come from a tag diff taken around the release step, not from parsing
+semantic-release's own output, so they work the same way whether the caller
+uses `modules` or a custom `release-command`.
+
 ### Composite actions
 
 | Action | Purpose |

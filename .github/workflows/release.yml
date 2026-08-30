@@ -60,6 +60,19 @@ on:
       node-version:    { type: string, default: "lts/*" }
       bun-version:     { type: string, default: "latest" }
       timeout-minutes: { type: number, default: 30 }
+    outputs:
+      released:
+        description: "'true' when at least one new version tag was pushed"
+        value: ${{ jobs.release.outputs.released }}
+      version:
+        description: "Newest released version, without v prefix (e.g. 1.4.0)"
+        value: ${{ jobs.release.outputs.version }}
+      tag:
+        description: "Newest released tag (e.g. v1.4.0)"
+        value: ${{ jobs.release.outputs.tag }}
+      tags:
+        description: "JSON array of ALL new tags this run (multi-module repos)"
+        value: ${{ jobs.release.outputs.tags }}
     secrets:
       GH_APP_CLIENT_ID:   { required: false }
       GH_APP_PRIVATE_KEY: { required: false }
@@ -75,6 +88,11 @@ jobs:
     timeout-minutes: ${{ inputs.timeout-minutes }}
     # A half-applied release is worse than a late one, so a second run queues
     # behind the first rather than cancelling it.
+    outputs:
+      released: ${{ steps.detect.outputs.released }}
+      version: ${{ steps.detect.outputs.version }}
+      tag: ${{ steps.detect.outputs.tag }}
+      tags: ${{ steps.detect.outputs.tags }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -128,6 +146,13 @@ jobs:
           # shellcheck disable=SC2086
           npm install -D $PACKAGES
 
+      # Tag-diff is the only stack-agnostic way to know what released: it works
+      # for `modules`, for a custom `release-command`, and needs no cooperation
+      # from the caller's .releaserc.
+      - id: pre-tags
+        name: Snapshot tags
+        run: git tag --list | sort > "$RUNNER_TEMP/tags-before"
+
       - name: Release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN || github.token }}
@@ -154,6 +179,31 @@ jobs:
             npx semantic-release --extends "$cfg"
             echo "::endgroup::"
           done
+
+      - id: detect
+        name: Detect released tags
+        run: |
+          set -euo pipefail
+          # --force: alias tags like v1 are force-moved by some configs; a moved
+          # tag keeps its name so it never shows in the by-name diff below.
+          git fetch --force origin 'refs/tags/*:refs/tags/*'
+          new_tags=$(comm -13 "$RUNNER_TEMP/tags-before" <(git tag --list | sort))
+          # Version tags only: vX.Y.Z, X.Y.Z, prefixed (core-v1.2.0) and
+          # prerelease (v1.4.0-develop.1) all match; bare aliases (v1) do not.
+          version_tags=$(grep -E '(^|[^0-9.])[0-9]+\.[0-9]+\.[0-9]+' <<<"$new_tags" || true)
+          if [ -z "$version_tags" ]; then
+            echo "released=false" >> "$GITHUB_OUTPUT"
+            echo "tags=[]" >> "$GITHUB_OUTPUT"
+            echo "No new version tags; nothing was released."
+            exit 0
+          fi
+          newest=$(sort -V <<<"$version_tags" | tail -n1)
+          {
+            echo "released=true"
+            echo "tag=$newest"
+            echo "version=${newest#v}"
+            echo "tags=$(jq -Rnc '[inputs]' <<<"$version_tags")"
+          } >> "$GITHUB_OUTPUT"
 
   # A real merge commit, never a force-push. The release commit must stay
   # reachable from both branches, or the next run recomputes versions from a

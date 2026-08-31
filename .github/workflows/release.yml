@@ -229,5 +229,26 @@ jobs:
           git fetch origin "$TO:$TO"
           git checkout "$TO"
           # [skip ci] so the merge does not trigger the release workflow again.
-          git merge "$FROM" --no-ff -m "chore(release): merge $FROM into $TO [skip ci]"
+          #
+          # A stable release after a prerelease ALWAYS conflicts on the version
+          # files: the prerelease commit on $TO and the release commit on $FROM
+          # both rewrote package.json's version and prepended to CHANGELOG.md
+          # (observed on nis-suite v1.1.0 vs v1.1.0-develop.1). For those two
+          # files $FROM is the truth after a release, so resolve them toward
+          # $FROM ("--theirs" during a merge) and continue; any OTHER conflict
+          # is a real one and still fails the job.
+          if ! git merge "$FROM" --no-ff -m "chore(release): merge $FROM into $TO [skip ci]"; then
+            for f in package.json package-lock.json CHANGELOG.md; do
+              if git status --porcelain=v1 -- "$f" | grep -q '^UU'; then
+                git checkout --theirs -- "$f"
+                git add -- "$f"
+              fi
+            done
+            if git diff --name-only --diff-filter=U | grep -q .; then
+              echo "::error::Backmerge conflicts beyond the version files:"
+              git diff --name-only --diff-filter=U
+              exit 1
+            fi
+            git commit --no-edit
+          fi
           git push origin "$TO"

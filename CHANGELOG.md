@@ -1,3 +1,9 @@
+## [1.1.1](https://github.com/dodi-smart/.github/compare/v1.1.0...v1.1.1) (2026-08-31)
+
+### 🐛 Bug Fixes
+
+* **release:** backmerge auto-resolves version-file conflicts toward the release branch ([68afbdb](https://github.com/dodi-smart/.github/commit/68afbdbcfbe85b9d18484fb450caed4d8d388a64))
+
 ## [1.1.0](https://github.com/dodi-smart/.github/compare/v1.0.6...v1.1.0) (2026-08-31)
 
 ### ✨ Features

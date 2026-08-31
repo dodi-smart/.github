@@ -1,3 +1,9 @@
+## [1.1.0](https://github.com/dodi-smart/.github/compare/v1.0.6...v1.1.0) (2026-08-31)
+
+### ✨ Features
+
+* **release:** expose released/version/tag/tags workflow outputs ([7463594](https://github.com/dodi-smart/.github/commit/7463594526627638be8e1d1c3531bb03d1a7e268))
+
 ## [1.0.6](https://github.com/dodi-smart/.github/compare/v1.0.5...v1.0.6) (2026-08-29)
 
 ### 🐛 Bug Fixes

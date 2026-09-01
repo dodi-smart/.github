@@ -191,13 +191,37 @@ jobs:
           # Version tags only: vX.Y.Z, X.Y.Z, prefixed (core-v1.2.0) and
           # prerelease (v1.4.0-develop.1) all match; bare aliases (v1) do not.
           version_tags=$(grep -E '(^|[^0-9.])[0-9]+\.[0-9]+\.[0-9]+' <<<"$new_tags" || true)
+
+          # Only tags THIS ref's history carries. The fetch above pulls every tag in the
+          # repository, so a release cut on another branch while this job was running lands in
+          # the diff too and is indistinguishable from our own by name alone.
+          #
+          # That is not hypothetical: on 2026-09-01 a develop run cut v1.4.0-develop.1 at
+          # 06:33:33 and a main run cut v1.4.0 at 06:34:55. The main run saw both, picked the
+          # prerelease as "newest" (see the sort below), and its own `!contains(tag, '-')` guard
+          # then skipped migrate and trigger-deploy — a release that reported success and
+          # deployed nothing.
+          reachable=""
+          while IFS= read -r t; do
+            [ -n "$t" ] || continue
+            if git merge-base --is-ancestor "$t^{commit}" HEAD 2>/dev/null; then
+              reachable+="${t}"$'\n'
+            fi
+          done <<<"$version_tags"
+          version_tags=$(printf '%s' "$reachable" | sed '/^$/d')
+
           if [ -z "$version_tags" ]; then
             echo "released=false" >> "$GITHUB_OUTPUT"
             echo "tags=[]" >> "$GITHUB_OUTPUT"
-            echo "No new version tags; nothing was released."
+            echo "No new version tags on this ref; nothing was released."
             exit 0
           fi
-          newest=$(sort -V <<<"$version_tags" | tail -n1)
+          # `sort -V` is NOT semver-aware: it orders v1.4.0-develop.1 AFTER v1.4.0, because it
+          # compares byte-wise once the common prefix runs out and a longer string wins. Semver
+          # says the opposite — a prerelease precedes its release. Prefer a stable tag whenever
+          # one was cut, and only fall back to the version sort among like-for-like tags.
+          stable_tags=$(grep -v -- '-' <<<"$version_tags" || true)
+          newest=$(sort -V <<<"${stable_tags:-$version_tags}" | tail -n1)
           {
             echo "released=true"
             echo "tag=$newest"

@@ -1,3 +1,9 @@
+## [1.1.2](https://github.com/dodi-smart/.github/compare/v1.1.1...v1.1.2) (2026-09-01)
+
+### 🐛 Bug Fixes
+
+* **release:** ignore tags from other branches and never pick a prerelease as newest ([8674250](https://github.com/dodi-smart/.github/commit/867425053383c5c331b8b460f86a85340602e791))
+
 ## [1.1.1](https://github.com/dodi-smart/.github/compare/v1.1.0...v1.1.1) (2026-08-31)
 
 ### 🐛 Bug Fixes

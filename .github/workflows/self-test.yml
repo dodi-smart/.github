@@ -64,6 +64,32 @@ jobs:
           print('no run-agent call combines sticky-comment with a prompt')
           "
 
+      # `track_progress` forces tag mode, and tag mode renders only three issue
+      # actions. run-agent filters the rest out so a reopened issue runs instead
+      # of failing in Create prompt. Wiring the raw input back would restore
+      # that failure, and it would look like a tidy-up.
+      - name: run-agent filters track-progress before passing it on
+        run: |
+          set -euo pipefail
+          python3 -c "
+          import sys, yaml
+          doc = yaml.safe_load(open('actions/run-agent/action.yml'))
+          steps = doc['runs']['steps']
+          guard = [s for s in steps if s.get('id') == 'progress']
+          if not guard:
+              sys.exit('::error::actions/run-agent lost the step that filters track-progress. '
+                       'A reopened issue then fails in Create prompt with Unsupported issue action.')
+          for a in ('opened', 'assigned', 'labeled'):
+              if a not in guard[0]['run']:
+                  sys.exit('::error::the track-progress guard no longer names the supported issue action ' + a)
+          call = [s for s in steps if 'claude-code-action@' in str(s.get('uses', ''))][0]
+          wired = str((call.get('with') or {}).get('track_progress', ''))
+          if 'steps.progress.outputs.track' not in wired:
+              sys.exit('::error::track_progress is wired to ' + wired + ', not to the guard step. '
+                       'It must pass through steps.progress.outputs.track.')
+          print('track-progress passes through the guard')
+          "
+
       # The picker's `case` block is the only place a preset is defined, and the
       # README table is where people read it. Drift between them is how a
       # retired pool keeps being documented as live.

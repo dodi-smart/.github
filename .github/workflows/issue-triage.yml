@@ -6,10 +6,16 @@
 #       uses: dodi-smart/.github/.github/workflows/issue-triage.yml@v1
 #       secrets: inherit
 #
-# TRIGGERS: the `agent:triage` label, or a `@claude triage` / `@claude plan`
-# comment. There is deliberately no bare `/triage` or `/plan`. Every extra
-# surface has to be excluded again in the assistant workflow, and that list
-# drifts. The verbs live in the `commands:` input below and nowhere else.
+# TRIGGERS: an issue opened or reopened, the `agent:triage` label, or a
+# `@claude triage` / `@claude plan` comment. There is deliberately no bare
+# `/triage` or `/plan`. Every extra surface has to be excluded again in the
+# assistant workflow, and that list drifts. The verbs live in the `commands:`
+# input below and nowhere else.
+#
+# A reopened issue is triaged again rather than skipped. Reopening means the
+# issue is back in play and its earlier triage describes a state that no longer
+# holds, so leaving it alone leaves `Triage state` claiming a plan that was
+# already implemented.
 name: Issue Triage
 
 on:
@@ -130,6 +136,7 @@ jobs:
           prompt: |
             Triage issue #${{ github.event.issue.number }} in ${{ github.repository }}.
             Mode: ${{ needs.gate.outputs.mode }}
+            Event: ${{ github.event_name }}${{ github.event.action && format('/{0}', github.event.action) || '' }}
 
             The repo's area vocabulary (each area lists the paths that define it,
             plus disambiguation rules that exist because some paths mislead):
@@ -150,6 +157,22 @@ jobs:
                gh api -X PATCH /repos/${{ github.repository }}/issues/${{ github.event.issue.number }} -f type='<Type>'
                Bug only for a real regression or a violated spec, not for
                something that never worked and was never specified.
+
+            ## A reopened issue
+
+            When the event above is `issues/reopened`, this issue has been
+            triaged before. Its labels, its fields and any earlier plan are
+            still on it, and they describe the issue as it was, not as it is.
+            Read the comments and whatever closed it, usually a merged pull
+            request, before you decide anything.
+
+            Say in one line what has changed, then triage the issue as it
+            stands today. Correct the labels and fields that no longer fit and
+            post a fresh plan or fresh questions. Never leave `Triage state` on
+            the value from the previous round when the plan it refers to has
+            already been implemented, because that state is what makes an issue
+            eligible for `agent:implement` and a stale one sends an agent to
+            build something that already exists.
 
             ## Then decide, and be honest about which
 

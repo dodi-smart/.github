@@ -64,7 +64,7 @@ exactly like a busy fleet.
 | `pr-checks.yml` | pull request | Lint, typecheck, test, build, per stack |
 | `deps-verify.yml` | Renovate/Dependabot PRs | Builds it, reads upstream changelogs, posts a verdict. Never merges. |
 | `pr-review.yml` | `ready_for_review`, `agent:review` | Second-opinion review, deeper on sensitive paths |
-| `issue-triage.yml` | issue opened, `agent:triage`, `@claude triage` | Classifies, sets fields, then plans or asks blocking questions |
+| `issue-triage.yml` | issue opened or reopened, `agent:triage`, `@claude triage` | Classifies, sets fields, then plans or asks blocking questions |
 | `issue-implement.yml` | `agent:implement`, `@claude implement` | Branch, code, draft PR. Requires a plan. Never merges. |
 | `claude-assist.yml` | `@claude <anything else>` | The general assistant |
 | `release.yml` | push to a release branch | semantic-release, single or multi-module |

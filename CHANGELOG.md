@@ -1,3 +1,9 @@
+## [1.1.3](https://github.com/dodi-smart/.github/compare/v1.1.2...v1.1.3) (2026-09-03)
+
+### 🐛 Bug Fixes
+
+* **run-agent:** support reopened issues by dropping a progress comment tag mode cannot render ([bd29ece](https://github.com/dodi-smart/.github/commit/bd29ece7b98bc37d374c5c8ab5a712b59104c2cd))
+
 ## [1.1.2](https://github.com/dodi-smart/.github/compare/v1.1.1...v1.1.2) (2026-09-01)
 
 ### 🐛 Bug Fixes

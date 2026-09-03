@@ -7,7 +7,7 @@
 # other condition, and public repos and fork PRs never touch a self-hosted
 # runner.
 #
-# Three footguns are repeated below because the code reads as wrong without them:
+# Four footguns are repeated below because the code reads as wrong without them:
 #
 #   `--allowed-tools` is VARIADIC, space-separated, each entry quoted if it
 #   contains parentheses. A comma-joined list parses as one meaningless token:
@@ -19,6 +19,11 @@
 #   A non-empty `prompt` selects AGENT mode, which creates no comment at all.
 #   `use_sticky_comment` is read only in tag mode, so pairing the two posts
 #   nothing. The guard below refuses that pair instead of passing green.
+#
+#   `track_progress` overrides that and forces TAG mode on issue and pull
+#   request events, and tag mode supports three issue actions: opened, assigned
+#   and labeled. A reopened issue fails the job in Create prompt. The guard
+#   below drops the progress comment for those events rather than the run.
 name: Run agent
 description: Invoke claude-code-action with the org's tool allowlist, model policy and reporting defaults.
 
@@ -54,7 +59,11 @@ inputs:
       so only when `prompt` is empty. Setting it with a prompt is an error.
     default: 'false'
   track-progress:
-    description: 'Post a live progress comment, so a run in flight is visible rather than silent'
+    description: >-
+      Post a live progress comment, so a run in flight is visible rather than
+      silent. Ignored on an issue event the action cannot render a tag-mode
+      prompt for, which is anything but opened, assigned and labeled. The run
+      proceeds without the comment; see the header.
     default: 'false'
   allowed-bots:
     description: 'Comma-separated bot logins permitted to initiate. Named explicitly, never "*".'
@@ -80,12 +89,42 @@ runs:
         echo "::error::sticky-comment is set alongside a non-empty prompt. A prompt selects agent mode, which creates no comment, so this run would report only to the job summary. Use track-progress for a live comment, or instruct the agent to post with gh pr comment."
         exit 1
 
+    # `track_progress` forces TAG mode on every issue event, and tag mode builds
+    # its prompt from the event. It knows three issue actions: opened, assigned
+    # and labeled. Any other one throws `Unsupported issue action` in Create
+    # prompt and fails the job before the agent runs, which is what a reopened
+    # issue did. Dropping the progress comment leaves agent mode, which uses the
+    # prompt as written and still posts whatever that prompt tells it to post.
+    # Narrow the list, never widen it: an action tag mode cannot render is a
+    # failed job, and a lost progress comment is a cosmetic one.
+    - name: Drop a progress comment the action cannot render
+      id: progress
+      shell: bash
+      env:
+        TRACK:  ${{ inputs.track-progress }}
+        EVENT:  ${{ github.event_name }}
+        ACTION: ${{ github.event.action }}
+      run: |
+        set -euo pipefail
+        track="$TRACK"
+        if [ "$track" = "true" ] && [ "$EVENT" = "issues" ]; then
+          case "$ACTION" in
+            opened|assigned|labeled) ;;
+            *)
+              track=false
+              echo "::notice title=No live progress comment::claude-code-action renders a tag-mode prompt for issue events and supports opened, assigned and labeled only. This run is issues/$ACTION, so track-progress is off and the agent reports through the comment its own prompt asks for."
+              ;;
+          esac
+        fi
+        echo "track=$track" >> "$GITHUB_OUTPUT"
+
     - uses: anthropics/claude-code-action@v1
       with:
         claude_code_oauth_token: ${{ inputs.oauth-token }}
         prompt: ${{ inputs.prompt }}
         use_sticky_comment: ${{ inputs.sticky-comment }}
-        track_progress: ${{ inputs.track-progress }}
+        # Not inputs.track-progress. See the step above.
+        track_progress: ${{ steps.progress.outputs.track }}
         allowed_bots: ${{ inputs.allowed-bots }}
         plugins: ${{ inputs.plugins }}
         plugin_marketplaces: ${{ inputs.plugin-marketplaces }}

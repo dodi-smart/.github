@@ -82,6 +82,12 @@ why, not history.
   combination and `Self test` catches it at review time. An agent publishes only
   what you tell it to publish, so tell it, then **assert that it did**: both
   workflows fail if the pull request records nothing from the run.
+- **`track_progress` forces TAG mode, and tag mode knows three issue actions.**
+  `opened`, `assigned`, `labeled`. Anything else, `reopened` included, throws
+  `Unsupported issue action` in Create prompt and fails the job before the agent
+  starts. `actions/run-agent` drops the progress comment for those events and
+  runs in agent mode instead, so a reopened issue is triaged rather than
+  reported red. Narrow that list if upstream narrows; never widen it.
 - **Agent mode starts the inline-comment MCP server only when its tool is named
   in the allowlist.** `mcp__github_inline_comment__create_inline_comment` must be
   in `allowed-tools`, or the server never starts and the tool does not exist.

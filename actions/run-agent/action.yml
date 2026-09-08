@@ -78,6 +78,19 @@ inputs:
     description: 'YAML block, e.g. "actions: read"'
     default: ''
 
+# Both are EMPTY when the agent never ran, which is not the same as a run that
+# found nothing. claude-code-action skips itself, and still reports success, when
+# the pull request changes any workflow file: it requires the file to match the
+# default branch byte for byte. A caller that fails on missing agent output has to
+# be able to tell those apart, or it blames its own prompt for a security control.
+outputs:
+  execution-file:
+    description: 'Path to claude-code-action execution log. Empty when the agent never ran.'
+    value: ${{ steps.agent.outputs.execution_file }}
+  conclusion:
+    description: "claude-code-action's own success or failure. Empty when the agent never ran."
+    value: ${{ steps.agent.outputs.conclusion }}
+
 runs:
   using: composite
   steps:
@@ -118,7 +131,8 @@ runs:
         fi
         echo "track=$track" >> "$GITHUB_OUTPUT"
 
-    - uses: anthropics/claude-code-action@v1
+    - id: agent
+      uses: anthropics/claude-code-action@v1
       with:
         claude_code_oauth_token: ${{ inputs.oauth-token }}
         prompt: ${{ inputs.prompt }}

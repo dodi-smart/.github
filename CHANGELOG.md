@@ -1,3 +1,10 @@
+## [1.1.4](https://github.com/dodi-smart/.github/compare/v1.1.3...v1.1.4) (2026-09-08)
+
+### 🐛 Bug Fixes
+
+* **pr-review:** publish the review through a file the job requires ([b947fde](https://github.com/dodi-smart/.github/commit/b947fdec4b0b845e240a2964a3f9e64c710a269c)), closes [dodi-smart/infrasensing-senslogging#152](https://github.com/dodi-smart/infrasensing-senslogging/issues/152)
+* **pr-review:** say when claude-code-action skipped instead of blaming the prompt ([56cf1ce](https://github.com/dodi-smart/.github/commit/56cf1ce2e73fd291d9f90344de7fad876d8ad5e6))
+
 ## [1.1.3](https://github.com/dodi-smart/.github/compare/v1.1.2...v1.1.3) (2026-09-03)
 
 ### 🐛 Bug Fixes

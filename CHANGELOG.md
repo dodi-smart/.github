@@ -1,3 +1,9 @@
+## [1.1.5](https://github.com/dodi-smart/.github/compare/v1.1.4...v1.1.5) (2026-09-08)
+
+### 🐛 Bug Fixes
+
+* **renovate:** name the shared preset default.json, the only filename Renovate fetches ([5787547](https://github.com/dodi-smart/.github/commit/5787547a03f8abb084df042fab9c17a60456b86d))
+
 ## [1.1.4](https://github.com/dodi-smart/.github/compare/v1.1.3...v1.1.4) (2026-09-08)
 
 ### 🐛 Bug Fixes

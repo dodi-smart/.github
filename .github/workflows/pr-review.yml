@@ -218,7 +218,8 @@ jobs:
       # whole run when it judges a pull request not worth reviewing, and a run that
       # stops there posts nothing at all. Telling it in the system prompt to always
       # post did not hold. A file the job requires does.
-      - uses: dodi-smart/.github/actions/run-agent@v1
+      - id: agent
+        uses: dodi-smart/.github/actions/run-agent@v1
         with:
           oauth-token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           model: claude-opus-5
@@ -305,6 +306,7 @@ jobs:
           REASON: ${{ needs.gate.outputs.reason }}
           SHA:    ${{ github.event.pull_request.head.sha }}
           INLINE: ${{ steps.posted.outputs.inline }}
+          RAN:    ${{ steps.agent.outputs.execution-file }}
           RUN:    ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           set -euo pipefail
@@ -315,6 +317,10 @@ jobs:
             echo
             if [ -s "$body" ]; then
               cat "$body"
+            elif [ -z "$RAN" ]; then
+              echo "**The agent never ran.** claude-code-action skipped itself and reported success."
+              echo
+              echo "It does that when a pull request changes any workflow file, because it requires the file to match the default branch byte for byte. That is a real security control, not a fault in this pull request, and nothing can be reviewed until the change lands on the default branch."
             else
               echo "**The agent wrote no review.** That is a bug in this workflow, not a clean bill of health."
             fi
@@ -349,8 +355,14 @@ jobs:
       # broken. The file removes the guesswork.
       - name: The review reached the pull request
         if: steps.verdict.outputs.wrote != 'true'
+        env:
+          RAN: ${{ steps.agent.outputs.execution-file }}
         run: |
-          echo "::error title=The agent wrote no review::The agent ran but left ${RUNNER_TEMP}/review-body.md missing or empty. The prompt asks for that file on every path, including when the agent decides the pull request needs no review. Check that the prompt still asks for it and that it still names the same path the verdict step reads."
+          if [ -z "$RAN" ]; then
+            echo "::error title=The agent never ran::claude-code-action skipped itself and reported success. It does that when a pull request changes a workflow file, which must match the default branch byte for byte. Nothing here can be reviewed until the change lands on the default branch."
+          else
+            echo "::error title=The agent wrote no review::The agent ran but left ${RUNNER_TEMP}/review-body.md missing or empty. The prompt asks for that file on every path, including when the agent decides the pull request needs no review. Check that the prompt still asks for it and that it still names the same path the verdict step reads."
+          fi
           exit 1
 
       # `agent:review` is a REQUEST, never a record. Adding a label already

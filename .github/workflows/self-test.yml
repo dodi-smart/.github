@@ -95,7 +95,27 @@ jobs:
           if 'steps.verdict.outputs.wrote' not in str(guard.get('if', '')):
               sys.exit('::error::the PR Review guard is not keyed on whether the agent wrote its verdict. '
                        'Counting comments cannot tell a silent review from a broken one.')
+
+          # claude-code-action skips itself, reporting success, on any pull request
+          # that changes a workflow file. Without this the guard blames the prompt.
+          for s_ in (verdict, guard):
+              if 'agent.outputs.execution-file' not in str(s_.get('env', {})):
+                  sys.exit('::error::PR Review no longer reads run-agent execution-file, so a run the '
+                           'action skipped is reported as the agent writing nothing.')
           print('PR Review requires the file it posts')
+          "
+
+          python3 -c "
+          import sys, yaml
+          doc = yaml.safe_load(open('actions/run-agent/action.yml'))
+          if 'execution-file' not in (doc.get('outputs') or {}):
+              sys.exit('::error::run-agent no longer forwards execution-file. Its callers cannot then tell '
+                       'an agent that ran and said nothing from one claude-code-action never started.')
+          call = [s for s in doc['runs']['steps'] if 'claude-code-action@' in str(s.get('uses', ''))][0]
+          if call.get('id') != 'agent':
+              sys.exit('::error::the claude-code-action step in run-agent lost id: agent, so its outputs '
+                       'resolve to empty and every run looks skipped.')
+          print('run-agent forwards whether the agent ran')
           "
 
       # Counting a bot by a substring of its login is a trap. claude-code-action

@@ -336,9 +336,15 @@ request that makes it, only after merging.
 { extends: ["github>dodi-smart/.github"] }
 ```
 
-`default.json5` carries only what is true of every repo. Ecosystem rules stay in
+`default.json` carries only what is true of every repo. Ecosystem rules stay in
 the repo that has that ecosystem, because a rule matching nothing is worse than
 no rule: it reads as coverage.
+
+The filename matters. For a bare `github>owner/repo`, Renovate fetches
+`default.json` and no other name, then falls back to `renovate.json` -- which
+extends this preset, so resolution goes circular and every repo silently drops
+to stock defaults. Renovate parses a `.json` preset as JSONC, so it keeps its
+comments.
 
 ## Issue templates
 

@@ -22,8 +22,9 @@ on:
       # Review depth. low|medium: fewer, high-confidence findings.
       # high|xhigh|max: broader coverage, may include uncertain ones.
       #
-      # Carried in the SYSTEM PROMPT, never as an argument: the plugin's slash
-      # command parses `--comment` and discards anything else on the line.
+      # Carried in the SYSTEM PROMPT rather than on the command line. Everything
+      # after the slash command reaches the model, but the plugin's command knows
+      # only `--comment`, so a depth argument would sit there meaning nothing.
       level:           { type: string, default: "medium" }
       elevated-level:  { type: string, default: "high" }
 
@@ -197,19 +198,26 @@ jobs:
       - uses: actions/checkout@v7
         with: { fetch-depth: 0 }
 
-      # Stamped before the agent, so the check at the end asks "did THIS run
+      # Stamped before the agent, so the inline count below asks "did THIS run
       # post" rather than "has anything ever posted".
       - id: since
         run: echo "at=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
 
       # Opus: judging whether a change is correct is the expensive half of this
-      # job. Everything except `--comment` travels in the system prompt, so the
-      # slash command stays exactly as the plugin expects it.
+      # job.
       #
-      # TWO things must both be present or the review posts nothing. `--comment`,
-      # without which the plugin discards its own result, and the inline-comment
-      # tool in the allowlist, without which the action never starts that MCP
-      # server. Fixing either alone still posts nothing. Do not drop one.
+      # `--comment` unlocks the plugin's steps 8 and 9, which are the only place
+      # INLINE comments come from, and the tool in the allowlist is what lets the
+      # action start that MCP server. Both are needed for inline comments. Neither
+      # is what makes this job report, so do not read a missing verdict as one of
+      # them being gone.
+      #
+      # The SUMMARY does not come from the agent's own posting. The agent writes a
+      # file and a later step posts it, the same contract deps-verify uses. The
+      # plugin is written to be silent, and it is right to be: its step 1 stops the
+      # whole run when it judges a pull request not worth reviewing, and a run that
+      # stops there posts nothing at all. Telling it in the system prompt to always
+      # post did not hold. A file the job requires does.
       - uses: dodi-smart/.github/actions/run-agent@v1
         with:
           oauth-token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
@@ -221,21 +229,49 @@ jobs:
           # The org default plus the inline-comment tool. Variadic, space
           # separated. See the run-agent header before changing the shape.
           allowed-tools: 'Bash "Bash(gh:*)" Read Grep Glob mcp__github_inline_comment__create_inline_comment'
-          # The last clause overrides the plugin's first step, which stops
-          # without posting when Claude has already commented or the change looks
-          # trivial. This workflow only runs because someone asked, and a run
-          # allowed to finish silently cannot be told from one whose posting broke.
+          # The last clause pushes back on the plugin's first step, which stops
+          # the whole run when Claude has already commented or the change looks
+          # trivial. This workflow only runs because someone asked for it. Treat
+          # the clause as a nudge and nothing more: on this workflow's first real
+          # run the agent stopped there anyway. What guarantees a report is the
+          # file the prompt requires, not this sentence.
           append-system-prompt: >-
             ${{ needs.gate.outputs.ci }}
             Review depth for this run is ${{ needs.gate.outputs.level }}. At low or medium report only what you are confident in. At high, xhigh or max cover more ground, and say plainly when a finding is uncertain.
             When CI is failing, diagnose the cause and say which change caused it and how to fix it. Lead with that. It is more useful than anything else you could report. Do not repeat a failure the annotations already state verbatim, explain it.
-            A comment you left on this pull request earlier is not a reason to stop, and neither is the diff looking small or obviously correct. Somebody asked for this run by hand. Review it again, and always post the outcome, including when the outcome is that you found nothing.
-          prompt: '/code-review:code-review ${{ github.repository }}/pull/${{ github.event.pull_request.number }} --comment'
+            A comment you left on this pull request earlier is not a reason to stop, and neither is the diff looking small or obviously correct. Somebody asked for this run by hand. Review it again, and always report the outcome, including when the outcome is that you found nothing.
+          # The slash command expands as the plugin wrote it; the lines after it
+          # are read too, and win where they disagree with it.
+          prompt: |
+            /code-review:code-review ${{ github.repository }}/pull/${{ github.event.pull_request.number }} --comment
 
-      # What this pass actually published, counted rather than assumed.
+            Two rules for this run, which override the command above wherever they disagree with it.
+
+            Write your verdict to ${{ runner.temp }}/review-body.md before you finish. Write it on
+            every path: when you found issues, when you found none, and when you decided this pull
+            request did not need reviewing and stopped early. In that last case say so and say why,
+            because that is a real answer and silence is not. A later step posts that file to the
+            pull request as one comment, and this job FAILS when the file is missing or empty.
+            Your final message goes only to the job summary, which nobody reads, so anything you
+            leave out of the file is lost. Do not open the file with a heading, one is added for you.
+
+            Do not post the summary comment yourself. Inline comments on the diff are yours to post
+            and are still wanted. The summary is not, because the step that posts the file rewrites
+            one comment per pull request, and a second copy from you stacks underneath it.
+
+      # How many inline comments this pass left, for the verdict to mention. It
+      # gates nothing: the verdict below is what makes this job pass or fail.
       #
-      # Matched on the login, not just .user.type == "Bot": a coverage reporter
-      # commenting in the same window would otherwise look like a review.
+      # Counted by type, not by login. Matching a login containing "claude" was
+      # wrong even while it worked. claude-code-action posts inline comments
+      # under whichever app minted its token, and this workflow already declares
+      # GH_APP_CLIENT_ID and GH_APP_PRIVATE_KEY. The day someone wires those
+      # through, every comment arrives from the org's own app, whose login has no
+      # "claude" in it, and every review would report zero.
+      #
+      # `.user.type == "Bot"` is safe on THIS endpoint: it returns review
+      # comments anchored to diff lines, and nothing else writes those during a
+      # run. Coverage and lint reporters comment on the issue endpoint instead.
       - id: posted
         env:
           GH_TOKEN: ${{ github.token }}
@@ -245,52 +281,55 @@ jobs:
         run: |
           set -euo pipefail
           # Piped through jq rather than `gh api --jq`, which takes no --arg.
-          count() {
-            gh api "$1?per_page=100" --paginate \
-              | jq --arg s "$SINCE" \
-                   '[.[]
-                     | select(.user.login | ascii_downcase | contains("claude"))
-                     | select(.updated_at >= $s)] | length'
-          }
-          inline=$(count "/repos/$REPO/pulls/$PR/comments")
-          summary=$(count "/repos/$REPO/issues/$PR/comments")
-          {
-            echo "inline=$inline"
-            echo "summary=$summary"
-            echo "total=$((inline + summary))"
-          } >> "$GITHUB_OUTPUT"
-          echo "published: $inline inline, $summary summary"
+          # `created_at`, not `updated_at`: an older comment edited during this
+          # window is not something this pass published.
+          inline=$(gh api "/repos/$REPO/pulls/$PR/comments?per_page=100" --paginate \
+            | jq --arg s "$SINCE" \
+                 '[.[] | select(.user.type == "Bot") | select(.created_at >= $s)] | length')
+          echo "inline=$inline" >> "$GITHUB_OUTPUT"
+          echo "published: $inline inline comment(s)"
 
-      # One comment per pull request, rewritten by each pass. The plugin's
+      # One comment per pull request, rewritten by each pass. The agent's own
       # INLINE comments are left alone: they are anchored to diff lines, GitHub
       # collapses them when the line changes, and rewriting a review thread out
       # from under a reader is worse than a longer page.
-      - name: Build the verdict
+      #
+      # The body is the file the agent wrote. When that file is missing, this
+      # still builds a verdict saying so and the sticky comment still posts it,
+      # because a broken pass has to be readable from the pull request rather
+      # than only from the run log. The step after the posting is what fails.
+      - id: verdict
+        name: Build the verdict
         env:
-          LEVEL:   ${{ needs.gate.outputs.level }}
-          REASON:  ${{ needs.gate.outputs.reason }}
-          SHA:     ${{ github.event.pull_request.head.sha }}
-          INLINE:  ${{ steps.posted.outputs.inline }}
-          SUMMARY: ${{ steps.posted.outputs.summary }}
-          RUN:     ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          LEVEL:  ${{ needs.gate.outputs.level }}
+          REASON: ${{ needs.gate.outputs.reason }}
+          SHA:    ${{ github.event.pull_request.head.sha }}
+          INLINE: ${{ steps.posted.outputs.inline }}
+          RUN:    ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           set -euo pipefail
-          if [ "$INLINE" -gt 0 ]; then
-            found="Left $INLINE inline comment(s) on the diff."
-          elif [ "$SUMMARY" -gt 0 ]; then
-            found="Found nothing worth flagging. The review comment on this pull request has the detail."
-          else
-            found="**Published nothing.** That is a bug in this workflow, not a clean bill of health."
-          fi
+          body="$RUNNER_TEMP/review-body.md"
+
           {
             echo "### Agent review"
             echo
-            echo "$found"
+            if [ -s "$body" ]; then
+              cat "$body"
+            else
+              echo "**The agent wrote no review.** That is a bug in this workflow, not a clean bill of health."
+            fi
             echo
+            if [ "$INLINE" -gt 0 ]; then
+              echo "Left $INLINE inline comment(s) on the diff."
+              echo
+            fi
             echo "Reviewed \`${SHA:0:7}\` at depth \`$LEVEL\`${REASON:+ ($REASON)}. [Run]($RUN)."
             echo
             echo "Apply \`agent:review\` again for another pass. The label is cleared when this finishes, so re-applying it is a fresh request."
           } > "$RUNNER_TEMP/review-verdict.md"
+
+          [ -s "$body" ] && wrote=true || wrote=false
+          echo "wrote=$wrote" >> "$GITHUB_OUTPUT"
           cat "$RUNNER_TEMP/review-verdict.md"
 
       - uses: dodi-smart/.github/actions/sticky-comment@v1
@@ -299,13 +338,19 @@ jobs:
           number:    ${{ github.event.pull_request.number }}
           body-file: ${{ runner.temp }}/review-verdict.md
 
-      # A review that published nothing is a failed review and must look like
-      # one. Checked AFTER the verdict is posted, so the pull request carries the
+      # A review that produced nothing is a failed review and must look like one.
+      # Checked AFTER the verdict is posted, so the pull request carries the
       # explanation rather than only the run log.
+      #
+      # This asks whether the agent WROTE its verdict, not whether some comment
+      # by some login appeared on the pull request. The old question could not be
+      # answered from outside: an agent that decides a pull request needs no
+      # review is silent on purpose and looks identical to one whose posting is
+      # broken. The file removes the guesswork.
       - name: The review reached the pull request
-        if: steps.posted.outputs.total == '0'
+        if: steps.verdict.outputs.wrote != 'true'
         run: |
-          echo "::error title=Review published nothing::The agent ran but wrote nothing to this pull request. Check that the prompt still carries --comment and that mcp__github_inline_comment__create_inline_comment is still in allowed-tools."
+          echo "::error title=The agent wrote no review::The agent ran but left ${RUNNER_TEMP}/review-body.md missing or empty. The prompt asks for that file on every path, including when the agent decides the pull request needs no review. Check that the prompt still asks for it and that it still names the same path the verdict step reads."
           exit 1
 
       # `agent:review` is a REQUEST, never a record. Adding a label already

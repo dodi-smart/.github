@@ -64,6 +64,56 @@ jobs:
           print('no run-agent call combines sticky-comment with a prompt')
           "
 
+      # PR Review published nothing on its first real run and then failed its own
+      # guard. The agent had run fine. It had simply taken the plugin's documented
+      # silent path, and the workflow had no way to tell that from a broken one.
+      # The fix was to stop asking the agent to publish and start requiring a file.
+      # If the prompt stops naming the file, or the verdict step stops reading the
+      # same path, the silence comes straight back.
+      - name: PR Review publishes through a file, not through the agent
+        run: |
+          set -euo pipefail
+          python3 -c "
+          import sys, yaml
+          steps = yaml.safe_load(open('.github/workflows/pr-review.yml'))['jobs']['review']['steps']
+
+          agent = [s for s in steps if 'run-agent@' in str(s.get('uses', ''))][0]
+          prompt = str((agent.get('with') or {}).get('prompt', ''))
+          if 'review-body.md' not in prompt:
+              sys.exit('::error::the PR Review prompt no longer asks the agent to write review-body.md. '
+                       'That file is the only thing that reaches the pull request, so the review goes silent.')
+          if '--comment' not in prompt:
+              sys.exit('::error::the PR Review prompt lost --comment. Inline comments come from the '
+                       'plugin steps that flag unlocks.')
+
+          verdict = [s for s in steps if s.get('id') == 'verdict'][0]
+          if 'review-body.md' not in verdict['run']:
+              sys.exit('::error::the verdict step no longer reads review-body.md, so the agent writes a '
+                       'file nobody posts.')
+
+          guard = [s for s in steps if s.get('name', '').startswith('The review reached')][0]
+          if 'steps.verdict.outputs.wrote' not in str(guard.get('if', '')):
+              sys.exit('::error::the PR Review guard is not keyed on whether the agent wrote its verdict. '
+                       'Counting comments cannot tell a silent review from a broken one.')
+          print('PR Review requires the file it posts')
+          "
+
+      # Counting a bot by a substring of its login is a trap. claude-code-action
+      # posts under whichever app minted its token, and every one of these
+      # workflows already declares GH_APP_CLIENT_ID. Wire those through and a
+      # login match silently counts zero for work that did happen.
+      - name: No workflow identifies its own bot by a login substring
+        run: |
+          set -euo pipefail
+          # This file is excluded because it carries the pattern it looks for.
+          if grep -rn 'user.login' .github/workflows/*.yml \
+             | grep -v '^.github/workflows/self-test.yml:' \
+             | grep -i 'contains("claude")'; then
+            echo '::error::a workflow above matches its own comments by a login containing claude. Match .user.type or a marker in the body instead; the posting identity changes with the token.'
+            exit 1
+          fi
+          echo 'no workflow matches its own bot by login substring'
+
       # `track_progress` forces tag mode, and tag mode renders only three issue
       # actions. run-agent filters the rest out so a reopened issue runs instead
       # of failing in Create prompt. Wiring the raw input back would restore

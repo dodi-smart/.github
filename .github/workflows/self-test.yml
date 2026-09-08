@@ -240,15 +240,28 @@ jobs:
           sys.exit(bad)
           "
 
-      # A JSON5 object literal is also a valid JavaScript expression, so this
-      # catches a malformed preset without pulling in a JSON5 parser. A broken
-      # preset silently disables Renovate config in every repo extending it.
+      # The preset is only ever loaded if it is named `default.json`: for a bare
+      # `github>owner/repo` Renovate fetches that one path, and on a 404 falls
+      # back to `renovate.json`, which here extends this preset and so resolves
+      # to nothing. That failure is silent -- Renovate keeps opening PRs, on
+      # stock defaults, in every repo extending the preset. Assert the filename,
+      # not just the contents. A JSONC object literal is also a valid JavaScript
+      # expression, so the contents parse without pulling in a parser.
       - name: Renovate preset parses
         run: |
           node -e '
-            const o = eval("(" + require("fs").readFileSync("default.json5","utf8") + ")");
+            const fs = require("fs");
+            if (!fs.existsSync("default.json")) throw new Error("the preset must be named default.json; Renovate fetches no other filename");
+            for (const wrong of ["default.json5", "default.jsonc"]) {
+              if (fs.existsSync(wrong)) throw new Error(wrong + " is never fetched by Renovate, rename it to default.json");
+            }
+            const o = eval("(" + fs.readFileSync("default.json", "utf8") + ")");
             if (!Array.isArray(o.packageRules)) throw new Error("packageRules missing");
             if (!o.labels.includes("deps:update")) throw new Error("deps:update label missing");
+            if (o.dependencyDashboard !== true) throw new Error("dependencyDashboard is off, so no repo gets a dashboard issue");
+            for (const e of o.extends || []) {
+              if (e.includes("dodi-smart/.github")) throw new Error("the preset extends itself: " + e + ", which resolves to nothing");
+            }
             console.log("preset OK:", Object.keys(o).join(", "));
           '
 

@@ -7,62 +7,66 @@
 // repo that has that ecosystem, because a rule matching nothing is worse than no
 // rule: it reads as coverage.
 //
-// If preset resolution ever fails, check the filename first. Renovate looks for
-// `default.json5` or `default.json` in the repo root; older versions know only
-// the latter.
+// The filename is load-bearing and must stay `default.json`. For a bare
+// `github>owner/repo`, Renovate fetches `default.json` and nothing else; a
+// `.json5` file is fetched only when the extending repo names it in full. On a
+// 404 Renovate falls back to `renovate.json`, which in this repo extends this
+// preset, so resolution goes circular and the whole preset resolves to nothing
+// -- silently, in every repo extending it. Comments are fine: Renovate parses
+// a `.json` preset as JSONC.
 {
-  $schema: "https://docs.renovatebot.com/renovate-schema.json",
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
 
-  extends: [
+  "extends": [
     "config:best-practices",
     // Listed AFTER best-practices so it wins. config:recommended's
     // :semanticPrefixFixDepsChoreOthers would otherwise make production deps
     // `fix(deps)`, which every .releaserc in this org maps to a PATCH release,
     // so a dependency bump would cut a release. Forcing `chore(deps)` everywhere
     // means it does not.
-    ":semanticCommitTypeAll(chore)",
+    ":semanticCommitTypeAll(chore)"
   ],
 
-  timezone: "Europe/Sofia",
+  "timezone": "Europe/Sofia",
 
   // Every repo in this org develops on `develop`. Pinned explicitly rather than
   // inherited from the default branch, so behaviour stays correct if the default
   // branch ever changes. Note Renovate READS its config from the default branch.
-  baseBranchPatterns: ["develop"],
+  "baseBranchPatterns": ["develop"],
 
   // Deterministic prefix; the default is "auto", which is not.
-  semanticCommits: "enabled",
-  dependencyDashboard: true,
+  "semanticCommits": "enabled",
+  "dependencyDashboard": true,
 
   // The label the deps-verify workflow and every saved query expect. To change
   // it, edit this config first, then rename the label. Never delete and
   // recreate: that silently strips it from every existing PR.
-  labels: ["deps:update"],
+  "labels": ["deps:update"],
 
   // Weekly batch. Security PRs ignore the schedule.
-  schedule: ["before 6am on monday"],
+  "schedule": ["before 6am on monday"],
 
   // NOTE: vulnerabilityAlerts is on by default via config:recommended and works
   // on the Mend hosted community app, but only fires if GitHub "Dependabot
   // alerts" are enabled for the repo. osvVulnerabilityAlerts is deliberately NOT
   // used. Experimental, and uncertain on the community tier.
 
-  packageRules: [
+  "packageRules": [
     // Keep Actions on readable version tags. best-practices pins digests, which
     // turns every workflow into a wall of SHAs and makes review harder for a
     // threat this org is not defending against.
-    { matchManagers: ["github-actions"], pinDigests: false },
+    { "matchManagers": ["github-actions"], "pinDigests": false },
 
     // Non-major Action bumps are CI-gated and boring. Auto-merge them.
     {
-      matchManagers: ["github-actions"],
-      matchUpdateTypes: ["minor", "patch"],
-      groupName: "github actions",
-      automerge: true,
+      "matchManagers": ["github-actions"],
+      "matchUpdateTypes": ["minor", "patch"],
+      "groupName": "github actions",
+      "automerge": true
     },
 
     // Majors are labelled for visibility, never auto-merged (automerge defaults
     // to false, so this rule only adds the label).
-    { matchUpdateTypes: ["major"], addLabels: ["deps:major"] },
-  ],
+    { "matchUpdateTypes": ["major"], "addLabels": ["deps:major"] }
+  ]
 }

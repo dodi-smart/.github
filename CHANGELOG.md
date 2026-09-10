@@ -1,3 +1,9 @@
+## [1.3.0](https://github.com/dodi-smart/.github/compare/v1.2.0...v1.3.0) (2026-09-10)
+
+### ✨ Features
+
+* **semantic-release:** let git() take a commit message and github() pass options through ([d5f48d0](https://github.com/dodi-smart/.github/commit/d5f48d07ef5294146ee1f499c7156a2d3e601b27))
+
 ## [1.2.0](https://github.com/dodi-smart/.github/compare/v1.1.5...v1.2.0) (2026-09-10)
 
 ### ✨ Features

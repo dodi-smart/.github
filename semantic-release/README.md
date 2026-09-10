@@ -86,9 +86,17 @@ package, even one with an incidental `package.json`, composes and leaves
 `exec` is a plugin path with no options baked in; pass your own `*Cmd`
 entries as `[exec, { successCmd: "..." }]`.
 
-`github()` takes `{ releasedLabels }`. The default names `release:prod` or
-`release:staging`; pass `github({ releasedLabels: false })` in a repo without
-those labels, or the release fails trying to apply one.
+`git()` takes `{ assets, message }`. The default message is the shared
+`commitMessage`; a repo whose `tagFormat` prefixes the version, `v${version}`
+say, passes a message that prefixes it the same way, or the release commit
+and the tag disagree.
+
+`github()` takes `{ releasedLabels }` and passes any other
+`@semantic-release/github` option through as given, so a muted release is
+`github({ successComment: false, releasedLabels: false, assets: [] })`. The
+default labels are `release:prod` or `release:staging`; pass
+`releasedLabels: false` in a repo without those labels, or the release fails
+trying to apply one.
 
 Entries passed to `releaseNotes({ types })` replace the shared entry of the
 same type and scope in place, so the section order stays the shared one. A

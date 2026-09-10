@@ -1,3 +1,9 @@
+## [1.2.0](https://github.com/dodi-smart/.github/compare/v1.1.5...v1.2.0) (2026-09-10)
+
+### ✨ Features
+
+* **semantic-release:** shared config package linked into consumers, pinned to render the conventionalcommits v10 preset ([2e4d8f5](https://github.com/dodi-smart/.github/commit/2e4d8f5f3f631b6a9bd2aae0277787aa0e28d5d7))
+
 ## [1.1.5](https://github.com/dodi-smart/.github/compare/v1.1.4...v1.1.5) (2026-09-08)
 
 ### 🐛 Bug Fixes

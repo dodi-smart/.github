@@ -25,6 +25,7 @@ import {
   branches,
   types,
   releaseRules,
+  commitMessage,
   commitAnalyzer,
   releaseNotes,
   changelog,
@@ -216,6 +217,23 @@ test("commitAnalyzer() overrides replace shared rules, so a shared rule can be s
   assert.equal(await analyzeCommits(pluginConfig, { ...baseContext, commits: [commit("a", "refactor: reshape thing")] }), null);
   // Rules with no shared twin are added, and the shared ones still apply.
   assert.equal(pluginConfig.releaseRules.length, releaseRules.length);
+});
+
+test("git() and github() take overrides, so a composed config never needs plugin() for them", () => {
+  // A repo whose tagFormat prefixes the version wants the release commit to
+  // match; a repo without release labels wants the GitHub plugin muted.
+  // Without these overrides both had to rebuild the entries by hand.
+  const message = "chore(release): v${nextRelease.version} [skip ci]\n\n${nextRelease.notes}";
+  const [, gitDefaults] = git();
+  const [, gitOverridden] = git({ assets: ["Cargo.toml"], message });
+  assert.equal(gitDefaults.message, commitMessage);
+  assert.deepEqual(gitOverridden, { assets: ["Cargo.toml"], message });
+
+  const [, githubDefaults] = github();
+  const [, githubMuted] = github({ successComment: false, releasedLabels: false, assets: [] });
+  assert.deepEqual(githubDefaults, { releasedLabels: ["release:<%= nextRelease.channel ? 'staging' : 'prod' %>"] });
+  assert.deepEqual(githubMuted, { releasedLabels: false, successComment: false, assets: [] });
+  assert.equal(pluginName(github({ failComment: false })), "@semantic-release/github");
 });
 
 test("version discipline: the beta plugins stay pinned exact", () => {

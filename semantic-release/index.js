@@ -192,21 +192,29 @@ export const npm = [plugin("@semantic-release/npm"), { npmPublish: false }];
 export const exec = plugin("@semantic-release/exec");
 
 /**
- * @param {{ assets?: string[] }} [overrides] files to commit with the release.
- *   Globs, and a name that matches nothing is simply skipped, which is why the
- *   default can name every lockfile the org uses.
+ * @param {{ assets?: string[], message?: string }} [overrides]
+ *   `assets`: files to commit with the release. Globs, and a name that
+ *   matches nothing is simply skipped, which is why the default can name
+ *   every lockfile the org uses.
+ *   `message`: the release commit. The default is `commitMessage`; a repo
+ *   whose `tagFormat` prefixes the version passes a message that does too.
  */
-export function git({ assets = ["package.json", "bun.lock", "package-lock.json", "pnpm-lock.yaml", "CHANGELOG.md"] } = {}) {
-  return [plugin("@semantic-release/git"), { assets, message: commitMessage }];
+export function git({
+  assets = ["package.json", "bun.lock", "package-lock.json", "pnpm-lock.yaml", "CHANGELOG.md"],
+  message = commitMessage,
+} = {}) {
+  return [plugin("@semantic-release/git"), { assets, message }];
 }
 
 /**
- * @param {{ releasedLabels?: string[] | false }} [overrides] labels for every
- *   issue and PR the release closes. The default names `release:prod` or
- *   `release:staging`; pass `false` in a repo without those labels.
+ * @param {{ releasedLabels?: string[] | false, [option: string]: unknown }} [overrides]
+ *   `releasedLabels`: labels for every issue and PR the release closes. The
+ *   default names `release:prod` or `release:staging`; pass `false` in a repo
+ *   without those labels. Any other @semantic-release/github option
+ *   (`successComment`, `assets`, `failComment`, ...) passes through as given.
  */
-export function github({ releasedLabels = ["release:<%= nextRelease.channel ? 'staging' : 'prod' %>"] } = {}) {
-  return [plugin("@semantic-release/github"), { releasedLabels }];
+export function github({ releasedLabels = ["release:<%= nextRelease.channel ? 'staging' : 'prod' %>"], ...rest } = {}) {
+  return [plugin("@semantic-release/github"), { releasedLabels, ...rest }];
 }
 
 /** Merge `main` back into `develop` after a release, opening a PR when it conflicts. */

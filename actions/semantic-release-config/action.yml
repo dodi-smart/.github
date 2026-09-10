@@ -1,0 +1,27 @@
+# Link the org's shared semantic-release config into a consuming repo.
+#
+# The package @dodi-smart/semantic-release-config is never published. This
+# action makes it resolvable by name from the consumer's working directory,
+# with its plugin dependencies installed beside it in this action's own
+# checkout. The consumer's package.json and lockfile are untouched, so there
+# is nothing to bump: a consumer is on whatever @v1 points at, the same way it
+# is for the workflows. Mechanics and reasoning are in install.sh.
+#
+# Run it after the consumer's own install and before semantic-release. The
+# consumer's release config then reads
+#   { "extends": "@dodi-smart/semantic-release-config" }
+name: Semantic-release config
+description: Link @dodi-smart/semantic-release-config into node_modules, with its plugins, from this checkout.
+
+inputs:
+  working-directory:
+    description: 'Directory of the consuming package, where semantic-release runs'
+    default: ${{ github.workspace }}
+
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      env:
+        CONSUMER: ${{ inputs.working-directory }}
+      run: ${{ github.action_path }}/install.sh "${{ github.action_path }}/../.." "$CONSUMER"

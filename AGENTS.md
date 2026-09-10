@@ -56,6 +56,11 @@ why, not history.
 | all workflows | Callers pin a released tag | `v1` moves only after a change runs green on a real repo. Changing or removing an input is breaking. Add an alias and warn, as `deps-verify` does for `setup:`, or cut `v2`. |
 | `README.md` | The onboarding badge says `v1`, and it moves only when the tag it names does | The badge in a consuming repo's README asserts that repo calls these workflows at `@v1`. It is verified against live state by the onboarding tooling, which fails a repo displaying it while its workflows are disabled or its properties unset. Changing the badge's version here without cutting that version is how every onboarded repo starts advertising something untrue at once. |
 | `README.md` | The badge names no repo but this one | It is rendered inside repos this org does not control the visibility of, and it is the one artefact from here that a reader outside the org may see in context. Keep its text to what these workflows are, never who uses them. |
+| `semantic-release/index.js` | Plugins are handed out as absolute paths, never bare names, and changelog types use `effect`, never `hidden` | A path resolves to this package's copy no matter what config names it or how that config was loaded, where a bare name would not. Preset v10 ignores `hidden` without a warning, so a `docs:` commit leaks into the notes as an untitled bullet. The golden tests fail on either regression. |
+| `semantic-release/package.json` | The two beta plugins are pinned exact | Renovate proposes the stable version from an exact prerelease pin and would hide it behind a caret. A consumer gets the bump on the next release here, not as a dependency bump of its own. |
+| `release.config.mjs` | Composes from the package by name, and keeps `refactor` from releasing here | The config this repo ships is the one it runs. A release that moves `v1` under every caller for a change with no visible entry is not one to introduce by accident. |
+| `actions/semantic-release-config/` | The package is linked from a private prefix, never installed from a registry, and never into the checkout it came with; consumer manifests are never written | A registry needs a token in every consumer, every developer's machine and the Renovate config, and a git dependency cannot point at a subdirectory. An install into the checkout would strip what shares it. |
+| `.github/workflows/release.yml` | Runs the link step when `shared-config` is true, and a caller that does not name the package is unaffected | The link sits unused unless the caller's config names it, so adding it was not a rollout, and turning it off silently loses only a registry install nothing there was using. |
 
 ## Facts worth not rediscovering
 
@@ -113,6 +118,25 @@ why, not history.
 - **Broad `Bash` in the agent allowlist is deliberate.** The bound is not the
   allowlist. The action refuses to run for an actor without write access, so
   untrusted content only reaches the agent when someone trusted invokes it.
+- **`conventional-changelog-conventionalcommits` v10 renamed `hidden` to
+  `effect`.** It does not warn on the old key: a type still carrying `hidden:
+  true` is treated as `bump` and shows in the notes anyway. Write `effect:
+  "bump" | "hidden"`, never `hidden`.
+- **semantic-release loads a plugin from its OWN directory first.** `loadPlugin`
+  resolves a name from `semantic-release/lib/plugins`, so a plugin named in a
+  top-level config is the copy semantic-release depends on, whatever the
+  consumer installed. The one exception is a plugin named by an extended config,
+  which loads relative to that config, and `--extends <file>` on the command
+  line replaces the config's own `extends` entirely. That is why
+  `semantic-release/index.js` hands out every plugin as an absolute path
+  instead: a path has none of those conditions, so whatever config names it
+  and however it was loaded, the pinned copy is the one that runs. Composing
+  needs no `extends` line as a result.
+- **A symlink resolves to its real path before Node walks up for
+  `node_modules`.** `install.sh` links the consumer's `node_modules` entry to
+  a private prefix, not to this checkout, so resolution starts from that
+  prefix and the plugins come from there. `--preserve-symlinks` would break
+  it by resolving from the link's own location instead.
 
 ## Everything here is pinned, including the internal references
 
@@ -120,7 +144,7 @@ The workflows in this repo call each other, and their composite actions, at
 `@v1`, the same ref callers outside are told to pin. Otherwise a
 `@v1` pin holds the workflow bodies but not the picker and actions they call.
 
-`v1` is moved by semantic-release, not by hand. `.releaserc.json` runs a
+`v1` is moved by semantic-release, not by hand. `release.config.mjs` runs a
 `successCmd` that force-moves the major tag onto each release, so the version
 comes from the commit messages and the tag follows it. Write conventional commits
 or nothing is released.
@@ -138,8 +162,8 @@ Three consequences, and the first one is the one people get wrong:
   the release, not incidental to it. The `successCmd` needs no change: it derives
   the major from the version, so `2.0.0` creates `v2` and leaves `v1` frozen at
   the last `1.x`. What does need adding is a maintenance branch in
-  `.releaserc.json` if a `1.x` patch will ever be released, because `main` is the
-  only release branch today.
+  `release.config.mjs` if a `1.x` patch will ever be released, because `main` is
+  the only release branch today.
 
 This repo also releases on `chore(deps)`, which the shared Renovate preset
 deliberately makes inert everywhere else. The dependencies here are the action

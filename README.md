@@ -94,6 +94,7 @@ uses `modules` or a custom `release-command`.
 | `actions/run-agent` | Invokes the agent with the org's tool allowlist and reporting defaults |
 | `actions/setup-stack` | Installs a toolchain, resolves cache isolation, supplies conventional commands |
 | `actions/sticky-comment` | One keyed comment per pull request, rewritten in place on every later run |
+| `actions/semantic-release-config` | Links the shared semantic-release config into a consumer's `node_modules` from a private prefix, never from a registry and never into the checkout it came with |
 
 ## What you stop maintaining
 
@@ -303,8 +304,8 @@ to move, which is the whole point of pinning a major.
 
 One consequence to know before you cut a `v2`: `main` is the only release branch,
 so once `2.0.0` ships there is no way to release a `1.x` patch. That needs a
-maintenance branch added to `.releaserc.json`, for example
-`"branches": ["main", "1.x"]`, and it is easier to add before you need it than
+maintenance branch added to `release.config.mjs`, for example
+`branches: ["main", "1.x"]`, and it is easier to add before you need it than
 during an incident.
 
 `chore(deps)` also cuts a patch, which is specific to this repo. Renovate labels
@@ -329,6 +330,102 @@ the workflow file differs from the default-branch copy, which is a correct
 control, since a pull request could otherwise edit the reviewer to exfiltrate its
 token. It means a change to an agent workflow cannot be exercised on the pull
 request that makes it, only after merging.
+
+## Shared semantic-release config
+
+`semantic-release/` is an npm workspace in this repo that holds the org's
+shared semantic-release configuration, `@dodi-smart/semantic-release-config`.
+It carries the release rules, the changelog sections and the plugin suite,
+pinned to versions that agree with each other, so a consuming repo does not
+have to work that out on its own.
+
+The package is never published to any registry. It reaches a consumer through
+`actions/semantic-release-config`, which copies this checkout's root
+manifests, lockfile and `semantic-release/` into a private prefix, installs
+the plugin dependencies there, then links that prefix's `semantic-release`
+directory into the consumer's `node_modules` by name. The checkout the
+action was fetched with is left untouched, so nothing sharing it loses a
+dependency. The shared `release.yml` runs that action automatically before
+semantic-release, gated by its `shared-config` input (default `true`); a
+caller whose `release-command` does not run semantic-release sets it `false`
+to skip the install. A repo that hand-rolls its own release job adds one
+step, after its own install and before semantic-release:
+
+```yaml
+- uses: dodi-smart/.github/actions/semantic-release-config@v1
+```
+
+`actions/semantic-release-config/test.sh` checks this the way `Self test`
+runs it for the other actions: by resolving the linked package and its
+plugins from a scratch consumer, not by reading the installer's output.
+
+There are two ways to use the config once it is linked. Extend it whole, for
+a single-package repo released from `main` with `develop` as a prerelease
+channel:
+
+```json
+// .releaserc.json
+{ "extends": "@dodi-smart/semantic-release-config" }
+```
+
+Or compose, when the repo needs its own plugin list, for example a version
+file to rewrite. No `extends` line: import the helpers you want and list
+them.
+
+```js
+// release.config.mjs
+import { branches, commitAnalyzer, releaseNotes, changelog, git, github } from "@dodi-smart/semantic-release-config";
+export default {
+  branches,
+  plugins: [commitAnalyzer(), releaseNotes(), changelog, git({ assets: ["pubspec.yaml", "CHANGELOG.md"] }), github()],
+};
+```
+
+A consumer installs `semantic-release` and nothing else. Every plugin the
+config names is a dependency of the package itself, and the package arrives
+by the link, not by an install, so nothing is added to the consumer's
+`package.json` or its lockfile.
+
+Updates arrive the way workflow updates do: someone merges a change here, the
+`@v1` tag moves, and every consumer is on the new config the next time it
+releases. There is no per-repo version to bump, and so no way for a consumer
+to lag.
+
+Watch for `effect`, not `hidden`. Changelog section entries used to hide a type
+with a boolean `hidden` property; the preset that renders them now reads
+`effect: "bump" | "hidden"` instead and does not warn on the old key, so a type
+still carrying `hidden: true` renders anyway and leaks into the notes as an
+untitled bullet. Compose your own `types` list with `effect`.
+
+`commitAnalyzer({ releaseRules })` replaces a shared rule of the same type and
+scope rather than adding beside it, because the analyzer treats a
+`release: false` match as undecided and lets a later matching rule win; a
+shared rule could otherwise never be turned off. `npm` is always in the
+default config, since that config is for a Node package; a repo that is not
+one, even with an incidental `package.json`, composes and leaves `npm` out.
+`exec` is a plugin path with no options of its own; pass your own `*Cmd`
+entries as `[exec, { successCmd: "..." }]`. `github()` takes
+`{ releasedLabels }`; pass `github({ releasedLabels: false })` in a repo
+without `release:prod` / `release:staging` labels.
+
+Two plugins in `semantic-release/package.json` are pinned to exact beta
+versions, because their stable releases cannot render this package's v10
+changelog preset. Renovate in this repo offers the matching stable release
+automatically once one exists, because the pin is exact rather than a caret
+over a prerelease. When it lands, the pins here move to stable and every
+consumer picks it up on its next release, the same way any other change here
+reaches them.
+
+Every plugin this package exports is an absolute path, resolved from inside
+this package, not a bare package name. That is what makes the composed form
+work with no `extends`. semantic-release resolves a plugin named in a config
+from its own directory first, so a bare name would get whatever copy
+semantic-release itself depends on; the `extends` redirect only fixes that
+for plugins the extended config lists, and `--extends <file>` on the command
+line, the reusable release workflow's `modules` path, replaces the config's
+own `extends` entirely. A path sidesteps all three. Both usage modes are
+covered by real dry runs in the package's end-to-end test, run through the
+installer.
 
 ## Renovate
 

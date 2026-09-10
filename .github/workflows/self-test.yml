@@ -29,6 +29,19 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      # The beta plugins the shared config pins (commit-analyzer, release-notes-generator)
+      # require Node ^22.22.2 or >=24.15. Node 24 satisfies that everywhere the
+      # rest of this job needs Node, including the release config parse below.
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+
+      - name: Install workspace dependencies
+        run: npm ci
+
+      - name: Shared semantic-release config tests
+        run: npm test
+
       # The kill switch is a claim about behaviour. Assert it.
       - name: Agent gate behaviour
         run: ./actions/agent-gate/test.sh
@@ -265,42 +278,74 @@ jobs:
             console.log("preset OK:", Object.keys(o).join(", "));
           '
 
-      # A malformed .releaserc.json does not fail loudly, it just stops cutting
-      # releases, and the major tag every caller pins stops moving with it.
+      # A malformed release.config.mjs does not fail loudly, it just stops
+      # cutting releases, and the major tag every caller pins stops moving
+      # with it.
       - name: Release and Renovate config parse
         run: |
-          node -e '
-            const fs = require("fs");
-            const rel = JSON.parse(fs.readFileSync(".releaserc.json", "utf8"));
-            if (!rel.branches.includes("main")) throw new Error("releaserc: main is not a release branch");
-            const names = rel.plugins.map(p => Array.isArray(p) ? p[0] : p);
+          set -euo pipefail
+          node --input-type=module -e '
+            import { readFileSync } from "node:fs";
+            import config from "./release.config.mjs";
+
+            // Plugins are absolute paths into the package; pluginName maps back.
+            const { pluginName } = await import("@dodi-smart/semantic-release-config");
+            const byName = (name) => config.plugins.find(p => pluginName(p) === name);
+            if (!config.branches.includes("main")) throw new Error("release config: main is not a release branch");
             for (const need of ["@semantic-release/commit-analyzer", "@semantic-release/exec"]) {
-              if (!names.includes(need)) throw new Error("releaserc: missing " + need);
+              if (!byName(need)) throw new Error("release config: missing " + need);
             }
-            const exec = rel.plugins.find(p => Array.isArray(p) && p[0] === "@semantic-release/exec");
-            if (!/git tag -f v/.test(exec[1].successCmd)) throw new Error("releaserc: the major tag is never moved");
-            const analyzer = rel.plugins.find(p => Array.isArray(p) && p[0] === "@semantic-release/commit-analyzer");
+            const exec = byName("@semantic-release/exec");
+            if (!/git tag -f v/.test(exec[1].successCmd)) throw new Error("release config: the major tag is never moved");
+            const analyzer = byName("@semantic-release/commit-analyzer");
             const deps = (analyzer[1].releaseRules || []).some(r => r.type === "chore" && r.scope === "deps" && r.release === "patch");
-            if (!deps) throw new Error("releaserc: chore(deps) no longer cuts a patch, so v1 stops moving on dependency updates");
-            const notes = rel.plugins.find(p => Array.isArray(p) && p[0] === "@semantic-release/release-notes-generator");
+            if (!deps) throw new Error("release config: chore(deps) no longer cuts a patch, so v1 stops moving on dependency updates");
+            const notes = byName("@semantic-release/release-notes-generator");
             const types = ((notes[1].presetConfig || {}).types) || [];
-            if (!types.length) throw new Error("releaserc: no changelog sections configured");
+            if (!types.length) throw new Error("release config: no changelog sections configured");
+
+            // conventional-changelog-conventionalcommits v10 reads effect, not
+            // hidden, and silently treats a leftover hidden key as a bump, so
+            // a docs: commit would leak into the notes as an untitled bullet.
+            for (const t of types) {
+              if ("hidden" in t) throw new Error("release config: " + JSON.stringify(t) + " still carries hidden, which v10 of the preset ignores silently");
+              if (t.effect !== "bump" && t.effect !== "hidden") throw new Error("release config: " + JSON.stringify(t) + " has an effect other than bump or hidden");
+            }
+
             // Written as literal UTF-8. An earlier attempt lost every emoji in
             // transit and produced a plain changelog that looked deliberate,
             // so this asserts they survived rather than trusting the file.
-            const plain = types.filter(t => !t.hidden && !/[^\x00-\x7F]/.test(t.section || ""));
-            if (plain.length) throw new Error("releaserc: changelog section without an emoji: " + plain.map(t => t.section).join(", "));
+            const visible = types.filter(t => t.effect !== "hidden");
+            const plain = visible.filter(t => !/[^\x00-\x7F]/.test(t.section || ""));
+            if (plain.length) throw new Error("release config: changelog section without an emoji: " + plain.map(t => t.section).join(", "));
+
             // conventional-changelog takes the FIRST matching entry, so a bare
             // chore listed before the scoped one swallows chore(deps) and hides it.
             const depsAt = types.findIndex(t => t.type === "chore" && t.scope === "deps");
             const choreAt = types.findIndex(t => t.type === "chore" && !t.scope);
-            if (depsAt === -1) throw new Error("releaserc: chore(deps) has no changelog section, so a dependency release would be empty");
-            if (choreAt !== -1 && choreAt < depsAt) throw new Error("releaserc: bare chore is listed before chore(deps), which hides dependency updates");
-            const ren = JSON.parse(fs.readFileSync("renovate.json", "utf8"));
+            if (depsAt === -1) throw new Error("release config: chore(deps) has no changelog section, so a dependency release would be empty");
+            if (choreAt !== -1 && choreAt < depsAt) throw new Error("release config: bare chore is listed before chore(deps), which hides dependency updates");
+
+            const ren = JSON.parse(readFileSync("renovate.json", "utf8"));
             if (!ren.baseBranchPatterns.includes("main")) throw new Error("renovate: baseBranchPatterns must name main, the preset says develop");
-            JSON.parse(fs.readFileSync("package.json", "utf8"));
+            JSON.parse(readFileSync("package.json", "utf8"));
+
             console.log("release and renovate config OK");
           '
+
+          # The shared package is never published. A release config that
+          # gained the npm plugin would try, and fail for want of a token.
+          node --input-type=module -e '
+            import config from "./release.config.mjs";
+            import { pluginName } from "@dodi-smart/semantic-release-config";
+            const names = config.plugins.map(pluginName);
+            if (names.includes("@semantic-release/npm")) throw new Error("release config: @semantic-release/npm is present, and the shared package is not published");
+            console.log("nothing publishes, as expected");
+          '
+
+      # What a consumer gets from the installer, checked by resolving.
+      - name: Shared config links into a consumer
+        run: ./actions/semantic-release-config/test.sh
 
       - name: Shell scripts pass shellcheck
         run: |

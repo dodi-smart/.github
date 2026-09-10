@@ -48,6 +48,13 @@ on:
           @kilianpaquier/semantic-release-backmerge
           semantic-release-scope-filter
 
+      # Link @dodi-smart/semantic-release-config into node_modules before the
+      # release. Costs one registry install, so a caller whose
+      # `release-command` does not run semantic-release turns it off.
+      shared-config:
+        type: boolean
+        default: true
+
       # Some release configs read a monotonic build number.
       expose-build-number:
         type: boolean
@@ -145,6 +152,14 @@ jobs:
           # specs, and word-splitting is exactly what is wanted here.
           # shellcheck disable=SC2086
           npm install -D $PACKAGES
+
+      # The shared config, linked by name into node_modules with its plugins
+      # installed in a private prefix. Nothing is published and nothing is
+      # added to the caller's lockfile. A caller uses it by naming it in its
+      # release config, and a caller that does not is unaffected: the link
+      # sits unused.
+      - if: inputs.shared-config
+        uses: dodi-smart/.github/actions/semantic-release-config@v1
 
       # Tag-diff is the only stack-agnostic way to know what released: it works
       # for `modules`, for a custom `release-command`, and needs no cooperation

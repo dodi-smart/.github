@@ -1,3 +1,9 @@
+## [1.6.0](https://github.com/dodi-smart/.github/compare/v1.5.0...v1.6.0) (2026-09-12)
+
+### ✨ Features
+
+* **pr-checks:** one hosted picker job and an always-on pr-checks summary ([aef1c40](https://github.com/dodi-smart/.github/commit/aef1c406d5df6ca215bebd191b2db8098e37e356))
+
 ## [1.5.0](https://github.com/dodi-smart/.github/compare/v1.4.0...v1.5.0) (2026-09-12)
 
 ### ✨ Features

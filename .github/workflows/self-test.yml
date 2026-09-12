@@ -173,6 +173,60 @@ jobs:
           print('track-progress passes through the guard')
           "
 
+      # One hosted picker job, one summary job. Both drifted back once already:
+      # a second picker job crept in as "just for this one caller", and a
+      # summary job with a wrong `if:` reports green while its dependencies are
+      # still running. Assert the shape rather than trust it stays this way.
+      - name: pr-checks has one picker job and an always-on summary job
+        run: |
+          set -euo pipefail
+          python3 -c "
+          import sys, yaml
+          jobs = yaml.safe_load(open('.github/workflows/pr-checks.yml'))['jobs']
+
+          pickers = [name for name, job in jobs.items()
+                     if any('pick-runner' in str(step.get('uses', ''))
+                            for step in (job.get('steps') or []))]
+          if len(pickers) != 1:
+              sys.exit('::error::pr-checks.yml must call the pick-runner action from exactly one job, found: '
+                        + repr(pickers) + '. Two picker jobs bill two hosted minutes before any real work runs.')
+
+          summary = jobs.get('pr-checks')
+          if summary is None:
+              sys.exit('::error::pr-checks.yml has no pr-checks job. That job is the one stable status-check '
+                        'context a branch ruleset can require across single-job and split mode.')
+          if str(summary.get('if', '')).strip() != 'always()':
+              sys.exit('::error::the pr-checks job must run unconditionally (if: always()), or it silently '
+                        'skips instead of reporting the jobs it summarizes.')
+          print('pr-checks.yml has one picker job (%s) and an always-on pr-checks summary job' % pickers[0])
+          "
+
+      # pick-runner.yml is a thin wrapper around actions/pick-runner now. Every
+      # existing caller, internal or external, references these names, so the
+      # wrapper losing one is a breaking change hiding behind a passing lint.
+      - name: pick-runner.yml still exposes its original interface
+        run: |
+          set -euo pipefail
+          python3 -c "
+          import sys, yaml
+          doc = yaml.safe_load(open('.github/workflows/pick-runner.yml'))
+          # PyYAML parses the bare scalar 'on' as the boolean True, not the
+          # string 'on'. doc['on'] is a KeyError waiting to look like a typo.
+          call = doc[True]['workflow_call']
+          inputs = set((call.get('inputs') or {}).keys())
+          outputs = set((call.get('outputs') or {}).keys())
+
+          need_in = {'weight', 'labels', 'fallback', 'hosted-runner', 'guard-public'}
+          need_out = {'runner', 'selector'}
+
+          missing_in = need_in - inputs
+          missing_out = need_out - outputs
+          if missing_in or missing_out:
+              sys.exit('::error::pick-runner.yml dropped input(s) %s and/or output(s) %s. Every caller '
+                        'pinned at @v1 already depends on this exact interface.' % (sorted(missing_in), sorted(missing_out)))
+          print('pick-runner.yml still exposes inputs %s and outputs %s' % (sorted(need_in), sorted(need_out)))
+          "
+
       # The picker's `case` block is the only place a preset is defined, and the
       # README table is where people read it. Drift between them is how a
       # retired pool keeps being documented as live.
@@ -182,7 +236,7 @@ jobs:
           python3 - <<'PRESETS'
           import re, sys
 
-          picker = open('.github/workflows/pick-runner.yml').read()
+          picker = open('actions/pick-runner/action.yml').read()
           readme = open('README.md').read()
 
           got = dict(re.findall(r'^\s+(light|heavy|apple|hosted)\)\s+sel="([^"]*)"',

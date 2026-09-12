@@ -188,6 +188,7 @@ nobody then goes back to question.
 | `actions/setup-stack` | Installs a toolchain, resolves cache isolation, supplies conventional commands |
 | `actions/sticky-comment` | One keyed comment per pull request, rewritten in place on every later run |
 | `actions/semantic-release-config` | Links the shared semantic-release config into a consumer's `node_modules` from a private prefix, never from a registry and never into the checkout it came with |
+| `actions/pick-runner` | Resolves a runner weight to a selector, validated against the live fleet. What `pick-runner.yml` calls, and what a job that already runs hosted (like `pr-checks.yml`'s `pick`) calls directly to pick more than once without a second hosted job. |
 
 ## What you stop maintaining
 
@@ -323,6 +324,49 @@ with:
   coverage-path: app/build/reports/kover/reportDebug.xml
 ```
 
+Either shape runs behind ONE hosted `pick` job, not two. It resolves both the
+light and the heavy runner (skipping whichever `single-job` does not need), so
+picking twice costs one hosted job instead of two.
+
+### Docs-only changes, and the one context to require
+
+`pick` also decides whether the change is docs-only: every file the PR touches
+must match one of `docs-only-paths` (newline-separated globs, default `**.md`
+and `docs/**`) against the PR base. When it is, `checks`, `test`, `build` and
+`all` all skip -- but `commitlint` still runs, because it checks the commit
+message, not the files. The default catches a Markdown-only change; widen it
+per caller for e.g. `docs/** design/**`.
+
+```yaml
+with:
+  stack: bun
+  docs-only-paths: |
+    **.md
+    design/**
+```
+
+A skip is only ever a positive finding. On `workflow_dispatch`, or whenever the
+diff against the PR base cannot be computed, `docs_only` is `false` and every
+job runs as normal.
+
+This is also why a caller should **not** add `paths-ignore: ['**.md']` to its
+own `on: pull_request:` trigger to get the same effect. `paths-ignore` skips
+the entire workflow, which means the workflow never runs and creates **no**
+status-check context at all -- and a branch ruleset that requires one then
+waits on that pull request forever, because a check that was never created can
+never turn green. `docs-only-paths` gets the same skip without losing the
+context.
+
+That context is `pr-checks`, a summary job that runs unconditionally
+(`if: always()`) after everything else, whether or not anything was skipped.
+It fails if `checks`, `test`, `build`, `all` or `commitlint` failed or was
+cancelled, and passes -- printing "docs-only change, checks skipped" -- when
+they were only skipped. It is the one job a branch ruleset should require:
+`<caller job id> / pr-checks` exists on every push in both single-job and
+split mode, where `checks / checks` and `checks / all` do not -- exactly one
+of those two is always skipped depending on `single-job`, so neither can be
+named in a ruleset that has to work for every caller.
+
 ### Caches
 
 `setup-stack` resolves the mode from `isolate`, `cache` and the runner:
@@ -383,7 +427,11 @@ jobs:
 
 ## Runners
 
-`pick-runner.yml` takes a semantic `weight` and resolves it:
+`pick-runner.yml` takes a semantic `weight` and resolves it. It is a thin
+wrapper around `actions/pick-runner`, the composite action that does the actual
+selecting; call the action directly from inside a job that is already hosted
+(as `pr-checks.yml`'s `pick` job does, twice) rather than paying for a second
+hosted job just to reuse the workflow.
 
 | `weight` | Selector | Use |
 |---|---|---|

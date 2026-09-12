@@ -1,12 +1,24 @@
 # Reusable: the deterministic checks a pull request must pass.
 #
-# Replaces a hand-written ci.yml per repo. `concurrency:` and the `on:` path
-# filter stay with the CALLER, because both depend on that repo's branches and
-# layout. Set them there, or a README-only PR builds the whole app.
+# Replaces a hand-written ci.yml per repo. `concurrency:` stays with the
+# CALLER, because it depends on that repo's branches. Do NOT add `paths-ignore`
+# on the caller for a docs-only skip: this workflow already does that itself
+# (see `docs-only-paths` below), and a caller-side `paths-ignore` produces no
+# status-check context at all, which is worse -- a branch ruleset requiring one
+# then waits on a pull request forever.
 #
 # Light work (lint, typecheck) goes to the light pool and heavy work (build,
 # tests) to the large one. Any step whose command resolves to empty is skipped.
 # `single-job: true` collapses the split onto the heavy runner; see that input.
+#
+# ONE hosted `pick` job resolves both runners (and whether the change is
+# docs-only), instead of two hosted picker jobs. Picking twice used to cost two
+# full hosted minutes before any real work started; picking once from inside a
+# job that already exists costs one. `pr-checks` at the bottom is a summary job
+# that always runs: it is the one status-check context a branch ruleset should
+# require, because it exists in both single-job and split mode, and because a
+# docs-only change still produces it even though `checks`/`test`/`build`/`all`
+# are skipped.
 name: PR Checks
 
 on:
@@ -35,6 +47,20 @@ on:
       # shared daemon. One job gives one checkout and one warm GRADLE_USER_HOME.
       # The split stays the default.
       single-job: { type: boolean, default: false }
+
+      # Every changed file must match one of these globs (newline-separated,
+      # `fnmatch`-style: `*` crosses `/`) for the run to skip `checks`, `test`,
+      # `build` and `all`. `commitlint` still runs, because the commit message
+      # is what it checks, and is unaffected by which files changed.
+      #
+      # `docs_only` is always `false` on `workflow_dispatch`, and whenever the
+      # diff against the PR base cannot be computed -- a skip is only ever a
+      # positive claim, never the fallback when something went wrong reading it.
+      docs-only-paths:
+        type: string
+        default: |-
+          **.md
+          docs/**
 
       commitlint:        { type: boolean, default: false }
       commitlint-config: { type: string,  default: ".commitlintrc.json" }
@@ -71,18 +97,84 @@ on:
       GH_APP_PRIVATE_KEY: { required: false }
 
 jobs:
-  # The picker carries the same `if:` as the job it feeds. In single-job mode
-  # nothing runs on the light pool, and the picker is itself a hosted job.
-  pick-light:
-    if: ${{ !inputs.single-job }}
-    uses: dodi-smart/.github/.github/workflows/pick-runner.yml@v1
-    with: { weight: "${{ inputs.light-weight }}" }
-    secrets: inherit
+  # ONE hosted job resolves both runners and whether the diff is docs-only.
+  # It always runs, unlike the jobs it feeds -- it is the job a docs-only skip
+  # and single-job mode both still need, and its own two picks are what let
+  # `checks`/`test`/`build`/`all` skip cleanly through `needs.pick.outputs`.
+  pick:
+    name: Pick runner
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      light:     ${{ steps.light.outputs.runner }}
+      heavy:     ${{ steps.heavy.outputs.runner }}
+      docs_only: ${{ steps.docs.outputs.docs_only }}
+    steps:
+      # Full history: the only way to diff reliably against whatever commit
+      # the PR base names, which a shallow default checkout does not carry.
+      - uses: actions/checkout@v7
+        with: { fetch-depth: 0 }
 
-  pick-heavy:
-    uses: dodi-smart/.github/.github/workflows/pick-runner.yml@v1
-    with: { weight: "${{ inputs.heavy-weight }}" }
-    secrets: inherit
+      # A skip is a positive claim, never a fallback. `workflow_dispatch` has
+      # no PR to diff against, and an unresolvable base/head commit means the
+      # diff could not be read, not that it was read and found docs-only.
+      - id: docs
+        shell: bash
+        env:
+          PATTERNS: ${{ inputs.docs-only-paths }}
+          EVENT:    ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT" != "pull_request" ] && [ "$EVENT" != "pull_request_target" ]; then
+            echo "docs_only=false" >> "$GITHUB_OUTPUT"
+            echo "not a pull_request event ($EVENT), docs_only=false"
+            exit 0
+          fi
+          if [ -z "${BASE_SHA:-}" ] || [ -z "${HEAD_SHA:-}" ] \
+             || ! git cat-file -e "${BASE_SHA}^{commit}" 2>/dev/null \
+             || ! git cat-file -e "${HEAD_SHA}^{commit}" 2>/dev/null; then
+            echo "::warning::could not resolve the PR base/head commit to diff, assuming docs_only=false"
+            echo "docs_only=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          changed="$(git diff --name-only "$BASE_SHA" "$HEAD_SHA")"
+          if [ -z "$changed" ]; then
+            echo "docs_only=false" >> "$GITHUB_OUTPUT"
+            echo "empty diff, docs_only=false"
+            exit 0
+          fi
+          result=$(CHANGED="$changed" python3 -c "
+          import fnmatch, os
+          patterns = [p.strip() for p in os.environ['PATTERNS'].splitlines() if p.strip()]
+          changed = [f for f in os.environ['CHANGED'].splitlines() if f.strip()]
+          ok = bool(changed) and all(any(fnmatch.fnmatch(f, p) for p in patterns) for f in changed)
+          print('true' if ok else 'false')
+          ")
+          echo "docs_only=$result" >> "$GITHUB_OUTPUT"
+          echo "changed files:"
+          echo "$changed"
+          echo "docs_only=$result"
+
+      # The picker carries the same `if:` as the job it feeds. In single-job
+      # mode nothing runs on the light pool; in a docs-only change neither
+      # pool is needed at all.
+      - id: light
+        if: ${{ !inputs.single-job && steps.docs.outputs.docs_only != 'true' }}
+        uses: dodi-smart/.github/actions/pick-runner@v1
+        with:
+          weight:             ${{ inputs.light-weight }}
+          gh-app-client-id:   ${{ secrets.GH_APP_CLIENT_ID }}
+          gh-app-private-key: ${{ secrets.GH_APP_PRIVATE_KEY }}
+
+      - id: heavy
+        if: ${{ steps.docs.outputs.docs_only != 'true' }}
+        uses: dodi-smart/.github/actions/pick-runner@v1
+        with:
+          weight:             ${{ inputs.heavy-weight }}
+          gh-app-client-id:   ${{ secrets.GH_APP_CLIENT_ID }}
+          gh-app-private-key: ${{ secrets.GH_APP_PRIVATE_KEY }}
 
   # Hosted on purpose: needs full history and no toolchain, so the large pool
   # would be wasted on it.
@@ -102,9 +194,9 @@ jobs:
   # ---------------------------------------------------------------------------
 
   checks:
-    if: ${{ !inputs.single-job }}
-    needs: [pick-light]
-    runs-on: ${{ fromJson(needs.pick-light.outputs.runner) }}
+    if: ${{ !inputs.single-job && needs.pick.outputs.docs_only != 'true' }}
+    needs: [pick]
+    runs-on: ${{ fromJson(needs.pick.outputs.light) }}
     timeout-minutes: ${{ inputs.timeout-minutes }}
     steps:
       - uses: actions/checkout@v7
@@ -147,9 +239,9 @@ jobs:
           ${{ steps.setup.outputs.typecheck }}
 
   test:
-    if: ${{ !inputs.single-job }}
-    needs: [pick-heavy]
-    runs-on: ${{ fromJson(needs.pick-heavy.outputs.runner) }}
+    if: ${{ !inputs.single-job && needs.pick.outputs.docs_only != 'true' }}
+    needs: [pick]
+    runs-on: ${{ fromJson(needs.pick.outputs.heavy) }}
     timeout-minutes: ${{ inputs.timeout-minutes }}
     permissions:
       contents: read
@@ -197,9 +289,9 @@ jobs:
           min-coverage-changed-files: ${{ inputs.coverage-min-changed }}
 
   build:
-    if: ${{ !inputs.single-job }}
-    needs: [pick-heavy, checks]
-    runs-on: ${{ fromJson(needs.pick-heavy.outputs.runner) }}
+    if: ${{ !inputs.single-job && needs.pick.outputs.docs_only != 'true' }}
+    needs: [pick, checks]
+    runs-on: ${{ fromJson(needs.pick.outputs.heavy) }}
     timeout-minutes: ${{ inputs.timeout-minutes }}
     steps:
       - uses: actions/checkout@v7
@@ -254,9 +346,9 @@ jobs:
   # ---------------------------------------------------------------------------
 
   all:
-    if: ${{ inputs.single-job }}
-    needs: [pick-heavy]
-    runs-on: ${{ fromJson(needs.pick-heavy.outputs.runner) }}
+    if: ${{ inputs.single-job && needs.pick.outputs.docs_only != 'true' }}
+    needs: [pick]
+    runs-on: ${{ fromJson(needs.pick.outputs.heavy) }}
     timeout-minutes: ${{ inputs.timeout-minutes }}
     permissions:
       contents: read
@@ -336,3 +428,52 @@ jobs:
           update-comment: true
           min-coverage-overall: ${{ inputs.coverage-min-overall }}
           min-coverage-changed-files: ${{ inputs.coverage-min-changed }}
+
+  # ---------------------------------------------------------------------------
+  # One stable context, on every push, in both modes.
+  # ---------------------------------------------------------------------------
+
+  # This is the job a branch ruleset should require, never `checks` or `all`.
+  # `<caller job id> / pr-checks` exists on every PR push whether single-job or
+  # split, and whether or not the change is docs-only, which is exactly what
+  # `checks / checks` and `checks / all` cannot promise: one of them is always
+  # skipped depending on `single-job`, and both are skipped on a docs-only
+  # change. A required context that a docs-only push never creates is a ruleset
+  # that waits forever, which is what a caller's `paths-ignore` used to cause.
+  pr-checks:
+    name: PR Checks
+    needs: [pick, commitlint, checks, test, build, all]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Summarize
+        env:
+          PICK:       ${{ needs.pick.result }}
+          COMMITLINT: ${{ needs.commitlint.result }}
+          CHECKS:     ${{ needs.checks.result }}
+          TEST:       ${{ needs.test.result }}
+          BUILD:      ${{ needs.build.result }}
+          ALL:        ${{ needs.all.result }}
+          DOCS_ONLY:  ${{ needs.pick.outputs.docs_only }}
+        run: |
+          set -euo pipefail
+          failed=""
+          for pair in "pick:$PICK" "commitlint:$COMMITLINT" "checks:$CHECKS" "test:$TEST" "build:$BUILD" "all:$ALL"; do
+            name="${pair%%:*}"
+            result="${pair#*:}"
+            case "$result" in
+              failure|cancelled) failed="$failed $name($result)" ;;
+            esac
+          done
+
+          if [ -n "$failed" ]; then
+            echo "::error::pr-checks: failed jobs:$failed"
+            exit 1
+          fi
+
+          if [ "$DOCS_ONLY" = "true" ]; then
+            echo "pr-checks: docs-only change, checks skipped"
+          else
+            echo "pr-checks: all required jobs passed"
+          fi

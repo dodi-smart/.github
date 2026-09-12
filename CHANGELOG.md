@@ -1,3 +1,9 @@
+## [1.3.1](https://github.com/dodi-smart/.github/compare/v1.3.0...v1.3.1) (2026-09-12)
+
+### 🐛 Bug Fixes
+
+* **release:** resolve lockfiles on backmerge, add backmerge-resolve-paths ([bca5a90](https://github.com/dodi-smart/.github/commit/bca5a9017c6328cef47ccd6ef2d9b87acc1309a1))
+
 ## [1.3.0](https://github.com/dodi-smart/.github/compare/v1.2.0...v1.3.0) (2026-09-10)
 
 ### ✨ Features

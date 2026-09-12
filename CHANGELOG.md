@@ -1,3 +1,9 @@
+## [1.5.0](https://github.com/dodi-smart/.github/compare/v1.4.0...v1.5.0) (2026-09-12)
+
+### ✨ Features
+
+* **workflows:** add reusable Supabase deploy workflow ([e843f96](https://github.com/dodi-smart/.github/commit/e843f962f83ade6f3b107a21ea70c1b23abadcdb))
+
 ## [1.4.0](https://github.com/dodi-smart/.github/compare/v1.3.2...v1.4.0) (2026-09-12)
 
 ### ✨ Features

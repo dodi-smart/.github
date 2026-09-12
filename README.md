@@ -86,6 +86,21 @@ They come from a tag diff taken around the release step, not from parsing
 semantic-release's own output, so they work the same way whether the caller
 uses `modules` or a custom `release-command`.
 
+`release.yml` can also merge a release branch back into a prerelease branch:
+
+| Input | Default | Meaning |
+|---|---|---|
+| `backmerge` | `false` | Merge `backmerge-from` into `backmerge-to` after releasing |
+| `backmerge-from` | `"main"` | Branch the release was cut from |
+| `backmerge-to` | `"develop"` | Prerelease branch to merge into |
+| `backmerge-resolve-paths` | `""` | Extra paths to auto-resolve toward `backmerge-from` on conflict, newline- or space-separated (e.g. a subdirectory manifest and its lockfile) |
+
+A stable release after a prerelease always conflicts on the files both commits
+rewrote, so the job auto-resolves `package.json`, `package-lock.json`,
+`bun.lock`, `pnpm-lock.yaml`, `yarn.lock` and `CHANGELOG.md` toward
+`backmerge-from` and fails on any other conflict. `backmerge-resolve-paths`
+extends that list; it does not replace it.
+
 ### Composite actions
 
 | Action | Purpose |

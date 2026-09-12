@@ -64,6 +64,14 @@ on:
       backmerge-from: { type: string,  default: "main" }
       backmerge-to:   { type: string,  default: "develop" }
 
+      # Extra paths to auto-resolve toward $FROM on a backmerge conflict,
+      # appended to the built-in list below. Newline- or space-separated,
+      # e.g. a subdirectory manifest and its lockfile. Additive: the default
+      # changes nothing about the built-in list.
+      backmerge-resolve-paths:
+        type: string
+        default: ""
+
       node-version:    { type: string, default: "lts/*" }
       bun-version:     { type: string, default: "latest" }
       timeout-minutes: { type: number, default: 30 }
@@ -261,6 +269,7 @@ jobs:
       - env:
           FROM: ${{ inputs.backmerge-from }}
           TO:   ${{ inputs.backmerge-to }}
+          RESOLVE_EXTRA: ${{ inputs.backmerge-resolve-paths }}
         run: |
           set -euo pipefail
           git config user.name  "github-actions[bot]"
@@ -270,14 +279,16 @@ jobs:
           # [skip ci] so the merge does not trigger the release workflow again.
           #
           # A stable release after a prerelease ALWAYS conflicts on the version
-          # files: the prerelease commit on $TO and the release commit on $FROM
-          # both rewrote package.json's version and prepended to CHANGELOG.md
-          # (observed on nis-suite v1.1.0 vs v1.1.0-develop.1). For those two
-          # files $FROM is the truth after a release, so resolve them toward
-          # $FROM ("--theirs" during a merge) and continue; any OTHER conflict
-          # is a real one and still fails the job.
+          # and lockfiles: the prerelease commit on $TO and the release commit
+          # on $FROM both rewrote them (observed on a bun repo's package.json,
+          # bun.lock and CHANGELOG.md). For those files $FROM is the truth
+          # after a release, so resolve them toward $FROM ("--theirs" during a
+          # merge) and continue; any OTHER conflict is a real one and still
+          # fails the job. The shared semantic-release git plugin's default
+          # assets cover the rest of the lockfile family; backmerge-resolve-
+          # paths adds a caller's own, e.g. a subdirectory manifest.
           if ! git merge "$FROM" --no-ff -m "chore(release): merge $FROM into $TO [skip ci]"; then
-            for f in package.json package-lock.json CHANGELOG.md; do
+            for f in package.json package-lock.json bun.lock pnpm-lock.yaml yarn.lock CHANGELOG.md $RESOLVE_EXTRA; do
               if git status --porcelain=v1 -- "$f" | grep -q '^UU'; then
                 git checkout --theirs -- "$f"
                 git add -- "$f"

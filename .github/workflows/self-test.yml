@@ -343,6 +343,34 @@ jobs:
             console.log("nothing publishes, as expected");
           '
 
+      # A real backmerge in a bun or pnpm repo conflicts on the lockfile, not
+      # just package.json, because the shared git plugin commits those too.
+      # Assert the resolve list and the input that extends it stay in place,
+      # so an edit that narrows the list back down fails here, not in a
+      # caller's release run after the tag already moved.
+      - name: Backmerge auto-resolve list covers the shared config's lockfiles
+        run: |
+          set -euo pipefail
+          python3 -c "
+          import sys, yaml
+          doc = yaml.safe_load(open('.github/workflows/release.yml'))
+          # PyYAML reads the bare 'on' key as the boolean True (YAML 1.1).
+          inputs = doc[True]['workflow_call']['inputs']
+          if 'backmerge-resolve-paths' not in inputs:
+              sys.exit('::error::release.yml lost the backmerge-resolve-paths input, a consuming repo can no longer add its own manifest/lockfile paths')
+          if inputs['backmerge-resolve-paths'].get('default') != '':
+              sys.exit('::error::backmerge-resolve-paths must default to \"\", so today\'s behaviour is unchanged when a caller does not set it')
+
+          step = [s for s in doc['jobs']['backmerge']['steps'] if 'RESOLVE_EXTRA' in str(s.get('env', {}))]
+          if not step:
+              sys.exit('::error::the backmerge step no longer wires backmerge-resolve-paths through as RESOLVE_EXTRA')
+          script = step[0]['run']
+          for f in ('package.json', 'package-lock.json', 'bun.lock', 'pnpm-lock.yaml', 'yarn.lock', 'CHANGELOG.md', '\$RESOLVE_EXTRA'):
+              if f not in script:
+                  sys.exit('::error::the backmerge auto-resolve loop no longer names ' + f)
+          print('backmerge auto-resolve list is intact')
+          "
+
       # What a consumer gets from the installer, checked by resolving.
       - name: Shared config links into a consumer
         run: ./actions/semantic-release-config/test.sh

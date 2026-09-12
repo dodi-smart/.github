@@ -1,0 +1,241 @@
+# Reusable: push a Supabase project's schema and functions after a release.
+#
+# Meant to be chained as a job on the caller's own release job, not triggered on
+# its own:
+#
+#   deploy:
+#     needs: release
+#     if: ${{ !cancelled() && needs.release.outputs.released == 'true' && github.ref == 'refs/heads/main' && !contains(needs.release.outputs.tag, '-') }}
+#     uses: dodi-smart/.github/.github/workflows/supabase-deploy.yml@v1
+#     with:
+#       ref: ${{ needs.release.outputs.tag }}
+#       cli-version: 2.111.0 # renovate: datasource=github-releases depName=supabase/cli
+#     secrets:
+#       SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+#       SUPABASE_DB_PASSWORD:  ${{ secrets.SUPABASE_DB_PASSWORD }}
+#       SUPABASE_PROJECT_ID:   ${{ secrets.SUPABASE_PROJECT_ID }}
+#
+# A staging caller drops the `released` clause: staging deploys from every push
+# to its branch, not from a cut tag.
+#
+# A `workflow_run: Release` trigger is the wrong shape for this, on two counts.
+# It fires whenever the named workflow COMPLETES, including a run that released
+# nothing, so a green no-op run would trigger a deploy of whatever HEAD already
+# happened to be. And a `workflow_run` job checks out the SHA that triggered the
+# original run by default, which for a release workflow is the push that started
+# it, not the tag `@semantic-release/git` pushed afterwards -- so a deploy
+# triggered this way ships the commit BEFORE the release commit, one behind
+# what the release just cut. Chaining on `needs:` inside the same run is the
+# only way to receive the actual tag as an output and check it out on purpose.
+name: Supabase Deploy
+
+on:
+  workflow_call:
+    inputs:
+      # The tag or sha to deploy. The caller passes needs.release.outputs.tag so
+      # the deployed schema and functions match the commit the release
+      # actually cut, not the push SHA that started the run.
+      ref:
+        type: string
+        required: true
+
+      # Pinned by the caller, never defaulted here: a default this workflow
+      # controls is a version Renovate cannot see, so the CLI upgrades itself
+      # (or silently doesn't) with no diff for anyone to review. Mark it in the
+      # caller with a renovate regex comment, e.g.
+      #   cli-version: 2.111.0 # renovate: datasource=github-releases depName=supabase/cli
+      # so a CLI release opens a normal, revertable PR instead of taking every
+      # project's next deploy down at once.
+      cli-version:
+        type: string
+        required: true
+
+      # A job in a reusable workflow CAN declare `environment:` from an input
+      # string (`environment: ${{ inputs.environment }}`), and this job does.
+      # Leave it unset and the job runs with no environment, no protection
+      # rules, no environment secrets. Set it to a configured environment name
+      # (e.g. "production") and this job is bound by whatever rules that
+      # environment carries in the CALLER's repo -- required reviewers, wait
+      # timers, environment-scoped secrets. The environment lives in the
+      # caller; this workflow only asks for it by name.
+      environment:
+        type: string
+        default: ""
+
+      # --include-seed on db push. Off by default: seeding a database that
+      # already holds real rows is a data question, not a deploy default.
+      seed:
+        type: boolean
+        default: false
+
+      # Deploy supabase/functions when it holds anything. Off entirely turns
+      # this off even for a non-empty directory, for a caller that deploys
+      # functions some other way.
+      functions:
+        type: boolean
+        default: true
+
+      # Space-separated routes to probe after deploy, resolved against
+      # health-url. Empty health-url skips the check entirely: not every
+      # caller's deploy has a URL that resolves the moment this job finishes.
+      health-url:
+        type: string
+        default: ""
+      health-routes:
+        type: string
+        default: "/"
+      health-attempts:
+        type: number
+        default: 6
+
+      timeout-minutes:
+        type: number
+        default: 15
+
+    secrets:
+      SUPABASE_ACCESS_TOKEN:
+        required: true
+      SUPABASE_DB_PASSWORD:
+        required: true
+      SUPABASE_PROJECT_ID:
+        required: true
+
+      # Multiline KEY=value pairs, one per line, passed to `supabase secrets
+      # set`. Built by the CALLER from its own secrets, e.g.:
+      #   FUNCTION_SECRETS: |
+      #     API_TOKEN_SECRET=${{ secrets.API_TOKEN_SECRET }}
+      #     SITE_URL=${{ vars.SITE_URL }}
+      # Nothing here is hard-coded with a function secret's name or value; a
+      # caller with no edge functions, or none that need secrets, leaves it
+      # unset and the step that would run it is skipped.
+      FUNCTION_SECRETS:
+        required: false
+
+jobs:
+  deploy:
+    # Hosted, and this is not the "public repo, self-hosted pool refuses it"
+    # reason self-test.yml and publish-release.yml carry -- this job runs in
+    # the CALLER's (private) repo, where self-hosted would be available. It is
+    # hosted anyway because this job holds a Supabase access token, a database
+    # password and a live link to a production project, and none of those
+    # belong on a machine other jobs -- other PRs, other repos, other people's
+    # code -- also land on between runs. A hosted runner is a throwaway VM;
+    # a self-hosted one is not.
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ inputs.timeout-minutes }}
+    environment: ${{ inputs.environment }}
+    env:
+      SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+      SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
+      SUPABASE_PROJECT_ID: ${{ secrets.SUPABASE_PROJECT_ID }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.ref }}
+          fetch-depth: 1
+
+      - name: Setup Supabase CLI
+        uses: supabase/setup-cli@v3.0.0
+        with:
+          version: ${{ inputs.cli-version }}
+
+      - name: Link to Supabase project
+        run: supabase link --project-ref "$SUPABASE_PROJECT_ID"
+
+      - name: Push database migrations
+        env:
+          SEED: ${{ inputs.seed }}
+        run: |
+          set -euo pipefail
+          flag=""
+          if [ "$SEED" = "true" ]; then
+            flag="--include-seed"
+          fi
+          # shellcheck disable=SC2086
+          supabase db push --project-ref "$SUPABASE_PROJECT_ID" $flag
+
+      # Same guard as the org's own hand-rolled deploy jobs: `functions: true`
+      # (the default) only deploys when the directory exists AND holds
+      # something, so a repo with no edge functions does not fail here.
+      - name: Deploy edge functions
+        if: inputs.functions
+        run: |
+          set -euo pipefail
+          if [ -d "supabase/functions" ] && [ "$(ls -A supabase/functions 2>/dev/null)" ]; then
+            supabase functions deploy --project-ref "$SUPABASE_PROJECT_ID"
+          else
+            echo "supabase/functions is empty or missing; nothing to deploy"
+          fi
+
+      # The secrets context is not available in a step-level `if:` (see
+      # AGENTS.md); hoist the presence check into an env var and a step output,
+      # the way pick-runner.yml does for GH_APP_CLIENT_ID.
+      - id: have-function-secrets
+        env:
+          FUNCTION_SECRETS: ${{ secrets.FUNCTION_SECRETS }}
+        run: |
+          if [ -n "${FUNCTION_SECRETS:-}" ]; then
+            echo "yes=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "yes=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Set function secrets
+        if: steps.have-function-secrets.outputs.yes == 'true'
+        env:
+          FUNCTION_SECRETS: ${{ secrets.FUNCTION_SECRETS }}
+        run: |
+          set -euo pipefail
+          # Written to a file the CLI reads itself, not interpolated into a
+          # `KEY="$VALUE"` shell word per line: that would put a secret value
+          # inside an expanded shell word, where a value containing a space or
+          # a quote breaks the command instead of passing through untouched.
+          # BSD/macOS mktemp with no template ignores TMPDIR (see AGENTS.md);
+          # this runner is always ubuntu-latest, but the explicit template
+          # costs nothing and keeps the file out of the working tree either way.
+          secrets_file=$(mktemp "${RUNNER_TEMP:-/tmp}/function-secrets.XXXXXX")
+          trap 'rm -f "$secrets_file"' EXIT
+          printf '%s\n' "$FUNCTION_SECRETS" > "$secrets_file"
+          supabase secrets set --project-ref "$SUPABASE_PROJECT_ID" --env-file "$secrets_file"
+
+      # Fails the job, on purpose, after the last attempt. The anti-pattern this
+      # replaces is a health check that logs `::warning::` and exits 0: a
+      # deploy that leaves every route erroring still goes green, and a warning
+      # buried in a job that reports success is one nobody reads before the
+      # next deploy stacks on top of it. Retries exist because the common case
+      # is the new version already live by the time this step runs; a deploy
+      # still propagating gets a few seconds of tolerance before this fails for
+      # real. Skipped entirely when health-url is empty, since not every
+      # caller's deploy resolves at a stable URL immediately.
+      - name: Check health routes
+        if: inputs.health-url != ''
+        env:
+          HEALTH_URL: ${{ inputs.health-url }}
+          HEALTH_ROUTES: ${{ inputs.health-routes }}
+          HEALTH_ATTEMPTS: ${{ inputs.health-attempts }}
+        run: |
+          set -euo pipefail
+          attempt=1
+          while [ "$attempt" -le "$HEALTH_ATTEMPTS" ]; do
+            failed=0
+            for route in $HEALTH_ROUTES; do
+              status=$(curl -s -o /dev/null -w "%{http_code}" "${HEALTH_URL}${route}" --max-time 15 || echo "000")
+              if [ "$status" -ge 200 ] && [ "$status" -lt 400 ]; then
+                echo "ok   ${route} -> HTTP ${status}"
+              else
+                echo "FAIL ${route} -> HTTP ${status}"
+                failed=1
+              fi
+            done
+            if [ "$failed" -eq 0 ]; then
+              exit 0
+            fi
+            if [ "$attempt" -lt "$HEALTH_ATTEMPTS" ]; then
+              echo "retrying in 5s (attempt $attempt/$HEALTH_ATTEMPTS)..."
+              sleep 5
+            fi
+            attempt=$((attempt + 1))
+          done
+
+          echo "::error::health check did not pass after $HEALTH_ATTEMPTS attempts; failing the deploy"
+          exit 1

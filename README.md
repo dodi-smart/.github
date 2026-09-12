@@ -68,6 +68,7 @@ exactly like a busy fleet.
 | `issue-implement.yml` | `agent:implement`, `@claude implement` | Branch, code, draft PR. Requires a plan. Never merges. |
 | `claude-assist.yml` | `@claude <anything else>` | The general assistant |
 | `release.yml` | push to a release branch | semantic-release, single or multi-module |
+| `supabase-deploy.yml` | called after `release.yml` | Pushes a Supabase project's schema and functions for the tag a release just cut |
 | `react-doctor.yml` | pull request, React repos | Static analysis of React/TS source. Advisory by default. |
 | `zavet-check.yml` | pull request | Knowledge-layer checks, for repos that have one. Report-only on dependency bot PRs |
 | `supabase-checks.yml` | pull request, Supabase repos | Deno edge-function check, generated-types check, pgTAP tests. Hosted only. |
@@ -101,6 +102,82 @@ rewrote, so the job auto-resolves `package.json`, `package-lock.json`,
 `bun.lock`, `pnpm-lock.yaml`, `yarn.lock` and `CHANGELOG.md` toward
 `backmerge-from` and fails on any other conflict. `backmerge-resolve-paths`
 extends that list; it does not replace it.
+
+### Release, then deploy
+
+`supabase-deploy.yml` is not triggered on its own. It is a job the caller
+chains on `release.yml` with `needs:`, gated on `release.yml`'s outputs, so it
+deploys the tag a release actually cut rather than the push that started the
+run:
+
+```yaml
+jobs:
+  release:
+    uses: dodi-smart/.github/.github/workflows/release.yml@v1
+    secrets: inherit
+
+  deploy:
+    needs: release
+    # Production: only a cut, non-prerelease tag on main.
+    if: ${{ !cancelled() && needs.release.outputs.released == 'true' && github.ref == 'refs/heads/main' && !contains(needs.release.outputs.tag, '-') }}
+    uses: dodi-smart/.github/.github/workflows/supabase-deploy.yml@v1
+    with:
+      ref: ${{ needs.release.outputs.tag }}
+      cli-version: 2.117.0 # renovate: datasource=npm depName=supabase
+      environment: production
+    secrets:
+      SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+      SUPABASE_DB_PASSWORD:  ${{ secrets.SUPABASE_DB_PASSWORD }}
+      SUPABASE_PROJECT_ID:   ${{ secrets.SUPABASE_PROJECT_ID }}
+```
+
+A staging caller drops the `released` clause from the `if:` and deploys on
+every push to its branch instead, since staging has nothing to gate on a
+release output for.
+
+Do not reach for `on: workflow_run: { workflows: ["Release"] }` instead. It
+fires on completion, including a run that released nothing, so a no-op release
+run still triggers a deploy of whatever HEAD happens to be at that moment. And
+by default it checks out the SHA that started the original run, not the tag
+`@semantic-release/git` pushes afterwards, so a `workflow_run`-triggered deploy
+ships the commit *before* the release it is meant to deploy. Chaining with
+`needs:` inside the same run is what makes the actual tag available as an
+output at all.
+
+`cli-version` is not defaulted by this workflow. A default here is a version
+Renovate cannot see, so the CLI would upgrade itself with no diff for anyone to
+review. Pin it in the caller with a Renovate regex-manager comment, as in the
+example above, so a CLI release opens a normal pull request instead of taking
+every project's next deploy down at once, the way an undetected `supabase/cli`
+regression once did.
+
+#### Inputs
+
+| Input | Default | Meaning |
+|---|---|---|
+| `ref` | *(required)* | Tag or sha to check out and deploy |
+| `cli-version` | *(required)* | Supabase CLI version, pinned and Renovate-marked in the caller |
+| `environment` | `""` | Name of a GitHub environment configured in the caller's repo. Empty means no environment: no protection rules, no environment secrets |
+| `seed` | `false` | Pass `--include-seed` to `supabase db push` |
+| `functions` | `true` | Deploy `supabase/functions` when it holds anything; `false` skips it even if it does |
+| `health-url` | `""` | Base URL to probe after deploy. Empty skips the health check entirely |
+| `health-routes` | `"/"` | Space-separated routes appended to `health-url` |
+| `health-attempts` | `6` | Retries before the health check fails the job |
+| `timeout-minutes` | `15` | Job timeout |
+
+#### Secrets
+
+| Secret | Required | Meaning |
+|---|---|---|
+| `SUPABASE_ACCESS_TOKEN` | yes | Supabase CLI auth |
+| `SUPABASE_DB_PASSWORD` | yes | Non-interactive `supabase link` / `db push` |
+| `SUPABASE_PROJECT_ID` | yes | The project ref to link and deploy against |
+| `FUNCTION_SECRETS` | no | Multiline `KEY=value`, one per line, passed to `supabase secrets set`. Built by the caller from its own secrets (`FUNCTION_SECRETS: \|` followed by `NAME=${{ secrets.NAME }}` lines) — nothing here is hard-coded with a function secret's name or value. Unset skips the step entirely |
+
+The health check FAILS the job after `health-attempts`, deliberately: a deploy
+that leaves every route erroring must not go green. A warning-only check is
+strictly worse than no check, because it reads as a passing signal that
+nobody then goes back to question.
 
 ### Composite actions
 

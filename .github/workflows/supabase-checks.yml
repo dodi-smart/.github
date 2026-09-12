@@ -1,0 +1,237 @@
+# Reusable: the Supabase-side checks a bun/node PR pipeline never runs.
+#
+# `pr-checks.yml`'s stacks stop at the application source; none of them touch a
+# Deno edge function or a local Postgres. Nothing here overlaps that workflow,
+# and nothing here belongs in it: adding Deno or Postgres there would put one
+# repo's Supabase project into every other repo's build.
+#
+# `concurrency`, `paths:` and the dispatch-aware draft gate stay with the
+# CALLER, the same rule `pr-checks.yml` and `react-doctor.yml` follow, because
+# all three depend on that repo's branches and layout. A caller that also runs
+# `pr-checks.yml` should gate both jobs with the same `if:`.
+#
+# Hosted only, deliberately, and with no runner picker: the self-hosted fleet
+# runs jobs INSIDE containers on a shared daemon, so `supabase db start`
+# publishes postgres's ports on the HOST's localhost while the CLI polls the
+# CONTAINER's own 127.0.0.1, where nothing listens. `ubuntu-latest` is the only
+# runner class here where the CLI's own localhost is the one postgres bound.
+#
+# Each job's `if:` is written so a disabled feature reports `skipped`, never
+# `failure`. A caller can require `types` / `deno` / `pgtap` as status checks
+# on every repo that uses this workflow without breaking the ones that leave a
+# job off.
+name: Supabase Checks
+
+on:
+  workflow_call:
+    inputs:
+      cli-version:
+        description: >-
+          Supabase CLI version, pinned exact. The generated types this workflow
+          diffs against must come from the same CLI the repo commits with, so
+          the caller pins this with a `renovate: datasource=npm depName=supabase`
+          marker tracking the same `supabase` devDependency the repo installs
+          from, not a bare Renovate comment that can drift from it unnoticed.
+        type: string
+        required: true
+      types-path:
+        description: >-
+          Path of the committed generated types file, e.g.
+          `src/lib/supabase/database.types.ts`. Empty disables the `types` job
+          entirely, reported as skipped.
+        type: string
+        default: ""
+      migrations-paths:
+        description: >-
+          Newline-separated paths whose change triggers the `types` job's
+          heavy steps on a pull request. `workflow_dispatch` ignores this and
+          always runs them.
+        type: string
+        default: |
+          supabase/migrations
+          supabase/seed.sql
+      seed-check:
+        description: >-
+          Re-apply `supabase/seed.sql` after `db start` to prove it is
+          re-runnable. On, this catches an insert a staging `db push
+          --include-seed` would fail on the second time it runs.
+        type: boolean
+        default: false
+      deno-dir:
+        description: >-
+          Directory of Deno-only source, e.g. `supabase/functions`. Empty
+          disables the `deno` job entirely, reported as skipped.
+        type: string
+        default: ""
+      pgtap:
+        description: "Run `supabase test db` (pgTAP suite in supabase/tests/) in its own job."
+        type: boolean
+        default: false
+      deno-version:
+        type: string
+        default: "v2.x"
+      timeout-minutes:
+        type: number
+        default: 30
+
+jobs:
+  types:
+    name: Database Types Check
+    if: ${{ inputs.types-path != '' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ inputs.timeout-minutes }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      # `workflow_dispatch` has no base branch to diff against, so run
+      # everything: someone pressing the button wants the checks, not a filter.
+      # Any other event without a usable base ref (a push, say) runs everything
+      # too, since only a pull request has a merge base to diff.
+      - name: Check for migration or seed changes
+        id: changes
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" != "pull_request" ]; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          git fetch origin "${{ github.base_ref }}"
+          mapfile -t paths < <(printf '%s\n' "${{ inputs.migrations-paths }}" | sed '/^[[:space:]]*$/d')
+          if [ "${#paths[@]}" -eq 0 ]; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if git diff --name-only "origin/${{ github.base_ref }}"...HEAD -- "${paths[@]}" | grep -q .; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Skip (no migration or seed changes)
+        if: steps.changes.outputs.changed == 'false'
+        run: echo "No migration or seed changes detected, skipping database checks."
+
+      - name: Setup Supabase CLI
+        if: steps.changes.outputs.changed == 'true'
+        uses: supabase/setup-cli@v3.0.0
+        with:
+          version: ${{ inputs.cli-version }}
+
+      # On failure, dump every container's state and logs: `db start` reports
+      # only "connection refused", which says the postgres container died but
+      # not why. The real error is in that container's log on the runner,
+      # unreachable except through this step's own output.
+      - name: Start Supabase (local)
+        if: steps.changes.outputs.changed == 'true'
+        run: |
+          if ! supabase db start --debug; then
+            echo "::group::docker ps -a"
+            docker ps -a || true
+            echo "::endgroup::"
+            for c in $(docker ps -aq); do
+              echo "::group::logs $(docker inspect --format '{{.Name}} ({{.Config.Image}}) exit={{.State.ExitCode}} oom={{.State.OOMKilled}}' "$c" 2>/dev/null || echo "$c")"
+              docker logs --tail 100 "$c" 2>&1 || true
+              echo "::endgroup::"
+            done
+            exit 1
+          fi
+
+      # `db start` applies the seed once, so a fresh reset can never catch an
+      # insert that is not re-runnable. A staging `db push --include-seed`
+      # applies the same file again on every merge, where the second
+      # application is the one that fails. Reproduce that here.
+      - name: Verify the seed is re-runnable
+        if: steps.changes.outputs.changed == 'true' && inputs.seed-check
+        run: |
+          psql "postgresql://postgres:postgres@127.0.0.1:54322/postgres" \
+            -v ON_ERROR_STOP=1 -f supabase/seed.sql
+          echo "Seed re-applied cleanly."
+
+      - name: Verify types (local)
+        if: steps.changes.outputs.changed == 'true'
+        run: |
+          # `supabase gen types --local` spins a pinned postgres-meta container;
+          # pulling it can hit public-registry rate limits (toomanyrequests) on
+          # a shared runner IP. Retry the generation with backoff before
+          # diffing. A real type mismatch still fails the diff below; this only
+          # retries the flaky image pull, never masks stale types.
+          generated=false
+          for attempt in 1 2 3 4 5; do
+            if supabase gen types typescript --local > types.gen.ts 2> gen.err; then
+              generated=true
+              break
+            fi
+            echo "gen types attempt ${attempt} failed:"
+            cat gen.err || true
+            if [ "${attempt}" -lt 5 ]; then
+              echo "Retrying in 30s..."
+              sleep 30
+            fi
+          done
+          if [ "${generated}" != "true" ]; then
+            echo "::error::supabase gen types failed after 5 attempts (see logs above)."
+            exit 1
+          fi
+          if ! diff -q types.gen.ts "${{ inputs.types-path }}" > /dev/null 2>&1; then
+            echo "::error::TypeScript types are out of date for ${{ inputs.types-path }}. Run: supabase gen types typescript --local > ${{ inputs.types-path }}"
+            diff types.gen.ts "${{ inputs.types-path }}" || true
+            exit 1
+          fi
+          echo "TypeScript types are up-to-date"
+
+  deno:
+    name: Edge Functions Check
+    if: ${{ inputs.deno-dir != '' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ inputs.timeout-minutes }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: denoland/setup-deno@v2
+        with:
+          deno-version: ${{ inputs.deno-version }}
+
+      - name: Type check edge functions
+        working-directory: ${{ inputs.deno-dir }}
+        run: deno check --allow-import ./**/*.ts
+
+      - name: Lint edge functions
+        working-directory: ${{ inputs.deno-dir }}
+        run: deno lint
+
+  pgtap:
+    name: Database Tests
+    if: ${{ inputs.pgtap }}
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ inputs.timeout-minutes }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: supabase/setup-cli@v3.0.0
+        with:
+          version: ${{ inputs.cli-version }}
+
+      # Same failure dump as the types job: `db start` only ever says
+      # "connection refused", and the cause is in the container log.
+      - name: Start Supabase (local)
+        run: |
+          if ! supabase db start --debug; then
+            echo "::group::docker ps -a"
+            docker ps -a || true
+            echo "::endgroup::"
+            for c in $(docker ps -aq); do
+              echo "::group::logs $(docker inspect --format '{{.Name}} ({{.Config.Image}}) exit={{.State.ExitCode}} oom={{.State.OOMKilled}}' "$c" 2>/dev/null || echo "$c")"
+              docker logs --tail 100 "$c" 2>&1 || true
+              echo "::endgroup::"
+            done
+            exit 1
+          fi
+
+      # `supabase test db` runs pg_prove over supabase/tests/*.sql against the
+      # local database. Every file is expected to be self-contained (begin ...
+      # rollback), so order does not matter and the seed `db start` applied is
+      # left untouched.
+      - name: Run pgTAP suite
+        run: supabase test db --debug

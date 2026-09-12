@@ -70,6 +70,7 @@ exactly like a busy fleet.
 | `release.yml` | push to a release branch | semantic-release, single or multi-module |
 | `react-doctor.yml` | pull request, React repos | Static analysis of React/TS source. Advisory by default. |
 | `zavet-check.yml` | pull request | Knowledge-layer checks, for repos that have one. Report-only on dependency bot PRs |
+| `supabase-checks.yml` | pull request, Supabase repos | Deno edge-function check, generated-types check, pgTAP tests. Hosted only. |
 | `pick-runner.yml` | called by the others | Chooses a runner and validates the choice |
 
 `release.yml` reports what it did through `workflow_call` outputs, so a caller
@@ -267,6 +268,41 @@ misses on every commit by construction, then falls through `restore-keys` to
 whatever another branch left behind. It surfaces as a compile error in a file the
 pull request never touched. Reuse of compiled output is the build tool's job, by
 content hash, and `setup-stack` already wires it up.
+
+## Supabase checks
+
+`supabase-checks.yml` covers the Supabase-side checks a bun/node `pr-checks.yml`
+run never touches: a Deno edge-function check, a generated-types check, and
+pgTAP tests. It runs on `ubuntu-latest` only, with no runner picker — the
+self-hosted fleet runs jobs inside containers on a shared daemon, so `supabase
+db start` publishes postgres's ports on the HOST while the CLI polls the
+CONTAINER's own localhost. `concurrency`, `paths:` and the dispatch-aware draft
+gate stay with you, same as `pr-checks.yml`.
+
+| Input | Default | Meaning |
+|---|---|---|
+| `cli-version` | *(required)* | Supabase CLI version, pinned exact with a `renovate: datasource=npm depName=supabase` marker tracking the same `supabase` devDependency the repo installs from. Generated types must come from that same CLI or the diff below fails on formatting, not schema. |
+| `types-path` | `""` | Path of the committed generated types. Empty disables the `types` job (reported skipped, not failed). |
+| `migrations-paths` | `supabase/migrations`, `supabase/seed.sql` | Newline-separated paths whose change triggers the `types` job's heavy steps on a pull request. `workflow_dispatch` always runs them. |
+| `seed-check` | `false` | Re-apply `supabase/seed.sql` after `db start` to prove it is re-runnable. |
+| `deno-dir` | `""` | Directory of Deno-only source, e.g. `supabase/functions`. Empty disables the `deno` job. |
+| `pgtap` | `false` | Run `supabase test db` in its own job. |
+| `deno-version` | `v2.x` | Passed straight to `denoland/setup-deno`. |
+| `timeout-minutes` | `30` | Per job. |
+
+```yaml
+jobs:
+  supabase:
+    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.draft == false
+    uses: dodi-smart/.github/.github/workflows/supabase-checks.yml@v1
+    with:
+      # renovate: datasource=npm depName=supabase
+      cli-version: 2.116.0
+      types-path: src/lib/supabase/database.types.ts
+      seed-check: true
+      deno-dir: supabase/functions
+      pgtap: true
+```
 
 ## Runners
 

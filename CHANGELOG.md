@@ -1,3 +1,9 @@
+## [1.3.2](https://github.com/dodi-smart/.github/compare/v1.3.1...v1.3.2) (2026-09-12)
+
+### 🐛 Bug Fixes
+
+* make issue-triage's workflow_dispatch trigger do something or fail clean ([0cfe73c](https://github.com/dodi-smart/.github/commit/0cfe73c71587ff9f6a7c9d59fb1a0d71634ac81f))
+
 ## [1.3.1](https://github.com/dodi-smart/.github/compare/v1.3.0...v1.3.1) (2026-09-12)
 
 ### 🐛 Bug Fixes

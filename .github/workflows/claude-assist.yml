@@ -45,11 +45,16 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # The picker runs INSIDE this job, after the last step that can still say
+  # no. It is itself a hosted job, so it must never run for an event that will
+  # not proceed, and folding it in here means a proceeding run costs one
+  # hosted start instead of two.
   gate:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 10   # the picker calls the org API and may retry
     outputs:
       proceed: ${{ steps.gate.outputs.proceed }}
+      runner:  ${{ steps.pick.outputs.runner }}
     steps:
       - id: gate
         uses: dodi-smart/.github/actions/agent-gate@v1
@@ -71,19 +76,21 @@ jobs:
           bots: 'reject'
           skip-draft: 'false'
 
-  pick-runner:
-    needs: [gate]
-    if: needs.gate.outputs.proceed == 'true'
-    uses: dodi-smart/.github/.github/workflows/pick-runner.yml@v1
-    with:
-      weight: ${{ inputs.runner-weight }}
-      labels: ${{ inputs.runner-labels }}
-    secrets: inherit
+      # Only when the run above is still proceeding: a kill-switched or
+      # reserved-verb mention must never pay for a hosted picker.
+      - id: pick
+        if: steps.gate.outputs.proceed == 'true'
+        uses: dodi-smart/.github/actions/pick-runner@v1
+        with:
+          weight:             ${{ inputs.runner-weight }}
+          labels:             ${{ inputs.runner-labels }}
+          gh-app-client-id:   ${{ secrets.GH_APP_CLIENT_ID }}
+          gh-app-private-key: ${{ secrets.GH_APP_PRIVATE_KEY }}
 
   assist:
-    needs: [gate, pick-runner]
+    needs: [gate]
     if: needs.gate.outputs.proceed == 'true'
-    runs-on: ${{ fromJson(needs.pick-runner.outputs.runner) }}
+    runs-on: ${{ fromJson(needs.gate.outputs.runner) }}
     timeout-minutes: ${{ inputs.timeout-minutes }}
     permissions:
       contents: read

@@ -1,3 +1,9 @@
+## [1.6.1](https://github.com/dodi-smart/.github/compare/v1.6.0...v1.6.1) (2026-09-12)
+
+### ⚡ Performance Improvements
+
+* **agent-workflows:** one hosted job start per agent run ([e70c0da](https://github.com/dodi-smart/.github/commit/e70c0da28aa947564411fe983e70d27c029108fd))
+
 ## [1.6.0](https://github.com/dodi-smart/.github/compare/v1.5.0...v1.6.0) (2026-09-12)
 
 ### ✨ Features

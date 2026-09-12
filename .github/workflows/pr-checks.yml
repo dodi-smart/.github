@@ -162,7 +162,7 @@ jobs:
       # pool is needed at all.
       - id: light
         if: ${{ !inputs.single-job && steps.docs.outputs.docs_only != 'true' }}
-        uses: dodi-smart/.github/actions/pick-runner@feat/pr-checks-one-picker-and-summary
+        uses: dodi-smart/.github/actions/pick-runner@v1
         with:
           weight:             ${{ inputs.light-weight }}
           gh-app-client-id:   ${{ secrets.GH_APP_CLIENT_ID }}
@@ -170,7 +170,7 @@ jobs:
 
       - id: heavy
         if: ${{ steps.docs.outputs.docs_only != 'true' }}
-        uses: dodi-smart/.github/actions/pick-runner@feat/pr-checks-one-picker-and-summary
+        uses: dodi-smart/.github/actions/pick-runner@v1
         with:
           weight:             ${{ inputs.heavy-weight }}
           gh-app-client-id:   ${{ secrets.GH_APP_CLIENT_ID }}

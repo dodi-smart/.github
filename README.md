@@ -271,10 +271,10 @@ including when it refuses. If it is still there, the work is genuinely running.
 ```
 
 `agent:implement` does nothing unless the issue is planned. That is a field
-comparison in a gate job, run before a runner is picked, with no override. An
-agent asked to judge whether a plan is good enough will sometimes accept a
-two-line issue body, and the cost is twenty minutes of confident work on the
-wrong thing.
+comparison in the gate job, which also picks the runner once that comparison
+passes, with no override. An agent asked to judge whether a plan is good
+enough will sometimes accept a two-line issue body, and the cost is twenty
+minutes of confident work on the wrong thing.
 
 ## Stacks
 
@@ -430,8 +430,9 @@ jobs:
 `pick-runner.yml` takes a semantic `weight` and resolves it. It is a thin
 wrapper around `actions/pick-runner`, the composite action that does the actual
 selecting; call the action directly from inside a job that is already hosted
-(as `pr-checks.yml`'s `pick` job does, twice) rather than paying for a second
-hosted job just to reuse the workflow.
+(as `pr-checks.yml`'s `pick` job does, twice, and as every agent workflow's
+`gate` job does, once, after `agent-gate` decides the run should proceed)
+rather than paying for a second hosted job just to reuse the workflow.
 
 | `weight` | Selector | Use |
 |---|---|---|

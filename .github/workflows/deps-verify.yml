@@ -54,12 +54,17 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # The picker runs INSIDE this job, after the last step that can still say
+  # no. It is itself a hosted job, so it must never run for an event that will
+  # not proceed, and folding it in here means a proceeding run costs one
+  # hosted start instead of two.
   gate:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 10   # the picker calls the org API and may retry
     outputs:
       proceed: ${{ steps.gate.outputs.proceed }}
       stack:   ${{ steps.stack.outputs.stack }}
+      runner:  ${{ steps.pick.outputs.runner }}
     steps:
       # `bots: only` is the inverse of every other agent workflow: this one runs
       # for Renovate and Dependabot and nothing else. It also absorbs the author
@@ -94,21 +99,23 @@ jobs:
           echo "stack=$s" >> "$GITHUB_OUTPUT"
           echo "stack: $s"
 
-  pick-runner:
-    needs: [gate]
-    if: needs.gate.outputs.proceed == 'true'
-    uses: dodi-smart/.github/.github/workflows/pick-runner.yml@v1
-    with:
-      weight: ${{ inputs.runner-weight }}
-      labels: ${{ inputs.runner-labels }}
-    secrets: inherit
+      # Only when the run above is still proceeding: a human-authored PR (this
+      # workflow runs for bots only) must never pay for a hosted picker.
+      - id: pick
+        if: steps.gate.outputs.proceed == 'true'
+        uses: dodi-smart/.github/actions/pick-runner@v1
+        with:
+          weight:             ${{ inputs.runner-weight }}
+          labels:             ${{ inputs.runner-labels }}
+          gh-app-client-id:   ${{ secrets.GH_APP_CLIENT_ID }}
+          gh-app-private-key: ${{ secrets.GH_APP_PRIVATE_KEY }}
 
   # Deterministic gates FIRST. If the build is red the compiler has already
   # explained why, and an agent adds nothing but cost.
   build:
-    needs: [gate, pick-runner]
+    needs: [gate]
     if: needs.gate.outputs.proceed == 'true'
-    runs-on: ${{ fromJson(needs.pick-runner.outputs.runner) }}
+    runs-on: ${{ fromJson(needs.gate.outputs.runner) }}
     timeout-minutes: 25
     outputs:
       verdict: ${{ steps.result.outputs.verdict }}
@@ -170,9 +177,9 @@ jobs:
           fi
 
   review:
-    needs: [gate, pick-runner, build]
+    needs: [gate, build]
     if: needs.gate.outputs.proceed == 'true'
-    runs-on: ${{ fromJson(needs.pick-runner.outputs.runner) }}
+    runs-on: ${{ fromJson(needs.gate.outputs.runner) }}
     timeout-minutes: 20
     permissions:
       contents: read

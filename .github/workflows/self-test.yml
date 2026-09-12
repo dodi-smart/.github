@@ -201,6 +201,68 @@ jobs:
           print('pr-checks.yml has one picker job (%s) and an always-on pr-checks summary job' % pickers[0])
           "
 
+      # Each agent workflow used to run the picker as its own hosted job, needed
+      # by the agent job. That billed two hosted starts before a proceeding run
+      # ever reached the agent. Now the picker is a STEP inside `gate`, after
+      # `agent-gate`, guarded on the gate's own `proceed`. Assert the new shape
+      # rather than trust it stays this way: a `pick-runner` job creeping back
+      # in "just for this one workflow" is exactly how it drifted before.
+      - name: Agent workflows pick their runner inside the gate job
+        run: |
+          set -euo pipefail
+          python3 -c "
+          import sys, yaml
+
+          agent_workflows = [
+              ('issue-triage.yml',   'triage'),
+              ('issue-implement.yml','implement'),
+              ('claude-assist.yml',  'assist'),
+              ('pr-review.yml',      'review'),
+              ('deps-verify.yml',    'build'),
+          ]
+
+          bad = []
+          for f, agent_job in agent_workflows:
+              path = '.github/workflows/' + f
+              jobs = yaml.safe_load(open(path))['jobs']
+
+              if 'pick-runner' in jobs:
+                  bad.append(f + ': still has a standalone pick-runner job')
+                  continue
+
+              gate = jobs.get('gate')
+              if gate is None:
+                  bad.append(f + ': has no gate job')
+                  continue
+
+              steps = gate.get('steps') or []
+              pick = [s for s in steps if 'pick-runner@' in str(s.get('uses', ''))]
+              if len(pick) != 1:
+                  bad.append(f + ': gate job must have exactly one pick-runner step, found ' + str(len(pick)))
+                  continue
+
+              cond = str(pick[0].get('if', ''))
+              if 'proceed' not in cond:
+                  bad.append(f + ': the pick step is not guarded on a proceed output (if: %r)' % cond)
+
+              if 'runner' not in (gate.get('outputs') or {}):
+                  bad.append(f + ': gate job has no runner output for the agent job to read')
+
+              job = jobs.get(agent_job)
+              if job is None:
+                  bad.append(f + ': has no ' + agent_job + ' job')
+                  continue
+              if 'pick-runner' in (job.get('needs') or []):
+                  bad.append(f + ': ' + agent_job + ' job still needs pick-runner')
+              if 'needs.gate.outputs.runner' not in str(job.get('runs-on', '')):
+                  bad.append(f + ': ' + agent_job + ' job does not read runs-on from needs.gate.outputs.runner')
+
+          if bad:
+              sys.exit('::error::' + '; '.join(bad) + '. Folding the picker into the gate job is what makes a '
+                        'proceeding agent run cost one hosted start instead of two.')
+          print('every agent workflow picks its runner inside the gate job, guarded on proceed')
+          "
+
       # pick-runner.yml is a thin wrapper around actions/pick-runner now. Every
       # existing caller, internal or external, references these names, so the
       # wrapper losing one is a breaking change hiding behind a passing lint.

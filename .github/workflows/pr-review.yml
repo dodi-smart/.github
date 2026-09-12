@@ -52,9 +52,13 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # The picker runs INSIDE this job, after the last step that can still say
+  # no. It is itself a hosted job, so it must never run for an event that will
+  # not proceed, and folding it in here means a proceeding run costs one
+  # hosted start instead of two.
   gate:
     runs-on: ubuntu-latest
-    timeout-minutes: 8
+    timeout-minutes: 10   # the picker calls the org API and may retry
     permissions:
       contents: read
       checks: read
@@ -65,6 +69,7 @@ jobs:
       level:   ${{ steps.level.outputs.level }}
       reason:  ${{ steps.level.outputs.reason }}
       ci:      ${{ steps.ci.outputs.summary }}
+      runner:  ${{ steps.pick.outputs.runner }}
     steps:
       # Payload-only rules first, before the checkout. agent:no-touch, drafts
       # and bot PRs are decided without fetching anything. Bot dependency PRs
@@ -174,19 +179,23 @@ jobs:
           echo "summary=$out" >> "$GITHUB_OUTPUT"
           echo "collected $n failing check(s)"
 
-  pick-runner:
-    needs: [gate]
-    if: needs.gate.outputs.proceed == 'true'
-    uses: dodi-smart/.github/.github/workflows/pick-runner.yml@v1
-    with:
-      weight: ${{ inputs.runner-weight }}
-      labels: ${{ inputs.runner-labels }}
-    secrets: inherit
+      # Only when the run above is still proceeding: a draft, a bot PR or a
+      # docs-only diff must never pay for a hosted picker. `steps.level`, not
+      # `steps.gate`, is the last step that can still say no -- it narrows the
+      # gate's own verdict further (no changed files, docs only).
+      - id: pick
+        if: steps.level.outputs.proceed == 'true'
+        uses: dodi-smart/.github/actions/pick-runner@v1
+        with:
+          weight:             ${{ inputs.runner-weight }}
+          labels:             ${{ inputs.runner-labels }}
+          gh-app-client-id:   ${{ secrets.GH_APP_CLIENT_ID }}
+          gh-app-private-key: ${{ secrets.GH_APP_PRIVATE_KEY }}
 
   review:
-    needs: [gate, pick-runner]
+    needs: [gate]
     if: needs.gate.outputs.proceed == 'true'
-    runs-on: ${{ fromJson(needs.pick-runner.outputs.runner) }}
+    runs-on: ${{ fromJson(needs.gate.outputs.runner) }}
     timeout-minutes: 25
     permissions:
       contents: read

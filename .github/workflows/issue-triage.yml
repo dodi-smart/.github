@@ -58,14 +58,17 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # Gate BEFORE picking a runner. The picker is itself a hosted job, so it must
-  # never run for an event that will not proceed.
+  # The picker runs INSIDE this job, after the last step that can still say no.
+  # It is itself a hosted job, so it must never run for an event that will not
+  # proceed, and folding it in here means a proceeding run costs one hosted
+  # start instead of two.
   gate:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 10   # the picker calls the org API and may retry
     outputs:
       proceed: ${{ steps.bots.outputs.proceed }}
       mode:    ${{ steps.bots.outputs.mode }}
+      runner:  ${{ steps.pick.outputs.runner }}
     steps:
       # agent:no-touch is evaluated inside this action, first and
       # unconditionally. Nothing below may run ahead of it. The gate reads the
@@ -120,19 +123,21 @@ jobs:
           echo "proceed=$proceed"          >> "$GITHUB_OUTPUT"
           echo "mode=${MODE:-triage}"      >> "$GITHUB_OUTPUT"
 
-  pick-runner:
-    needs: [gate]
-    if: needs.gate.outputs.proceed == 'true'
-    uses: dodi-smart/.github/.github/workflows/pick-runner.yml@v1
-    with:
-      weight: ${{ inputs.runner-weight }}
-      labels: ${{ inputs.runner-labels }}
-    secrets: inherit
+      # Only when the run above is still proceeding: a no-op dispatch or a
+      # kill-switched issue must never pay for a hosted picker.
+      - id: pick
+        if: steps.bots.outputs.proceed == 'true'
+        uses: dodi-smart/.github/actions/pick-runner@v1
+        with:
+          weight:             ${{ inputs.runner-weight }}
+          labels:             ${{ inputs.runner-labels }}
+          gh-app-client-id:   ${{ secrets.GH_APP_CLIENT_ID }}
+          gh-app-private-key: ${{ secrets.GH_APP_PRIVATE_KEY }}
 
   triage:
-    needs: [gate, pick-runner]
+    needs: [gate]
     if: needs.gate.outputs.proceed == 'true'
-    runs-on: ${{ fromJson(needs.pick-runner.outputs.runner) }}
+    runs-on: ${{ fromJson(needs.gate.outputs.runner) }}
     timeout-minutes: 20
     permissions:
       contents: read

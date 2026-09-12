@@ -152,6 +152,13 @@ why, not history.
   prefix and the plugins come from there. `--preserve-symlinks` would break
   it by resolving from the link's own location instead.
 
+- **`refactor:` does not release here, so a refactor that changes what callers
+  run is not live until a releasing commit follows it.** `release.config.mjs`
+  turns the shared `refactor -> patch` rule off on purpose (a tag move with no
+  visible entry). A change to a workflow's job graph is a change callers see,
+  so type it `perf:` or `fix:` with a body that says what moved, or `v1` stays
+  on the old code while `main` looks done.
+
 ## Everything here is pinned, including the internal references
 
 The workflows in this repo call each other, and their composite actions, at

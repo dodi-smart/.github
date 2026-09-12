@@ -12,6 +12,16 @@
 # assistant workflow, and that list drifts. The verbs live in the `commands:`
 # input below and nowhere else.
 #
+# A caller may also offer `workflow_dispatch`, for a manual re-run against one
+# issue. Pass its number through the `issue-number` input below. A dispatch
+# with no `issue-number` is a clean no-op: the gate stops before the runner
+# picker or the agent, with a notice, and the job still reports success. A
+# dispatch is not a `pull_request`, `issues`, `issue_comment`,
+# `pull_request_review_comment` or `pull_request_review` event, so tag mode
+# cannot render a prompt for it; the triage job always runs in agent mode for
+# a dispatch (see `actions/run-agent`), which is fine because the prompt below
+# already carries the issue number, not the event payload.
+#
 # A reopened issue is triaged again rather than skipped. Reopening means the
 # issue is back in play and its earlier triage describes a state that no longer
 # holds, so leaving it alone leaves `Triage state` claiming a plan that was
@@ -29,6 +39,14 @@ on:
       runner-labels:
         type: string
         default: ""       # explicit selector; wins over runner-weight
+      # Only meaningful on workflow_dispatch. workflow_call inputs are separate
+      # from workflow_dispatch inputs, so a caller offering manual dispatch
+      # must declare its own `inputs.issue-number` and forward it here.
+      # Default empty; a dispatch with nothing to triage is a no-op, not a
+      # failure.
+      issue-number:
+        type: string
+        default: ""
     secrets:
       CLAUDE_CODE_OAUTH_TOKEN: { required: true }
       GH_APP_CLIENT_ID:        { required: false }
@@ -36,7 +54,7 @@ on:
 
 # One triage per issue. A second request supersedes the first rather than racing it.
 concurrency:
-  group: triage-${{ github.repository }}-${{ github.event.issue.number }}
+  group: triage-${{ github.repository }}-${{ inputs.issue-number || github.event.issue.number }}
   cancel-in-progress: true
 
 jobs:
@@ -73,11 +91,13 @@ jobs:
       # re-open a run the kill switch stopped.
       - id: bots
         env:
-          PROCEED: ${{ steps.gate.outputs.proceed }}
-          MODE:    ${{ steps.gate.outputs.mode }}
-          AUTHOR:  ${{ github.event.issue.user.login }}
-          TITLE:   ${{ github.event.issue.title }}
-          ACTION:  ${{ github.event.action }}
+          PROCEED:     ${{ steps.gate.outputs.proceed }}
+          MODE:        ${{ steps.gate.outputs.mode }}
+          AUTHOR:      ${{ github.event.issue.user.login }}
+          TITLE:       ${{ github.event.issue.title }}
+          ACTION:      ${{ github.event.action }}
+          EVENT_NAME:  ${{ github.event_name }}
+          ISSUE_INPUT: ${{ inputs.issue-number }}
         run: |
           set -euo pipefail
           proceed="$PROCEED"
@@ -88,6 +108,14 @@ jobs:
             else
               echo "bot-authored issue that is not a newly opened Dependency Dashboard, stopping"
             fi
+          fi
+          # A dispatch with nothing to triage is a clean no-op, not a failure.
+          # `workflow_call` inputs and `workflow_dispatch` inputs are separate,
+          # so this is empty unless the caller's dispatch trigger forwards its
+          # own `issue-number` input into this one.
+          if [ "$proceed" = "true" ] && [ "$EVENT_NAME" = "workflow_dispatch" ] && [ -z "$ISSUE_INPUT" ]; then
+            proceed=false
+            echo "::notice title=Nothing to triage::workflow_dispatch needs an issue-number input naming which issue to triage. None was given, so this run does nothing."
           fi
           echo "proceed=$proceed"          >> "$GITHUB_OUTPUT"
           echo "mode=${MODE:-triage}"      >> "$GITHUB_OUTPUT"
@@ -134,7 +162,7 @@ jobs:
           # the same whether the job is working or broken.
           track-progress: 'true'
           prompt: |
-            Triage issue #${{ github.event.issue.number }} in ${{ github.repository }}.
+            Triage issue #${{ inputs.issue-number || github.event.issue.number }} in ${{ github.repository }}.
             Mode: ${{ needs.gate.outputs.mode }}
             Event: ${{ github.event_name }}${{ github.event.action && format('/{0}', github.event.action) || '' }}
 
@@ -154,7 +182,7 @@ jobs:
             3. Apply the `area:*` labels. Several is normal. If areas.yml was
                missing, apply none and say so.
             4. Set the issue type:
-               gh api -X PATCH /repos/${{ github.repository }}/issues/${{ github.event.issue.number }} -f type='<Type>'
+               gh api -X PATCH /repos/${{ github.repository }}/issues/${{ inputs.issue-number || github.event.issue.number }} -f type='<Type>'
                Bug only for a real regression or a violated spec, not for
                something that never worked and was never specified.
 
@@ -305,7 +333,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           REPO:     ${{ github.repository }}
-          NUM:      ${{ github.event.issue.number }}
+          NUM:      ${{ inputs.issue-number || github.event.issue.number }}
         run: |
           set -euo pipefail
           owner="${REPO%%/*}"; name="${REPO##*/}"

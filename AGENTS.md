@@ -40,6 +40,7 @@ why, not history.
 | `.github/workflows/deps-verify.yml` | Verification never merges, approves, or changes mergeability | Evidence is only useful if it is allowed to be wrong. Merging on a clean verdict forces conservative tuning, which produces noise, which gets the report ignored. |
 | `.github/workflows/issue-implement.yml` | A plan is required, `Agent mode` gates who may ask, and the PR is always a draft | The check is a field comparison in a gate job, never a question put to the agent, and it has no override. An agent asked whether a plan is adequate will sometimes accept a two-line issue body. |
 | `.github/workflows/issue-triage.yml` | Issue-field ids resolve repo-scoped, and triage fails if it did not record `Triage state` | This job runs on a repo-scoped App installation with no org permission, so the org issue-fields endpoint returns 403 and always will. Resolve ids from `repository(owner,name){ issueFields }`. Never offer the org path as a fallback. Keep the final verification step, or the job reports success with the fields unwritten. |
+| `.github/workflows/issue-triage.yml` | `workflow_dispatch` is a no-op without `issue-number`, never a failure | A dispatch cannot render a tag-mode prompt and carries no issue payload of its own. The gate stops before the runner picker when `issue-number` is empty, with a notice, and the job stays green. A caller offering manual dispatch must declare its own dispatch input and forward it into this `workflow_call` input; the two input kinds are separate. |
 | `.github/workflows/issue-implement.yml` | `Triage state` stops at "Ready for agent" | Do not add an "in progress" state. The open draft PR and the closed issue already say it, and a mirror is correct only while someone maintains it. |
 | `.github/workflows/claude-assist.yml` | `@claude` mentions are a governed workflow, not a per-repo file | It is the widest agent surface in the org, so it needs the same kill switch as the rest. Its reserved-verb list stays the single place those verbs are named. |
 | `.github/workflows/react-doctor.yml` | The caller owns triggers, `concurrency` and `paths:`, and the picker is gated by the caller's own `if:` | Keep `blocking: none`, the action's own default. A threshold tuned before there is a baseline produces noise, and noise is what gets a check ignored. The caller's `paths:` filter is POSITIVE, so a filtered-out pull request produces no check run. Never make it a required status check. |
@@ -88,12 +89,16 @@ why, not history.
   combination and `Self test` catches it at review time. An agent publishes only
   what you tell it to publish, so tell it, then **assert that it did**: both
   workflows fail if the pull request records nothing from the run.
-- **`track_progress` forces TAG mode, and tag mode knows three issue actions.**
-  `opened`, `assigned`, `labeled`. Anything else, `reopened` included, throws
-  `Unsupported issue action` in Create prompt and fails the job before the agent
-  starts. `actions/run-agent` drops the progress comment for those events and
-  runs in agent mode instead, so a reopened issue is triaged rather than
-  reported red. Narrow that list if upstream narrows; never widen it.
+- **`track_progress` forces TAG mode, and tag mode only renders a prompt for
+  five events.** `pull_request`, `issues`, `issue_comment`,
+  `pull_request_review_comment`, `pull_request_review`, and for `issues` it
+  knows three actions: `opened`, `assigned`, `labeled`. Any other event
+  (`workflow_dispatch`, a schedule) or any other issue action (`reopened`
+  included) throws in Create prompt and fails the job before the agent starts.
+  `actions/run-agent` drops the progress comment for those cases and runs in
+  agent mode instead, so a reopened issue or a manual dispatch is triaged
+  rather than reported red. Narrow either list if upstream narrows; never
+  widen it.
 - **Agent mode starts the inline-comment MCP server only when its tool is named
   in the allowlist.** `mcp__github_inline_comment__create_inline_comment` must be
   in `allowed-tools`, or the server never starts and the tool does not exist.

@@ -20,10 +20,13 @@
 #   `use_sticky_comment` is read only in tag mode, so pairing the two posts
 #   nothing. The guard below refuses that pair instead of passing green.
 #
-#   `track_progress` overrides that and forces TAG mode on issue and pull
-#   request events, and tag mode supports three issue actions: opened, assigned
-#   and labeled. A reopened issue fails the job in Create prompt. The guard
-#   below drops the progress comment for those events rather than the run.
+#   `track_progress` overrides that and forces TAG mode, but tag mode only
+#   renders a prompt for pull_request, issues, issue_comment,
+#   pull_request_review_comment and pull_request_review, and for issues it
+#   knows three actions: opened, assigned and labeled. Any other event
+#   (workflow_dispatch, schedule, a reopened issue) fails the job in Create
+#   prompt before the agent runs. The guard below drops the progress comment
+#   for those cases rather than the run.
 name: Run agent
 description: Invoke claude-code-action with the org's tool allowlist, model policy and reporting defaults.
 
@@ -61,9 +64,11 @@ inputs:
   track-progress:
     description: >-
       Post a live progress comment, so a run in flight is visible rather than
-      silent. Ignored on an issue event the action cannot render a tag-mode
-      prompt for, which is anything but opened, assigned and labeled. The run
-      proceeds without the comment; see the header.
+      silent. Ignored on an event the action cannot render a tag-mode prompt
+      for: anything but pull_request, issues, issue_comment,
+      pull_request_review_comment and pull_request_review, and for issues,
+      anything but opened, assigned and labeled. The run proceeds without the
+      comment; see the header.
     default: 'false'
   allowed-bots:
     description: 'Comma-separated bot logins permitted to initiate. Named explicitly, never "*".'
@@ -102,14 +107,17 @@ runs:
         echo "::error::sticky-comment is set alongside a non-empty prompt. A prompt selects agent mode, which creates no comment, so this run would report only to the job summary. Use track-progress for a live comment, or instruct the agent to post with gh pr comment."
         exit 1
 
-    # `track_progress` forces TAG mode on every issue event, and tag mode builds
-    # its prompt from the event. It knows three issue actions: opened, assigned
-    # and labeled. Any other one throws `Unsupported issue action` in Create
-    # prompt and fails the job before the agent runs, which is what a reopened
-    # issue did. Dropping the progress comment leaves agent mode, which uses the
+    # `track_progress` forces TAG mode, and tag mode builds its prompt from the
+    # triggering event. It renders one for pull_request, issues, issue_comment,
+    # pull_request_review_comment and pull_request_review only, and for issues
+    # it knows three actions: opened, assigned and labeled. Any other event, or
+    # any other issue action, throws in Create prompt and fails the job before
+    # the agent runs -- that is what a reopened issue did, and it is also what
+    # a workflow_dispatch run does, since dispatch is none of the five events
+    # above. Dropping the progress comment leaves agent mode, which uses the
     # prompt as written and still posts whatever that prompt tells it to post.
-    # Narrow the list, never widen it: an action tag mode cannot render is a
-    # failed job, and a lost progress comment is a cosmetic one.
+    # Narrow the list, never widen it: an event or action tag mode cannot
+    # render is a failed job, and a lost progress comment is a cosmetic one.
     - name: Drop a progress comment the action cannot render
       id: progress
       shell: bash
@@ -120,12 +128,22 @@ runs:
       run: |
         set -euo pipefail
         track="$TRACK"
-        if [ "$track" = "true" ] && [ "$EVENT" = "issues" ]; then
-          case "$ACTION" in
-            opened|assigned|labeled) ;;
+        if [ "$track" = "true" ]; then
+          case "$EVENT" in
+            pull_request|issue_comment|pull_request_review_comment|pull_request_review)
+              ;;
+            issues)
+              case "$ACTION" in
+                opened|assigned|labeled) ;;
+                *)
+                  track=false
+                  echo "::notice title=No live progress comment::claude-code-action renders a tag-mode prompt for issue events and supports opened, assigned and labeled only. This run is issues/$ACTION, so track-progress is off and the agent reports through the comment its own prompt asks for."
+                  ;;
+              esac
+              ;;
             *)
               track=false
-              echo "::notice title=No live progress comment::claude-code-action renders a tag-mode prompt for issue events and supports opened, assigned and labeled only. This run is issues/$ACTION, so track-progress is off and the agent reports through the comment its own prompt asks for."
+              echo "::notice title=No live progress comment::claude-code-action's track_progress only renders a tag-mode prompt for pull_request, issues, issue_comment, pull_request_review_comment and pull_request_review. This run is $EVENT, so track-progress is off and the agent reports through whatever its own prompt asks for."
               ;;
           esac
         fi

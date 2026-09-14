@@ -109,10 +109,41 @@ jobs:
       tag: ${{ steps.detect.outputs.tag }}
       tags: ${{ steps.detect.outputs.tags }}
     steps:
+      # The org App, not GITHUB_TOKEN, is the bypass actor on the org rulesets
+      # that protect develop and main. GITHUB_TOKEN is not one, and cannot be
+      # made one: a push of the release commit with it is rejected (GH013) on
+      # every protected branch. Every develop release in the fleet failed that
+      # way from 2026-09-12 to 2026-09-14. Falls back to GITHUB_TOKEN only so a
+      # repo outside the rulesets still releases without the App secrets.
+      #
+      # An App-authored push DOES retrigger workflows, unlike a GITHUB_TOKEN
+      # one. The release commit and the backmerge commit carry [skip ci], so
+      # this changes nothing for the callers that exist, but a caller adding
+      # `on: push: tags:` now fires on the tag push and must expect that.
+      - id: have-app
+        env:
+          CLIENT_ID: ${{ secrets.GH_APP_CLIENT_ID }}
+        run: |
+          if [ -n "${CLIENT_ID:-}" ]; then
+            echo "yes=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "yes=false" >> "$GITHUB_OUTPUT"
+            echo "::warning title=Releasing with GITHUB_TOKEN::GH_APP_CLIENT_ID is not set on this repository, so the release commit is pushed as github-actions[bot]. A branch protected by the org rulesets rejects that push (GH013). Add GH_APP_CLIENT_ID and GH_APP_PRIVATE_KEY, or pass secrets: inherit, to fix."
+          fi
+
+      - id: app-token
+        if: steps.have-app.outputs.yes == 'true'
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id:    ${{ secrets.GH_APP_CLIENT_ID }}
+          private-key:  ${{ secrets.GH_APP_PRIVATE_KEY }}
+          owner:        ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
+
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
-          token: ${{ secrets.GITHUB_TOKEN || github.token }}
+          token: ${{ steps.app-token.outputs.token || secrets.GITHUB_TOKEN || github.token }}
 
       - id: setup
         uses: dodi-smart/.github/actions/setup-stack@v1
@@ -178,7 +209,7 @@ jobs:
 
       - name: Release
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN || github.token }}
+          GITHUB_TOKEN: ${{ steps.app-token.outputs.token || secrets.GITHUB_TOKEN || github.token }}
           BUILD_NUMBER: ${{ steps.build-number.outputs.number }}
           MODULES: ${{ inputs.modules }}
           CMD:     ${{ inputs.release-command }}
@@ -261,11 +292,34 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
+      # Same App token as the release job, minted again: a token never crosses
+      # jobs. checkout persists it in the remote URL, so the push at the end of
+      # the merge step goes out as the App and past the same ruleset.
+      - id: have-app
+        env:
+          CLIENT_ID: ${{ secrets.GH_APP_CLIENT_ID }}
+        run: |
+          if [ -n "${CLIENT_ID:-}" ]; then
+            echo "yes=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "yes=false" >> "$GITHUB_OUTPUT"
+            echo "::warning title=Backmerging with GITHUB_TOKEN::GH_APP_CLIENT_ID is not set on this repository, so the backmerge is pushed as github-actions[bot]. A branch protected by the org rulesets rejects that push (GH013)."
+          fi
+
+      - id: app-token
+        if: steps.have-app.outputs.yes == 'true'
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id:    ${{ secrets.GH_APP_CLIENT_ID }}
+          private-key:  ${{ secrets.GH_APP_PRIVATE_KEY }}
+          owner:        ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
+
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
           ref: ${{ inputs.backmerge-from }}
-          token: ${{ secrets.GITHUB_TOKEN || github.token }}
+          token: ${{ steps.app-token.outputs.token || secrets.GITHUB_TOKEN || github.token }}
       - env:
           FROM: ${{ inputs.backmerge-from }}
           TO:   ${{ inputs.backmerge-to }}

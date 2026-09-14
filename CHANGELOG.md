@@ -1,3 +1,9 @@
+## [1.7.0](https://github.com/dodi-smart/.github/compare/v1.6.2...v1.7.0) (2026-09-14)
+
+### ✨ Features
+
+* **pr-checks:** add opt-in design-lint step for oxlint + @shadcn/lint ([81f222f](https://github.com/dodi-smart/.github/commit/81f222f24c61ddb1dd8d74d0cde97f8b880d1ab2))
+
 ## [1.6.2](https://github.com/dodi-smart/.github/compare/v1.6.1...v1.6.2) (2026-09-14)
 
 ### 🐛 Bug Fixes

@@ -321,6 +321,25 @@ jobs:
           set -euo pipefail
           body="$RUNNER_TEMP/review-body.md"
 
+          # Fallback: the agent finished (run-agent handed back an execution
+          # file) but never wrote the verdict file. Its final message is still
+          # in that file as the `result` entry, and it is the same verdict the
+          # prompt asked for, so recover it rather than post "wrote no review"
+          # and fail a pass that did the work. Recovery is labelled, so a
+          # reader can tell it from the intended path.
+          recovered=false
+          if [ ! -s "$body" ] && [ -n "$RAN" ] && [ -s "$RAN" ]; then
+            if jq -r '[.[] | select(.type == "result")] | last | .result // empty' "$RAN" > "$body.recovered" 2>/dev/null \
+               && [ -s "$body.recovered" ]; then
+              {
+                echo "_Recovered from the agent's final message: it did not write its verdict file. Same content, different path._"
+                echo
+                cat "$body.recovered"
+              } > "$body"
+              recovered=true
+            fi
+          fi
+
           {
             echo "### Agent review"
             echo
@@ -345,6 +364,8 @@ jobs:
 
           [ -s "$body" ] && wrote=true || wrote=false
           echo "wrote=$wrote" >> "$GITHUB_OUTPUT"
+          echo "recovered=$recovered" >> "$GITHUB_OUTPUT"
+          [ "$recovered" = "true" ] && echo "::warning title=Verdict recovered from the agent's final message::The agent did not write review-body.md; its final message was posted instead. Check that the prompt still asks for the file."
           cat "$RUNNER_TEMP/review-verdict.md"
 
       - uses: dodi-smart/.github/actions/sticky-comment@v1

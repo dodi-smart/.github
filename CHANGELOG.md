@@ -1,3 +1,9 @@
+## [1.6.2](https://github.com/dodi-smart/.github/compare/v1.6.1...v1.6.2) (2026-09-14)
+
+### 🐛 Bug Fixes
+
+* **release:** push the release commit and backmerge with the org App token ([39e4d1d](https://github.com/dodi-smart/.github/commit/39e4d1d2b0ea15ff1757940474c577d19e94e13d))
+
 ## [1.6.1](https://github.com/dodi-smart/.github/compare/v1.6.0...v1.6.1) (2026-09-12)
 
 ### ⚡ Performance Improvements

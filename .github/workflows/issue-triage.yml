@@ -100,10 +100,22 @@ jobs:
           TITLE:       ${{ github.event.issue.title }}
           ACTION:      ${{ github.event.action }}
           EVENT_NAME:  ${{ github.event_name }}
+          SENDER_TYPE: ${{ github.event.sender.type }}
           ISSUE_INPUT: ${{ inputs.issue-number }}
         run: |
           set -euo pipefail
           proceed="$PROCEED"
+          # The SENDER, not the issue author. The caller also listens to
+          # pull_request_review and pull_request_review_comment, and the review
+          # agent's own inline comments arrive as sender type Bot with no issue
+          # author at all. Letting those through reaches claude-code-action,
+          # which refuses a non-human actor and fails the run, so every reviewed
+          # pull request carried a red triage check that had nothing to triage.
+          if [ "$proceed" = "true" ] && [ "$SENDER_TYPE" = "Bot" ] \
+             && ! { printf '%s' "$TITLE" | grep -qi 'dependency dashboard' && [ "$ACTION" = "opened" ]; }; then
+            proceed=false
+            echo "bot-sent event ($EVENT_NAME), stopping before the agent"
+          fi
           if [ "$proceed" = "true" ] && printf '%s' "$AUTHOR" | grep -qiE 'renovate|dependabot|\[bot\]$'; then
             proceed=false
             if printf '%s' "$TITLE" | grep -qi 'dependency dashboard' && [ "$ACTION" = "opened" ]; then

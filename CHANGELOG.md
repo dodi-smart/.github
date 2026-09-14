@@ -1,3 +1,9 @@
+## [1.7.2](https://github.com/dodi-smart/.github/compare/v1.7.1...v1.7.2) (2026-09-14)
+
+### 🐛 Bug Fixes
+
+* **agents:** stop triage on bot-sent events and recover a review verdict the agent did not file ([056b636](https://github.com/dodi-smart/.github/commit/056b636a4177451e6e5e32ffa027fea42d642348)), closes [#36](https://github.com/dodi-smart/.github/issues/36) [#37](https://github.com/dodi-smart/.github/issues/37)
+
 ## [1.7.1](https://github.com/dodi-smart/.github/compare/v1.7.0...v1.7.1) (2026-09-14)
 
 ### ⬆️ Dependencies

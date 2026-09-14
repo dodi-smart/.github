@@ -27,6 +27,6 @@
     "semantic-release": ">=25.0.0"
   },
   "devDependencies": {
-    "semantic-release": "^25.0.9"
+    "semantic-release": "25.0.9"
   }
 }

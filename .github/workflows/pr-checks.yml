@@ -36,6 +36,12 @@ on:
       test:      { type: string, default: "@stack" }
       build:     { type: string, default: "@stack" }
 
+      # Design-system verifier (oxlint + @shadcn/lint). Opt-in: no `@stack`
+      # default, since there is no conventional command for it. Runs on the
+      # light pool right after Lint. Advisory until the caller's command adds
+      # `--max-warnings`.
+      design-lint: { type: string, default: "" }
+
       light-weight: { type: string, default: "light" }
       heavy-weight: { type: string, default: "heavy" }
 
@@ -210,6 +216,7 @@ jobs:
           install:         ${{ inputs.install }}
           lint:            ${{ inputs.lint }}
           typecheck:       ${{ inputs.typecheck }}
+          design-lint:     ${{ inputs.design-lint }}
           java-version:    ${{ inputs.java-version }}
           node-version:    ${{ inputs.node-version }}
           bun-version:     ${{ inputs.bun-version }}
@@ -231,6 +238,12 @@ jobs:
           set -euo pipefail
           . "${{ steps.setup.outputs.env-file }}"
           ${{ steps.setup.outputs.lint }}
+      - name: Design lint
+        if: steps.setup.outputs.design-lint != ''
+        run: |
+          set -euo pipefail
+          . "${{ steps.setup.outputs.env-file }}"
+          ${{ steps.setup.outputs.design-lint }}
       - name: Typecheck
         if: steps.setup.outputs.typecheck != ''
         run: |
@@ -368,6 +381,7 @@ jobs:
           typecheck:       ${{ inputs.typecheck }}
           test:            ${{ inputs.test }}
           build:           ${{ inputs.build }}
+          design-lint:     ${{ inputs.design-lint }}
           java-version:    ${{ inputs.java-version }}
           node-version:    ${{ inputs.node-version }}
           bun-version:     ${{ inputs.bun-version }}
@@ -386,6 +400,12 @@ jobs:
           set -euo pipefail
           . "${{ steps.setup.outputs.env-file }}"
           ${{ steps.setup.outputs.lint }}
+      - name: Design lint
+        if: steps.setup.outputs.design-lint != ''
+        run: |
+          set -euo pipefail
+          . "${{ steps.setup.outputs.env-file }}"
+          ${{ steps.setup.outputs.design-lint }}
       - name: Typecheck
         if: steps.setup.outputs.typecheck != ''
         run: |

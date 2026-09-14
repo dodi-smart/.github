@@ -89,6 +89,12 @@ inputs:
   typecheck: { description: 'Override the typecheck command', default: '@stack' }
   test:      { description: 'Override the test command',      default: '@stack' }
   build:     { description: 'Override the build command',     default: '@stack' }
+  design-lint:
+    description: >-
+      Design-system lint command (e.g. `bun run lint:design` running oxlint +
+      @shadcn/lint). Empty means no step. No `@stack` default: this is opt-in
+      per repo.
+    default: ''
 
 outputs:
   env-file:
@@ -111,6 +117,9 @@ outputs:
   build:
     description: 'Resolved build command. Empty means skip.'
     value: ${{ steps.defaults.outputs.build }}
+  design-lint:
+    description: 'Resolved design-lint command. Empty means skip.'
+    value: ${{ steps.defaults.outputs.design-lint }}
 
 runs:
   using: composite
@@ -276,6 +285,7 @@ runs:
         O_TYPECHECK: ${{ inputs.typecheck }}
         O_TEST:      ${{ inputs.test }}
         O_BUILD:     ${{ inputs.build }}
+        O_DESIGN_LINT: ${{ inputs.design-lint }}
       run: |
         set -euo pipefail
         install=""; lint=""; typecheck=""; test=""; build=""
@@ -324,3 +334,5 @@ runs:
         emit typecheck "$(pick "$O_TYPECHECK" "$typecheck")"
         emit test      "$(pick "$O_TEST" "$test")"
         emit build     "$(pick "$O_BUILD" "$build")"
+        # No conventional command for any stack: this is opt-in only.
+        emit design-lint "$(pick "$O_DESIGN_LINT" "")"

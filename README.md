@@ -297,6 +297,22 @@ There used to be a caller template per stack. It failed the way templates fail:
 the Gradle one carried one product's task name, in a file every other Gradle repo
 was told to copy.
 
+### Design lint
+
+An optional step for a design-system verifier (oxlint hosting `@shadcn/lint`),
+separate from `lint` because it has its own exit code and its own ratchet.
+Default `""` means the step does not exist -- every caller pinned at `@v1` is
+unaffected until it opts in. No `@stack` default: there is no conventional
+command for this, on any stack.
+
+```yaml
+with:
+  design-lint: bun run lint:design --format=github
+```
+
+Warnings are advisory. `--max-warnings N` in the caller's own command is the
+ratchet -- tighten it there as the count comes down.
+
 ### One job or three
 
 `pr-checks.yml` splits light work from heavy by default. `single-job: true`

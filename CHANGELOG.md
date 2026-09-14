@@ -1,3 +1,10 @@
+## [1.7.1](https://github.com/dodi-smart/.github/compare/v1.7.0...v1.7.1) (2026-09-14)
+
+### ⬆️ Dependencies
+
+* **deps:** lock file maintenance ([0daffa3](https://github.com/dodi-smart/.github/commit/0daffa377b589407255379a163a48475f0026057))
+* **deps:** pin dependency semantic-release to 25.0.9 ([5556d09](https://github.com/dodi-smart/.github/commit/5556d090a5dfe7349f7191298c34f8f9b871fdb8))
+
 ## [1.7.0](https://github.com/dodi-smart/.github/compare/v1.6.2...v1.7.0) (2026-09-14)
 
 ### ✨ Features

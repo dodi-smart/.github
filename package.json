@@ -10,6 +10,6 @@
     "test": "npm test --workspaces"
   },
   "devDependencies": {
-    "semantic-release": "^25.0.9"
+    "semantic-release": "25.0.9"
   }
 }

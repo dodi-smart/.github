@@ -32,6 +32,12 @@ on:
       # The default names concepts rather than a stack, because no two repos here
       # share a vocabulary. Override per repo: a pattern matching nothing
       # silently downgrades every review to the base level.
+      #
+      # `.github/workflows` is deliberately NOT in the list. Every repo's thin
+      # callers live there, so a one-line `with:` change put five pull requests
+      # in a row on the elevated level and each got a seven-finding essay. The
+      # shared workflows themselves are reviewed in this repo, where the whole
+      # diff is workflow and the base level already reads all of it.
       sensitive-paths:
         type: string
         default: >-
@@ -41,7 +47,7 @@ on:
           crypt|cipher|sign|hash|
           migration|schema|
           middleware|proxy|cors|csp|webhook|
-          Dockerfile|entrypoint|\.github/workflows|deploy)
+          Dockerfile|entrypoint|deploy)
     secrets:
       CLAUDE_CODE_OAUTH_TOKEN: { required: true }
       GH_APP_CLIENT_ID:        { required: false }
@@ -247,15 +253,16 @@ jobs:
           # file the prompt requires, not this sentence.
           append-system-prompt: >-
             ${{ needs.gate.outputs.ci }}
-            Review depth for this run is ${{ needs.gate.outputs.level }}. At low or medium report only what you are confident in. At high, xhigh or max cover more ground, and say plainly when a finding is uncertain.
+            Review depth for this run is ${{ needs.gate.outputs.level }}. At low or medium report only what you are confident in. At high, xhigh or max look harder, but report the same way: more certainty, not more words. Mark an uncertain finding with one word, "uncertain", and move on.
             When CI is failing, diagnose the cause and say which change caused it and how to fix it. Lead with that. It is more useful than anything else you could report. Do not repeat a failure the annotations already state verbatim, explain it.
+            Length is a budget, not a target. The summary you write to the verdict file is at most 200 words. Each finding is one line: path:line, then what breaks and the fix, in one sentence each. No reproduction transcripts, no quoted source, no tables of evidence, no history of what you checked. Put evidence in the inline comment on the line it concerns, once, and keep that to a few sentences with at most one short code block. If you have nothing to report, say so in one sentence. Never restate what the pull request description already says. Plain words: a reader who has to act on this today should not need to decode it.
             A comment you left on this pull request earlier is not a reason to stop, and neither is the diff looking small or obviously correct. Somebody asked for this run by hand. Review it again, and always report the outcome, including when the outcome is that you found nothing.
           # The slash command expands as the plugin wrote it; the lines after it
           # are read too, and win where they disagree with it.
           prompt: |
             /code-review:code-review ${{ github.repository }}/pull/${{ github.event.pull_request.number }} --comment
 
-            Two rules for this run, which override the command above wherever they disagree with it.
+            Four rules for this run, which override the command above wherever they disagree with it.
 
             Write your verdict to ${{ runner.temp }}/review-body.md before you finish. Write it on
             every path: when you found issues, when you found none, and when you decided this pull
@@ -268,6 +275,28 @@ jobs:
             Do not post the summary comment yourself. Inline comments on the diff are yours to post
             and are still wanted. The summary is not, because the step that posts the file rewrites
             one comment per pull request, and a second copy from you stacks underneath it.
+
+            Review for more than bugs. The command's list of false positives says general security
+            and quality issues do not count unless CLAUDE.md names them. That rule does not apply
+            here. Alongside the command's own agents, run three more with the same scoring and the
+            same 80 cutoff, and report what survives:
+            security, on the changed code and what it now reaches: injection, missing or weakened
+            authorization, secrets or tokens in code or logs, unsafe deserialization or eval,
+            SSRF and open redirects, weakened RLS or grants, unvalidated input at a boundary, and
+            CI or workflow changes that widen permissions or trust;
+            performance, where the change plausibly runs at scale: N+1 or unbounded queries, missing
+            indexes for new access paths, work moved onto the request path or into a render, cache
+            invalidation gaps, and client bundles that grew or lost a server boundary;
+            practices, judged against the repo's own conventions: error handling that swallows
+            failure, behaviour added without a test where the repo's CLAUDE.md sets a minimum,
+            duplicated logic that an existing helper already covers, and public surface without
+            input validation.
+            Pre-existing problems on untouched lines stay out unless the change makes them worse.
+
+            Keep the verdict short. Shape it as: one line saying merge, fix first, or nothing found;
+            then one line per finding, path:line first, severity in one word, then what breaks and
+            the fix. At most 200 words in total. Detail belongs in the inline comment on the line,
+            not here. A verdict nobody finishes reading is a verdict nobody acts on.
 
       # How many inline comments this pass left, for the verdict to mention. It
       # gates nothing: the verdict below is what makes this job pass or fail.

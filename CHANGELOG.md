@@ -1,3 +1,10 @@
+## [1.7.3](https://github.com/dodi-smart/.github/compare/v1.7.2...v1.7.3) (2026-09-17)
+
+### 🐛 Bug Fixes
+
+* **pr-review:** review for security, performance and practices, not only bugs ([40b2edc](https://github.com/dodi-smart/.github/commit/40b2edc739b064193eb869dbb2816e9335d01f00))
+* **pr-review:** shorter verdicts and no elevated depth for caller edits ([b067229](https://github.com/dodi-smart/.github/commit/b0672291e10a53d9e917ec9e4bf7bd4baecf2b20))
+
 ## [1.7.2](https://github.com/dodi-smart/.github/compare/v1.7.1...v1.7.2) (2026-09-14)
 
 ### 🐛 Bug Fixes

@@ -48,7 +48,10 @@ while [ $# -gt 0 ]; do
   esac
 done
 
-[ -n "$REPO" ] && [ -n "$NUM" ] || { echo "usage: set-issue-fields.sh --repo OWNER/REPO --issue N [--field 'Name=Option']..." >&2; exit 2; }
+if [ -z "$REPO" ] || [ -z "$NUM" ]; then
+  echo "usage: set-issue-fields.sh --repo OWNER/REPO --issue N [--field 'Name=Option']..." >&2
+  exit 2
+fi
 
 ORG="${REPO%%/*}"; NAME="${REPO##*/}"
 
@@ -87,7 +90,10 @@ if [ "${#FIELD_PAIRS[@]}" -gt 0 ]; then
     query($o:String!,$r:String!,$n:Int!){
       repository(owner:$o,name:$r){ issue(number:$n){ id } } }' \
     -f o="$ORG" -f r="$NAME" -F n="$NUM" --jq '.data.repository.issue.id')
-  [ -n "$issue_id" ] && [ "$issue_id" != "null" ] || { echo "issue $REPO#$NUM not found" >&2; exit 1; }
+  if [ -z "$issue_id" ] || [ "$issue_id" = "null" ]; then
+    echo "issue $REPO#$NUM not found" >&2
+    exit 1
+  fi
 
   # shellcheck disable=SC2016 # $o/$r are GraphQL variables inside a single-quoted query, not shell
   catalog=$(gh api graphql -f query='

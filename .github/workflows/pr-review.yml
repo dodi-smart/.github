@@ -519,7 +519,7 @@ jobs:
           state="$RUNNER_TEMP/jev-check-state.json"
           jq -n \
             --rawfile verdict "$body" \
-            --argjson inlineComments "$INLINE" \
+            --argjson inlineComments "${INLINE:-0}" \
             --arg ciSummary "$CI" \
             --arg level "$LEVEL" \
             '{ verdict: $verdict, inlineComments: $inlineComments, ciSummary: $ciSummary, level: $level }' \

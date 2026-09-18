@@ -79,6 +79,104 @@ jobs:
           print('jev-decide no-ops without a key')
           "
 
+      # The classifier has to run as steps of gate, ahead of the picker, or it
+      # bills a hosted picker start for a run it might still skip, and the
+      # agent has to be told about it rather than left to re-derive it.
+      - name: Triage classifies inside the gate, before the picker, and the agent uses the field writer
+        run: |
+          set -euo pipefail
+          python3 -c "
+          import sys, yaml
+          doc = yaml.safe_load(open('.github/workflows/issue-triage.yml'))
+          gate_steps = doc['jobs']['gate']['steps']
+
+          def index_of(marker):
+              for i, s in enumerate(gate_steps):
+                  if marker in str(s.get('uses', '')):
+                      return i
+              sys.exit('::error::no gate step uses ' + marker + '. The classifier and the picker both have to run as steps of gate.')
+
+          i_gate  = index_of('agent-gate@')
+          i_jev   = index_of('jev-decide@')
+          i_apply = index_of('set-issue-fields@')
+          i_pick  = index_of('pick-runner@')
+          if not (i_gate < i_jev < i_apply < i_pick):
+              sys.exit('::error::gate steps run out of order (agent-gate=%d jev-decide=%d set-issue-fields=%d pick-runner=%d). '
+                        'The kill switch must run first, the classifier before it writes anything, and the picker is a hosted '
+                        'job that must never start for a run the classifier already routed away.' % (i_gate, i_jev, i_apply, i_pick))
+
+          pick = gate_steps[i_pick]
+          if 'decide' not in str(pick.get('if', '')):
+              sys.exit('::error::the pick-runner step is not guarded on the decide step. One hosted start: a run the '
+                        'classifier skipped must never reach the picker.')
+
+          if 'preclassification' not in (doc['jobs']['gate'].get('outputs') or {}):
+              sys.exit('::error::the gate job has no preclassification output. The triage job needs it to hand the agent what the classifier decided.')
+
+          triage_steps = doc['jobs']['triage']['steps']
+          agent = [s for s in triage_steps if 'run-agent@' in str(s.get('uses', ''))]
+          if not agent:
+              sys.exit('::error::the triage job has no run-agent step')
+          prompt = str((agent[0].get('with') or {}).get('prompt', ''))
+          if 'preclassification' not in prompt:
+              sys.exit('::error::the triage prompt does not mention preclassification. The agent must be told what the classifier already decided.')
+          if 'steps.fields.outputs.script' not in prompt:
+              sys.exit('::error::the triage prompt does not reference steps.fields.outputs.script. The agent must use the field writer, not re-resolve ids itself.')
+          if 'setIssueFieldValue' in prompt:
+              sys.exit('::error::the triage prompt still tells the agent to call the GraphQL setIssueFieldValue mutation directly. It must use the field writer instead.')
+
+          i_agent = triage_steps.index(agent[0])
+          fields_steps = [i for i, s in enumerate(triage_steps) if 'set-issue-fields@' in str(s.get('uses', ''))]
+          if not fields_steps or fields_steps[0] >= i_agent:
+              sys.exit('::error::the triage job has no set-issue-fields step before run-agent. The agent needs steps.fields.outputs.script to already exist.')
+
+          verify = [s for s in triage_steps if s.get('name') == 'Verify triage recorded its state']
+          if not verify:
+              sys.exit('::error::Verify triage recorded its state is gone. Without it a triage pass that wrote nothing reports success.')
+
+          print('triage classifies inside gate, before the picker, and the agent uses the field writer')
+          "
+
+      # jev/src/policy.ts is the one place option vocabularies live. The
+      # triage prompt's option table is a second copy for the agent to read,
+      # and a second copy that never gets checked is a second copy that drifts.
+      - name: Triage prompt option table matches policy.ts
+        run: |
+          set -euo pipefail
+          python3 -c "
+          import json, re, subprocess, sys, yaml
+
+          out = subprocess.run(['node', 'jev/src/policy.ts', '--print-options'],
+                                capture_output=True, text=True, check=True).stdout
+          options = json.loads(out)
+
+          expected_types = ['Bug', 'Feature', 'Improvement', 'Task', 'Chore', 'Spike', 'Epic', 'Initiative']
+          if set(options.get('Type', [])) != set(expected_types):
+              sys.exit('::error::policy.ts Type options are ' + repr(options.get('Type')) + ', expected the eight org types ' + repr(expected_types))
+
+          doc = yaml.safe_load(open('.github/workflows/issue-triage.yml'))
+          triage_steps = doc['jobs']['triage']['steps']
+          agent = [s for s in triage_steps if 'run-agent@' in str(s.get('uses', ''))][0]
+          prompt = str((agent.get('with') or {}).get('prompt', ''))
+
+          bad = []
+          for name in ('Priority', 'Effort', 'Risk'):
+              # 2+ spaces before the options, and a | inside them, so an ordinary
+              # sentence starting with the field name (there are several) never
+              # matches the table row.
+              m = re.search(r'^[ \t]*' + name + r'[ \t]{2,}(.+\|.+)\$', prompt, re.M)
+              if not m:
+                  sys.exit('::error::the triage prompt option table has no ' + name + ' row. Triage state is not in policy.ts and is skipped on purpose.')
+              got = {o.strip() for o in m.group(1).split('|')}
+              want = set(options.get(name, []))
+              if got != want:
+                  bad.append(name + ': prompt=' + repr(sorted(got)) + ' policy.ts=' + repr(sorted(want)))
+          if bad:
+              sys.exit('::error::the triage prompt option table has drifted from jev/src/policy.ts: ' + '; '.join(bad))
+
+          print('triage prompt option table matches policy.ts for Priority, Effort and Risk')
+          "
+
       # Thresholds live in one file, and lowering one needs a test change.
       - name: jev policy floors are pinned by a test
         run: |

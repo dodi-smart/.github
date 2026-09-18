@@ -26,6 +26,18 @@
 # issue is back in play and its earlier triage describes a state that no longer
 # holds, so leaving it alone leaves `Triage state` claiming a plan that was
 # already implemented.
+#
+# Before the agent runs, the gate job runs a classifier (actions/jev-decide)
+# against the issue text. It writes only the type, fields and area labels it
+# is confident about, through actions/set-issue-fields, and it can stop the
+# run before the agent when the text is addressed at an assistant rather than
+# a person, or is not a real request at all. It never writes `Triage state`;
+# that is the plan-or-questions judgement this workflow exists to make, and
+# only the agent makes it.
+#
+# A missing `AI_GATEWAY_API_KEY`, or `jev-mode: off`, means today's behaviour:
+# the classifier step no-ops and the agent reads and decides everything itself,
+# exactly as before this existed.
 name: Issue Triage
 
 on:
@@ -47,10 +59,21 @@ on:
       issue-number:
         type: string
         default: ""
+      # active writes what the classifier is confident about; shadow records
+      # decisions without writing anything, for calibrating thresholds against
+      # a repo's real traffic before trusting it to act; off skips the
+      # classifier entirely, the same as leaving AI_GATEWAY_API_KEY unset.
+      jev-mode:
+        type: string
+        default: "active"     # active | shadow | off
     secrets:
       CLAUDE_CODE_OAUTH_TOKEN: { required: true }
       GH_APP_CLIENT_ID:        { required: false }
       GH_APP_PRIVATE_KEY:      { required: false }
+      # Optional. A caller passes this with `secrets: inherit`, so an org
+      # secret reaches the classifier with no change in the caller repo at
+      # all. Left unset, the classifier step no-ops.
+      AI_GATEWAY_API_KEY:      { required: false }
 
 # One triage per issue. A second request supersedes the first rather than racing it.
 concurrency:
@@ -65,10 +88,17 @@ jobs:
   gate:
     runs-on: ubuntu-latest
     timeout-minutes: 10   # the picker calls the org API and may retry
+    # The classifier writes fields, area labels and a skip comment now, and
+    # set-issue-fields needs issues: write for the same reason the triage job
+    # already does.
+    permissions:
+      contents: read
+      issues: write
     outputs:
-      proceed: ${{ steps.bots.outputs.proceed }}
-      mode:    ${{ steps.bots.outputs.mode }}
-      runner:  ${{ steps.pick.outputs.runner }}
+      proceed:           ${{ steps.decide.outputs.proceed }}
+      mode:              ${{ steps.bots.outputs.mode }}
+      runner:            ${{ steps.pick.outputs.runner }}
+      preclassification: ${{ steps.jev.outputs.prompt-block }}
     steps:
       # agent:no-touch is evaluated inside this action, first and
       # unconditionally. Nothing below may run ahead of it. The gate reads the
@@ -135,10 +165,135 @@ jobs:
           echo "proceed=$proceed"          >> "$GITHUB_OUTPUT"
           echo "mode=${MODE:-triage}"      >> "$GITHUB_OUTPUT"
 
-      # Only when the run above is still proceeding: a no-op dispatch or a
-      # kill-switched issue must never pay for a hosted picker.
-      - id: pick
+      # Build the classifier's input file. Every field comes through env:, so
+      # issue text can never be interpolated into the script itself, and the
+      # object is assembled with jq --arg/--argjson rather than string-built.
+      # Shape matches TriageState in jev/src/tasks/triage.ts exactly.
+      - id: state
         if: steps.bots.outputs.proceed == 'true'
+        env:
+          GH_TOKEN:     ${{ github.token }}
+          REPO:         ${{ github.repository }}
+          NUM:          ${{ inputs.issue-number || github.event.issue.number }}
+          EVENT_ACTION: ${{ github.event.action }}
+          STATE_FILE:   ${{ runner.temp }}/jev-state.json
+        run: |
+          set -euo pipefail
+          owner="${REPO%%/*}"; name="${REPO##*/}"
+
+          issue=$(gh api "/repos/$REPO/issues/$NUM" --jq '{
+            number: .number, title: .title, body: .body,
+            authorType: .user.type, labels: [.labels[].name],
+            type: (.type.name // null)
+          }')
+
+          # Absent areas.yml is the common case, not an error: fall back to
+          # null rather than fail the classifier step over a file most repos
+          # never add.
+          areas='null'
+          if content=$(gh api "/repos/$REPO/contents/.github/areas.yml" --jq '.content' 2>/dev/null); then
+            areas=$(printf '%s' "$content" | base64 -d | python3 -c 'import sys,yaml,json; print(json.dumps(yaml.safe_load(sys.stdin)))')
+          fi
+
+          # Same repo-scoped query the verify step uses below: /orgs/*/issue-fields
+          # is 403 for this token and always will be (see AGENTS.md).
+          # shellcheck disable=SC2016
+          fields=$(gh api graphql -f query='query($o:String!,$r:String!,$n:Int!){
+            repository(owner:$o,name:$r){ issue(number:$n){
+              issueFieldValues(first:50){ nodes{
+                ... on IssueFieldSingleSelectValue {
+                  name field { ... on IssueFieldSingleSelect { name } } } } } } } }' \
+            -f o="$owner" -f r="$name" -F n="$NUM" \
+            --jq '[.data.repository.issue.issueFieldValues.nodes[] | {(.field.name): .name}] | add // {}' \
+            2>/dev/null || echo '{}')
+
+          args=(--arg action "$EVENT_ACTION" --argjson issue "$issue" --argjson fields "$fields" --argjson areas "$areas")
+          # shellcheck disable=SC2016  # $issue/$action/... are jq --argjson/--arg names, not shell
+          filter='{issue: ($issue + {action: $action}), fields: $fields, areas: $areas}'
+
+          if [ "$EVENT_ACTION" = "reopened" ]; then
+            comments=$(gh api "/repos/$REPO/issues/$NUM/comments" --paginate \
+              --jq '.[-10:] | map({author: .user.login, body: .body})')
+            args+=(--argjson comments "$comments")
+            # shellcheck disable=SC2016  # $issue/$action/... are jq --argjson/--arg names, not shell
+            filter='{issue: ($issue + {action: $action}), fields: $fields, areas: $areas, comments: $comments}'
+          fi
+
+          jq -n "${args[@]}" "$filter" > "$STATE_FILE"
+
+      # Optional accelerant. No-ops (ran=false) with no AI_GATEWAY_API_KEY, or
+      # with jev-mode: off, and never fails the job on a gateway error. See
+      # actions/jev-decide/action.yml.
+      - id: jev
+        if: steps.bots.outputs.proceed == 'true'
+        uses: dodi-smart/.github/actions/jev-decide@v1
+        with:
+          task: triage
+          state: ${{ runner.temp }}/jev-state.json
+          mode: ${{ inputs.jev-mode }}
+          api-key: ${{ secrets.AI_GATEWAY_API_KEY }}
+
+      # Write only what the classifier decided at or above threshold. Below
+      # threshold a field stays empty and the agent decides; never write on a
+      # guess. The action derives act:true fields, the type and the area
+      # labels straight from the decisions file.
+      - id: apply
+        if: steps.jev.outputs.ran == 'true' && steps.jev.outputs.route != 'skip'
+        uses: dodi-smart/.github/actions/set-issue-fields@v1
+        with:
+          issue: ${{ inputs.issue-number || github.event.issue.number }}
+          decisions: ${{ steps.jev.outputs.decisions }}
+
+      # This is the calibration set: scripts/eval.ts and scripts/collect.ts in
+      # jev/ read these back to tune thresholds against real traffic instead
+      # of guessing at them.
+      - id: record
+        if: steps.jev.outputs.ran == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: jev-decisions-${{ inputs.issue-number || github.event.issue.number }}
+          path: ${{ steps.jev.outputs.decisions }}
+          retention-days: 90
+          if-no-files-found: ignore
+
+      # The classifier decided this needs a human, not an agent: text aimed at
+      # an assistant, or not a real request at all. Post why and clear the
+      # request label on every path, the same self-clearing rule as any other
+      # `agent:*` label, so asking again is not a no-op.
+      - id: skip
+        if: steps.jev.outputs.route == 'skip'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO:     ${{ github.repository }}
+          NUM:      ${{ inputs.issue-number || github.event.issue.number }}
+          BODY:     ${{ steps.jev.outputs.skip-comment }}
+        run: |
+          set -euo pipefail
+          gh issue comment "$NUM" --repo "$REPO" --body "$BODY"
+          gh issue edit "$NUM" --repo "$REPO" --remove-label agent:triage || true
+
+      # Fold the classifier's route into the one proceed the rest of the job
+      # reads. A skip route means the run is over: the picker is a hosted job,
+      # and starting it for a run that will never reach the agent bills a
+      # hosted start for nothing.
+      - id: decide
+        env:
+          BOTS_PROCEED: ${{ steps.bots.outputs.proceed }}
+          JEV_ROUTE:    ${{ steps.jev.outputs.route }}
+        run: |
+          set -euo pipefail
+          proceed="$BOTS_PROCEED"
+          if [ "$proceed" = "true" ] && [ "$JEV_ROUTE" = "skip" ]; then
+            proceed=false
+            echo "classifier routed this to a human, stopping before the picker"
+          fi
+          echo "proceed=$proceed" >> "$GITHUB_OUTPUT"
+
+      # Only when the run above is still proceeding: a no-op dispatch, a
+      # kill-switched issue, or a classifier skip must never pay for a hosted
+      # picker.
+      - id: pick
+        if: steps.decide.outputs.proceed == 'true'
         uses: dodi-smart/.github/actions/pick-runner@v1
         with:
           weight:             ${{ inputs.runner-weight }}
@@ -169,6 +324,14 @@ jobs:
               echo ' say it is missing and apply none)'; echo '__EOF__'; } >> "$GITHUB_OUTPUT"
           fi
 
+      # With nothing left to set, this only exports the script path below for
+      # the agent to call directly; it never fails just because the
+      # classifier decided nothing.
+      - id: fields
+        uses: dodi-smart/.github/actions/set-issue-fields@v1
+        with:
+          issue: ${{ inputs.issue-number || github.event.issue.number }}
+
       # Opus for triage. It reads unfamiliar code and decides between a plan
       # and questions, which is judgement work.
       - uses: dodi-smart/.github/actions/run-agent@v1
@@ -189,6 +352,11 @@ jobs:
             ${{ steps.areas.outputs.areas }}
             ---
 
+            ## Pre-classification
+
+            The job ran a classifier before you and wrote what it was sure about.
+            ${{ needs.gate.outputs.preclassification }}
+
             ## Always do
 
             1. Read the issue and anything it links to.
@@ -196,9 +364,9 @@ jobs:
                relevant files to areas using the paths above. Follow the
                disambiguation rules literally. They exist because the obvious
                guess is wrong.
-            3. Apply the `area:*` labels. Several is normal. If areas.yml was
-               missing, apply none and say so.
-            4. Set the issue type:
+            3. Apply any `area:*` labels not already applied. Several is normal.
+               If areas.yml was missing, apply none and say so.
+            4. Set the issue type if it is not already set:
                gh api -X PATCH /repos/${{ github.repository }}/issues/${{ inputs.issue-number || github.event.issue.number }} -f type='<Type>'
                Bug only for a real regression or a violated spec, not for
                something that never worked and was never specified.
@@ -289,40 +457,12 @@ jobs:
               Effort        High | Medium | Low
               Risk          Low | Medium | High | Critical
 
-            Set them with the GraphQL setIssueFieldValue mutation. Resolve the ids
-            from the REPOSITORY, not the organisation:
+            Set them with the field writer the job exported. One call, all fields:
 
-              gh api graphql -f query='query($o:String!,$r:String!){
-                repository(owner:$o,name:$r){ issueFields(first:50){ nodes{
-                  ... on IssueFieldSingleSelect { id name options{ id name } }
-                } } } }' -f o='${{ github.repository_owner }}' -f r='${{ github.event.repository.name }}'
+              ${{ steps.fields.outputs.script }} --repo ${{ github.repository }} --issue <n> --field 'Triage state=Plan ready' --field 'Effort=Low'
 
-            Three things that will otherwise cost you the whole triage:
-
-            - `/orgs/${{ github.repository_owner }}/issue-fields` returns
-              403 `Resource not accessible by integration` for THIS token. The
-              GitHub App this job runs as holds repo-scoped permissions only and
-              has no organisation permission at all, so every /orgs/* endpoint is
-              closed to it, REST and GraphQL alike. The repository query above
-              returns the same org-level fields with the same ids. Do not fall
-              back to the org path, and do not report the fields as unsettable:
-              if the query above fails, say so and fail, because the fallback you
-              are reaching for cannot work.
-            - The ids must be GRAPHQL NODE IDS (`IFSS_…`, `IFSSO_…`). The REST
-              catalog hands out numeric database ids and the mutation rejects
-              them with "Could not resolve to a node with the global id of ...".
-              The query above already returns the right kind.
-            - The mutation argument is `issueFields`, but the key INSIDE each
-              entry is `fieldId`, not `issueFieldId`. Easy to misread, and the
-              error it produces does not point at the cause.
-
-            A worked call, both fields in one mutation:
-
-              gh api graphql -f query='mutation{ setIssueFieldValue(input:{
-                issueId:"<issue node id>", issueFields:[
-                  {fieldId:"IFSS_…", singleSelectOptionId:"IFSSO_…"},
-                  {fieldId:"IFSS_…", singleSelectOptionId:"IFSSO_…"}
-                ]}){ clientMutationId } }'
+            Do not call the GraphQL API yourself; the script resolves the ids
+            the only way that works for this token.
 
             `Triage state` is not optional. This job FAILS if it is still unset
             when you finish, and it is right to. A triage pass that did not
@@ -346,6 +486,11 @@ jobs:
       # had, or it would pass where the agent failed. No `if:`, so it runs only
       # when the agent step succeeded, which is the one case where a green job
       # would otherwise mislead.
+      #
+      # The classifier in the gate job never writes `Triage state`, only the
+      # agent does, so this check means exactly what it always did: the agent
+      # is still the one thing standing between a triaged issue and one that
+      # silently isn't.
       - name: Verify triage recorded its state
         env:
           GH_TOKEN: ${{ github.token }}

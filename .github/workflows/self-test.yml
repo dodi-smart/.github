@@ -177,6 +177,63 @@ jobs:
           print('triage prompt option table matches policy.ts for Priority, Effort and Risk')
           "
 
+      # A checker that can fail the run is a second reviewer with veto power
+      # and no accountability. Assert both classifier calls stay wired that
+      # way, and that they sit where they belong: routing before the picker
+      # spends money it decided against, checking before the verdict would
+      # read a file nobody wrote yet.
+      - name: PR Review routes before the picker and checks before the verdict
+        run: |
+          set -euo pipefail
+          python3 -c "
+          import sys, yaml
+          doc = yaml.safe_load(open('.github/workflows/pr-review.yml'))
+          jobs = doc['jobs']
+
+          gate_steps = jobs['gate']['steps']
+          def index_of(steps, pred, what):
+              hits = [i for i, s in enumerate(steps) if pred(s)]
+              if not hits:
+                  sys.exit('::error::pr-review.yml gate job has no step ' + what)
+              return hits[0]
+
+          i_level = index_of(gate_steps, lambda s: s.get('id') == 'level', 'with id level')
+          i_route = index_of(gate_steps, lambda s: 'jev-decide@' in str(s.get('uses', '')), 'calling jev-decide')
+          i_pick  = index_of(gate_steps, lambda s: s.get('id') == 'pick', 'with id pick')
+          if not (i_level < i_route < i_pick):
+              sys.exit('::error::pr-review.yml gate job must run level, then jev-decide (review-route), then pick, in that order. '
+                        'Routing after the picker would spend a hosted start on a run the classifier was about to skip.')
+
+          ci = [s for s in gate_steps if s.get('id') == 'ci'][0]
+          pick = [s for s in gate_steps if s.get('id') == 'pick'][0]
+          for step, name in ((ci, 'ci'), (pick, 'pick')):
+              if 'decide' not in str(step.get('if', '')):
+                  sys.exit('::error::pr-review.yml gate step ' + name + ' does not gate on the decide step. '
+                            'A route the classifier skipped must stop ci and pick too, not just the review job.')
+
+          review_steps = jobs['review']['steps']
+          i_posted = index_of(review_steps, lambda s: s.get('id') == 'posted', 'with id posted')
+          i_check  = index_of(review_steps, lambda s: 'jev-decide@' in str(s.get('uses', '')), 'calling jev-decide')
+          i_verdict = index_of(review_steps, lambda s: s.get('id') == 'verdict', 'with id verdict')
+          if not (i_posted < i_check < i_verdict):
+              sys.exit('::error::pr-review.yml review job must run posted, then jev-decide (review-check), then verdict, in that order. '
+                        'Checking after the verdict is built would read a file nobody wrote yet.')
+
+          verdict = review_steps[i_verdict]
+          if 'JEV_NOTE' not in str(verdict.get('env', {})) or 'JEV_NOTE' not in str(verdict.get('run', '')):
+              sys.exit('::error::pr-review.yml verdict step does not read JEV_NOTE. The check step annotates the verdict; '
+                        'without this the note the classifier wrote is computed and then never shown.')
+
+          check_calls = [s for s in review_steps if 'jev-decide@' in str(s.get('uses', ''))]
+          for s_ in check_calls:
+              if 'always()' not in str(s_.get('if', '')):
+                  sys.exit('::error::pr-review.yml review job calls jev-decide without always() in its if:. '
+                            'A checker that can fail the run is a second reviewer with veto power and no accountability, '
+                            'and a step gated on success() alone stops running the moment anything upstream fails.')
+
+          print('PR Review routes before the picker and checks before the verdict')
+          "
+
       # Thresholds live in one file, and lowering one needs a test change.
       - name: jev policy floors are pinned by a test
         run: |

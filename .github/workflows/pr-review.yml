@@ -7,6 +7,16 @@
 # Triggers are deliberately narrow. Reviewing on every push is what gets a
 # review bot muted, and a muted bot reviews nothing. The caller fires this on
 # `ready_for_review` and on the `agent:review` label, never on `synchronize`.
+#
+# Two classifier steps bracket the agent. `review-route` runs in the gate job,
+# after the deterministic depth is computed and before the runner picker, and
+# can raise depth on a diff that reads as sensitive whatever its paths, skip a
+# mechanical diff with a comment instead of an agent run, and note when the
+# description does not describe the diff. `review-check` runs in the review
+# job, after the agent writes its verdict, and only annotates: it checks the
+# verdict line against the findings and scores house style, then adds one line
+# under the verdict. Neither step ever fails the job. With no
+# `AI_GATEWAY_API_KEY` both no-op and today's behaviour is unchanged.
 name: PR Review
 
 on:
@@ -48,10 +58,18 @@ on:
           migration|schema|
           middleware|proxy|cors|csp|webhook|
           Dockerfile|entrypoint|deploy)
+
+      # active: the classifier can raise depth, skip a review and annotate the
+      # verdict. shadow: it runs and records decisions but never acts on them.
+      # off: it does not run. See actions/jev-decide for what a missing key does.
+      jev-mode:
+        type: string
+        default: active     # active | shadow | off
     secrets:
       CLAUDE_CODE_OAUTH_TOKEN: { required: true }
       GH_APP_CLIENT_ID:        { required: false }
       GH_APP_PRIVATE_KEY:      { required: false }
+      AI_GATEWAY_API_KEY:      { required: false }
 
 concurrency:
   group: review-${{ github.repository }}-${{ github.event.pull_request.number }}
@@ -69,13 +87,17 @@ jobs:
       contents: read
       checks: read
       actions: read
-      pull-requests: read
+      # write, not read: a "skip" route posts a sticky comment saying why and
+      # clears agent:review so asking again does something. The same grant
+      # will let a docs-only stop clear the label too, in a later change.
+      pull-requests: write
     outputs:
-      proceed: ${{ steps.level.outputs.proceed }}
-      level:   ${{ steps.level.outputs.level }}
-      reason:  ${{ steps.level.outputs.reason }}
+      proceed: ${{ steps.decide.outputs.proceed }}
+      level:   ${{ steps.decide.outputs.level }}
+      reason:  ${{ steps.decide.outputs.reason }}
       ci:      ${{ steps.ci.outputs.summary }}
       runner:  ${{ steps.pick.outputs.runner }}
+      review-context: ${{ steps.route.outputs.prompt-block }}
     steps:
       # Payload-only rules first, before the checkout. agent:no-touch, drafts
       # and bot PRs are decided without fetching anything. Bot dependency PRs
@@ -109,7 +131,7 @@ jobs:
           ELEVATED:  ${{ inputs.elevated-level }}
         run: |
           set -euo pipefail
-          proceed="$PROCEED"; level="$LEVEL"; reason="$REASON"
+          proceed="$PROCEED"; level="$LEVEL"; reason="$REASON"; files=""
 
           if [ "$proceed" = "true" ]; then
             files=$(git diff --name-only "$BASE" "$HEAD" || true)
@@ -136,6 +158,149 @@ jobs:
             echo "level=$level"
             echo "reason=$reason"
           } >> "$GITHUB_OUTPUT"
+          # Multi-line: the classifier's state step reuses this list rather
+          # than recomputing it.
+          eof="EOF_${RANDOM}${RANDOM}"
+          {
+            echo "files<<$eof"
+            printf '%s\n' "$files"
+            echo "$eof"
+          } >> "$GITHUB_OUTPUT"
+          echo "decision: proceed=$proceed level=$level ${reason:+($reason)}"
+
+      # State for review-route: everything the classifier needs to judge
+      # whether this diff is sensitive, trivial, or undescribed. Built with jq
+      # --arg/--rawfile so a title, body or diff full of quotes and newlines
+      # can never break out of the JSON it lands in; nothing here is
+      # string-interpolated into the run script's own text.
+      - id: route-state
+        if: steps.level.outputs.proceed == 'true'
+        env:
+          NUMBER:        ${{ github.event.pull_request.number }}
+          TITLE:         ${{ github.event.pull_request.title }}
+          BODY:          ${{ github.event.pull_request.body }}
+          LABELS:        ${{ toJson(github.event.pull_request.labels.*.name) }}
+          FILES:         ${{ steps.level.outputs.files }}
+          BASE:          ${{ github.event.pull_request.base.sha }}
+          HEAD:          ${{ github.event.pull_request.head.sha }}
+          LEVEL:         ${{ steps.level.outputs.level }}
+          ELEVATED_LEVEL: ${{ inputs.elevated-level }}
+          REASON:        ${{ steps.level.outputs.reason }}
+        run: |
+          set -euo pipefail
+          state="$RUNNER_TEMP/jev-state.json"
+          diff_file="$RUNNER_TEMP/jev-route-diff.txt"
+
+          # Capped at 200000 bytes; the CLI truncates further on tokens and
+          # records that it did.
+          git diff --no-color "$BASE...$HEAD" | head -c 200000 > "$diff_file"
+
+          files_json=$(printf '%s\n' "$FILES" | jq -R . | jq -s 'map(select(length > 0))')
+
+          jq -n \
+            --argjson number "$NUMBER" \
+            --arg title "$TITLE" \
+            --arg body "${BODY:-}" \
+            --argjson labels "$LABELS" \
+            --argjson files "$files_json" \
+            --rawfile diff "$diff_file" \
+            --arg level "$LEVEL" \
+            --arg elevatedLevel "$ELEVATED_LEVEL" \
+            --arg reason "$REASON" \
+            '{
+              pr: { number: $number, title: $title, body: $body, labels: $labels, files: $files },
+              diff: $diff,
+              level: $level,
+              elevatedLevel: $elevatedLevel
+            } + (if $reason == "" then {} else { reason: $reason } end)' \
+            > "$state"
+          echo "state=$state" >> "$GITHUB_OUTPUT"
+
+      # Decides review depth from the diff itself, ahead of the runner picker.
+      # No-ops (ran=false) with no AI_GATEWAY_API_KEY, same as a missing key
+      # anywhere else jev is called.
+      - id: route
+        if: steps.level.outputs.proceed == 'true'
+        uses: dodi-smart/.github/actions/jev-decide@v1
+        with:
+          task:    review-route
+          state:   ${{ steps.route-state.outputs.state }}
+          mode:    ${{ inputs.jev-mode }}
+          api-key: ${{ secrets.AI_GATEWAY_API_KEY }}
+
+      - id: record-route
+        if: steps.route.outputs.ran == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: jev-decisions-pr-${{ github.event.pull_request.number }}-route
+          path: ${{ steps.route.outputs.decisions }}
+          retention-days: 90
+          if-no-files-found: ignore
+
+      # A trivial diff gets a comment instead of an agent run. Posted under
+      # the same sticky key the real review uses, so a route that later turns
+      # out to need a look still overwrites this comment rather than stacking
+      # beside it.
+      - id: skip
+        if: steps.route.outputs.route == 'skip'
+        env:
+          SKIP_COMMENT: ${{ steps.route.outputs.skip-comment }}
+        run: |
+          set -euo pipefail
+          printf '%s\n' "$SKIP_COMMENT" > "$RUNNER_TEMP/jev-skip-comment.md"
+
+      - if: steps.route.outputs.route == 'skip'
+        uses: dodi-smart/.github/actions/sticky-comment@v1
+        with:
+          key:       pr-review
+          number:    ${{ github.event.pull_request.number }}
+          body-file: ${{ runner.temp }}/jev-skip-comment.md
+
+      # Same DELETE the review job's own label-clear step uses, near the end
+      # of this file. A label already present emits no `labeled` event, so
+      # leaving it on here means asking again does nothing.
+      - name: Clear the request label after a skip
+        if: steps.route.outputs.route == 'skip'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO:     ${{ github.repository }}
+          PR:       ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          if gh api -X DELETE "/repos/$REPO/issues/$PR/labels/agent%3Areview" --silent 2>/dev/null; then
+            echo "removed agent:review, apply it again to request another pass"
+          else
+            echo "agent:review was not on this PR"
+          fi
+
+      # The one place proceed/level/reason are decided from here on: the
+      # deterministic level plus whatever the classifier changed. Runs
+      # unconditionally so a non-proceeding gate still produces outputs.
+      - id: decide
+        env:
+          LEVEL_PROCEED: ${{ steps.level.outputs.proceed }}
+          LEVEL_LEVEL:   ${{ steps.level.outputs.level }}
+          LEVEL_REASON:  ${{ steps.level.outputs.reason }}
+          ROUTE_RAN:     ${{ steps.route.outputs.ran }}
+          ROUTE_ROUTE:   ${{ steps.route.outputs.route }}
+          ROUTE_LEVEL:   ${{ steps.route.outputs.level }}
+          ROUTE_REASON:  ${{ steps.route.outputs.reason }}
+        run: |
+          set -euo pipefail
+          proceed="$LEVEL_PROCEED"
+          [ "$ROUTE_ROUTE" = "skip" ] && proceed=false
+
+          if [ "$ROUTE_RAN" = "true" ]; then
+            level="$ROUTE_LEVEL"; reason="$ROUTE_REASON"
+          else
+            level="$LEVEL_LEVEL"; reason="$LEVEL_REASON"
+          fi
+
+          {
+            echo "proceed=$proceed"
+            echo "level=$level"
+            echo "reason=$reason"
+          } >> "$GITHUB_OUTPUT"
           echo "decision: proceed=$proceed level=$level ${reason:+($reason)}"
 
       # Why CI failed, gathered deterministically and handed to the reviewer, so
@@ -143,7 +308,7 @@ jobs:
       # Kept to ONE LINE: the value is interpolated into a shell-style argument,
       # so a newline or a quote takes the whole step with it.
       - id: ci
-        if: steps.level.outputs.proceed == 'true'
+        if: steps.decide.outputs.proceed == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           REPO:     ${{ github.repository }}
@@ -185,12 +350,13 @@ jobs:
           echo "summary=$out" >> "$GITHUB_OUTPUT"
           echo "collected $n failing check(s)"
 
-      # Only when the run above is still proceeding: a draft, a bot PR or a
-      # docs-only diff must never pay for a hosted picker. `steps.level`, not
-      # `steps.gate`, is the last step that can still say no -- it narrows the
-      # gate's own verdict further (no changed files, docs only).
+      # Only when the run above is still proceeding: a draft, a bot PR, a
+      # docs-only diff or a route the classifier skipped must never pay for a
+      # hosted picker. `steps.decide`, not `steps.gate`, is the last step that
+      # can still say no -- it narrows the gate's own verdict further (no
+      # changed files, docs only, jev route skip).
       - id: pick
-        if: steps.level.outputs.proceed == 'true'
+        if: steps.decide.outputs.proceed == 'true'
         uses: dodi-smart/.github/actions/pick-runner@v1
         with:
           weight:             ${{ inputs.runner-weight }}
@@ -298,6 +464,9 @@ jobs:
             the fix. At most 200 words in total. Detail belongs in the inline comment on the line,
             not here. A verdict nobody finishes reading is a verdict nobody acts on.
 
+            Pre-read from the job, for context only:
+            ${{ needs.gate.outputs.review-context }}
+
       # How many inline comments this pass left, for the verdict to mention. It
       # gates nothing: the verdict below is what makes this job pass or fail.
       #
@@ -328,6 +497,58 @@ jobs:
           echo "inline=$inline" >> "$GITHUB_OUTPUT"
           echo "published: $inline inline comment(s)"
 
+      # State for review-check: the verdict the agent wrote, if it wrote one.
+      # `always()` and the execution-file guard mirror the verdict step below,
+      # so a run the action skipped (a workflow-file diff) never reaches this
+      # either. An empty verdict sets has=false and the check that follows
+      # does not run: there is nothing to check consistency against.
+      - id: check-state
+        if: always() && steps.agent.outputs.execution-file != ''
+        env:
+          INLINE: ${{ steps.posted.outputs.inline }}
+          CI:     ${{ needs.gate.outputs.ci }}
+          LEVEL:  ${{ needs.gate.outputs.level }}
+        run: |
+          set -euo pipefail
+          body="$RUNNER_TEMP/review-body.md"
+          if [ ! -s "$body" ]; then
+            echo "has=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          state="$RUNNER_TEMP/jev-check-state.json"
+          jq -n \
+            --rawfile verdict "$body" \
+            --argjson inlineComments "$INLINE" \
+            --arg ciSummary "$CI" \
+            --arg level "$LEVEL" \
+            '{ verdict: $verdict, inlineComments: $inlineComments, ciSummary: $ciSummary, level: $level }' \
+            > "$state"
+          echo "state=$state" >> "$GITHUB_OUTPUT"
+          echo "has=true" >> "$GITHUB_OUTPUT"
+
+      # Checks the verdict against its own findings and scores house style.
+      # Annotates only: it never fails this job, and no-ops (ran=false) with
+      # no AI_GATEWAY_API_KEY.
+      - id: check
+        if: always() && steps.check-state.outputs.has == 'true'
+        uses: dodi-smart/.github/actions/jev-decide@v1
+        with:
+          task:    review-check
+          state:   ${{ steps.check-state.outputs.state }}
+          out:     ${{ runner.temp }}/jev-check-decisions.json
+          mode:    ${{ inputs.jev-mode }}
+          api-key: ${{ secrets.AI_GATEWAY_API_KEY }}
+
+      - id: record-check
+        if: always() && steps.check.outputs.ran == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: jev-decisions-pr-${{ github.event.pull_request.number }}-check
+          path: ${{ steps.check.outputs.decisions }}
+          retention-days: 90
+          if-no-files-found: ignore
+
       # One comment per pull request, rewritten by each pass. The agent's own
       # INLINE comments are left alone: they are anchored to diff lines, GitHub
       # collapses them when the line changes, and rewriting a review thread out
@@ -346,6 +567,7 @@ jobs:
           INLINE: ${{ steps.posted.outputs.inline }}
           RAN:    ${{ steps.agent.outputs.execution-file }}
           RUN:    ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          JEV_NOTE: ${{ steps.check.outputs.note }}
         run: |
           set -euo pipefail
           body="$RUNNER_TEMP/review-body.md"
@@ -384,6 +606,10 @@ jobs:
             echo
             if [ "$INLINE" -gt 0 ]; then
               echo "Left $INLINE inline comment(s) on the diff."
+              echo
+            fi
+            if [ -n "$JEV_NOTE" ]; then
+              echo "$JEV_NOTE"
               echo
             fi
             echo "Reviewed \`${SHA:0:7}\` at depth \`$LEVEL\`${REASON:+ ($REASON)}. [Run]($RUN)."

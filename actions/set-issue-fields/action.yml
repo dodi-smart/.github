@@ -39,7 +39,7 @@ inputs:
 outputs:
   script:
     description: 'Absolute path to set-issue-fields.sh, for a later step to call directly with the same interface.'
-    value: ${{ github.action_path }}/set-issue-fields.sh
+    value: ${{ steps.apply.outputs.script }}
 
 runs:
   using: composite
@@ -58,6 +58,11 @@ runs:
         SCRIPT:        ${{ github.action_path }}/set-issue-fields.sh
       run: |
         set -euo pipefail
+
+        # Exported from the step, not the outputs block: the path is the one
+        # thing a caller with nothing to set still needs, and a step output
+        # is what a later step in the same job can rely on.
+        echo "script=$SCRIPT" >> "$GITHUB_OUTPUT"
 
         if [ -z "$FIELDS$TYPE$ADD_LABELS$REMOVE_LABELS$DECISIONS" ]; then
           echo "nothing to set"

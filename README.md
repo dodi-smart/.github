@@ -64,7 +64,7 @@ exactly like a busy fleet.
 |---|---|---|
 | `pr-checks.yml` | pull request | Lint, typecheck, test, build, per stack |
 | `deps-verify.yml` | Renovate/Dependabot PRs | Builds it, reads upstream changelogs, posts a verdict. Never merges. |
-| `pr-review.yml` | `ready_for_review`, `agent:review` | Second-opinion review, deeper on sensitive paths |
+| `pr-review.yml` | `ready_for_review`, `agent:review` | Second-opinion review, deeper on sensitive paths. Depth is raised when the diff itself reads as sensitive, a mechanical diff is skipped, and the verdict gets a consistency note, all when `AI_GATEWAY_API_KEY` is present. |
 | `issue-triage.yml` | issue opened or reopened, `agent:triage`, `@claude triage`, manual dispatch with `issue-number` | Classifies, sets fields, then plans or asks blocking questions. A classifier sets type, fields and area labels first when `AI_GATEWAY_API_KEY` is present; the agent still writes the plan or the questions. |
 | `issue-implement.yml` | `agent:implement`, `@claude implement` | Branch, code, draft PR. Requires a plan. Never merges. |
 | `claude-assist.yml` | `@claude <anything else>` | The general assistant |
@@ -205,7 +205,9 @@ so a change to what gets decided or how confident it has to be shows up as one
 diff. Each run writes a decisions record with every answer and its confidence,
 which a job uploads as an artifact; that record set is what the thresholds are
 tuned from, so a threshold moves on evidence, not on a hunch. `issue-triage.yml`
-now calls `actions/jev-decide`; `pr-review.yml` follows.
+calls `actions/jev-decide` to set type, fields and area labels before the
+agent, and `pr-review.yml` calls it to route review depth before the agent and
+to check its verdict after.
 
 ## What you stop maintaining
 

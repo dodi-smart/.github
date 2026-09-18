@@ -1,0 +1,9 @@
+{
+  "answers": {
+    "verdictConsistent": { "type": "boolean", "probability": 0.9 },
+    "slop": { "type": "score", "score": 2.6, "probabilities": { "0": 0.02, "1": 0.08, "2": 0.3, "3": 0.6 } }
+  },
+  "confidence": {},
+  "usage": { "inputTokens": 200, "outputTokens": 35 },
+  "modelId": "typesafe-ai/jev-2026-08"
+}

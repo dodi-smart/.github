@@ -1,0 +1,12 @@
+{
+  "mode": "active",
+  "route": "agent",
+  "type": { "value": "Improvement", "act": false },
+  "fields": {
+    "Priority": { "value": "Low", "act": true },
+    "Effort": { "value": "Low", "act": true },
+    "Risk": { "value": "Low", "act": true },
+    "Source": { "value": "Customer", "act": true }
+  },
+  "labelsAdd": []
+}

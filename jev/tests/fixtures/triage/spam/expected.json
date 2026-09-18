@@ -1,0 +1,9 @@
+{
+  "mode": "active",
+  "route": "skip",
+  "routeReasonContains": "spam",
+  "skipCommentFrom": "spam",
+  "type": { "value": "Task", "act": false },
+  "fields": {},
+  "labelsAdd": []
+}

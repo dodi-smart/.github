@@ -39,7 +39,7 @@ why, not history.
 | `.github/workflows/pr-review.yml` | No `synchronize` trigger | Reviewing every push is what gets a review bot muted, and a muted bot reviews nothing. |
 | `.github/workflows/deps-verify.yml` | Verification never merges, approves, or changes mergeability | Evidence is only useful if it is allowed to be wrong. Merging on a clean verdict forces conservative tuning, which produces noise, which gets the report ignored. |
 | `.github/workflows/issue-implement.yml` | A plan is required, `Agent mode` gates who may ask, and the PR is always a draft | The check is a field comparison in a gate job, never a question put to the agent, and it has no override. An agent asked whether a plan is adequate will sometimes accept a two-line issue body. |
-| `.github/workflows/issue-triage.yml` | Issue-field ids resolve repo-scoped, and triage fails if it did not record `Triage state` | This job runs on a repo-scoped App installation with no org permission, so the org issue-fields endpoint returns 403 and always will. Resolve ids from `repository(owner,name){ issueFields }`. Never offer the org path as a fallback. Keep the final verification step, or the job reports success with the fields unwritten. |
+| `.github/workflows/issue-triage.yml` | Issue-field ids resolve repo-scoped, and triage fails if it did not record `Triage state` | This job runs on a repo-scoped App installation with no org permission, so the org issue-fields endpoint returns 403 and always will. Resolve ids from `repository(owner,name){ issueFields }`. Never offer the org path as a fallback. Keep the final verification step, or the job reports success with the fields unwritten. Implemented by `actions/set-issue-fields`; call that action rather than re-resolving ids inline. |
 | `.github/workflows/issue-triage.yml` | `workflow_dispatch` is a no-op without `issue-number`, never a failure | A dispatch cannot render a tag-mode prompt and carries no issue payload of its own. The gate stops before the runner picker when `issue-number` is empty, with a notice, and the job stays green. A caller offering manual dispatch must declare its own dispatch input and forward it into this `workflow_call` input; the two input kinds are separate. |
 | `.github/workflows/issue-implement.yml` | `Triage state` stops at "Ready for agent" | Do not add an "in progress" state. The open draft PR and the closed issue already say it, and a mirror is correct only while someone maintains it. |
 | `.github/workflows/claude-assist.yml` | `@claude` mentions are a governed workflow, not a per-repo file | It is the widest agent surface in the org, so it needs the same kill switch as the rest. Its reserved-verb list stays the single place those verbs are named. |
@@ -71,6 +71,9 @@ why, not history.
 | `release.config.mjs` | Composes from the package by name, and keeps `refactor` from releasing here | The config this repo ships is the one it runs. A release that moves `v1` under every caller for a change with no visible entry is not one to introduce by accident. |
 | `actions/semantic-release-config/` | The package is linked from a private prefix, never installed from a registry, and never into the checkout it came with; consumer manifests are never written | A registry needs a token in every consumer, every developer's machine and the Renovate config, and a git dependency cannot point at a subdirectory. An install into the checkout would strip what shares it. |
 | `.github/workflows/release.yml` | Runs the link step when `shared-config` is true, and a caller that does not name the package is unaffected | The link sits unused unless the caller's config names it, so adding it was not a rollout, and turning it off silently loses only a registry install nothing there was using. |
+| `jev/src/policy.ts` | Every question, option description, threshold and route lives here and nowhere else; fields and routes never below 0.90, areas never below 0.85, without changing the test that pins them | A threshold tuned in a workflow file is one nobody finds when the numbers drift, and a probabilistic writer that guesses is worse than an empty field. |
+| `actions/jev-decide/` | No-ops with a notice when `AI_GATEWAY_API_KEY` is empty and never fails the job on a gateway error | The classifier accelerates a run that already works without it; a red job for an optional dependency teaches people to delete the dependency. |
+| `actions/set-issue-fields/` | The one implementation of repo-scoped issue-field writes; the org endpoint is refused, not offered as a fallback | This runs on a repo-scoped App installation, so every `/orgs/*` path is 403 and always will be. |
 | `.github/workflows/supabase-deploy.yml` | Deploys only the `ref` the caller passes (the release job's cut tag), never a trigger of its own; hosted only; the health check fails the job, never warns | A `workflow_run` trigger fires on a no-op release and checks out the wrong commit, so the caller must chain this with `needs:` on its own release job instead. This job holds a Supabase access token, a database password and a live project link, none of which belong on a self-hosted machine other jobs also land on between runs. A health check that only warns lets a deploy that leaves every route erroring report success. |
 
 ## Facts worth not rediscovering
@@ -159,6 +162,13 @@ why, not history.
   visible entry). A change to a workflow's job graph is a change callers see,
   so type it `perf:` or `fix:` with a body that says what moved, or `v1` stays
   on the old code while `main` looks done.
+- **Node 24 runs `.ts` directly only for erasable syntax.** `jev/tsconfig.json`
+  sets `erasableSyntaxOnly`, and the typecheck step in `Self test` is the guard:
+  a construct Node cannot erase would run locally on a machine with a build
+  step and then fail in CI with nothing local to reproduce it.
+- **`jev/` is not a root npm workspace.** `actions/semantic-release-config/install.sh`
+  copies the root manifests into a private prefix, and a second workspace
+  entry would change what gets copied and break that install.
 
 ## Everything here is pinned, including the internal references
 
@@ -220,3 +230,6 @@ also why every consumer-facing workflow must keep the full
    `reserved-commands` default in the same change, or the assistant answers it too.
 6. Name it in the README workflow table. `Self test` does not check that table,
    so an undocumented workflow is one nobody adopts.
+7. If it runs an agent on free text, run `actions/jev-decide` first for the
+   routes and hand the agent the pre-classification block. A question the
+   classifier can answer belongs in `policy.ts`, not in a prompt.

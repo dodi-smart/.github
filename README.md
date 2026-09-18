@@ -51,6 +51,7 @@ fleet changes.
 |---|---|
 | `CLAUDE_CODE_OAUTH_TOKEN` | every agent workflow |
 | `GH_APP_CLIENT_ID` + `GH_APP_PRIVATE_KEY` | validating the runner selector against the live fleet |
+| `AI_GATEWAY_API_KEY` | optional; pre-classifies issues and routes reviews through the evaluation model. Absent means the agent does all of it, as before |
 
 `GH_APP_CLIENT_ID` is the one name for that secret. Migrate a repo still carrying
 the older `GH_APP_ID`. Without it the picker cannot read the org runner list, so
@@ -189,6 +190,23 @@ nobody then goes back to question.
 | `actions/sticky-comment` | One keyed comment per pull request, rewritten in place on every later run |
 | `actions/semantic-release-config` | Links the shared semantic-release config into a consumer's `node_modules` from a private prefix, never from a registry and never into the checkout it came with |
 | `actions/pick-runner` | Resolves a runner weight to a selector, validated against the live fleet. What `pick-runner.yml` calls, and what a job that already runs hosted (like `pr-checks.yml`'s `pick`) calls directly to pick more than once without a second hosted job. |
+| `actions/jev-decide` | Runs the typed classifier on a state file and exposes its decisions as outputs. No key means a notice and no-op, never a failure. |
+| `actions/set-issue-fields` | Writes issue fields, type and labels from names, resolving ids repo-scoped. What the triage job and the agent both call. |
+
+### The classifier
+
+`jev` is a small evaluation model, called through the Vercel AI Gateway, that
+answers a fixed set of questions about an issue or a pull request with a
+calibrated probability. It decides and never writes prose: a field, an area
+label or a route is only set at or above a threshold, and below that the job
+leaves the field for a person or the agent to fill in instead of guessing.
+Every question, option and threshold lives in one file, `jev/src/policy.ts`,
+so a change to what gets decided or how confident it has to be shows up as one
+diff. Each run writes a decisions record with every answer and its confidence,
+which a job uploads as an artifact; that record set is what the thresholds are
+tuned from, so a threshold moves on evidence, not on a hunch. No workflow calls
+`actions/jev-decide` yet; wiring it into `issue-triage.yml` and `pr-review.yml`
+is a later release.
 
 ## What you stop maintaining
 
@@ -675,7 +693,9 @@ everything else, so nothing in the log will hint at it.
 `Self test` runs on every pull request touching `actions/`, `.github/workflows/`
 or the Renovate preset. It asserts the kill switch across every workflow shape,
 checks the runner presets against the table above, parses every YAML file,
-shellchecks the scripts, validates the Renovate preset, and runs actionlint.
+shellchecks the scripts, validates the Renovate preset, and runs actionlint. It
+also runs the `jev` package's own tests against recorded fixtures, never the
+gateway, and runs `actions/set-issue-fields`' test script.
 
 Read `AGENTS.md` before changing anything. If you add a workflow, add its rule to
 the table there with the one line that says why, and extend

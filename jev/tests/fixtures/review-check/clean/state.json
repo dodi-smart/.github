@@ -1,0 +1,6 @@
+{
+  "verdict": "Fix first.\n\n- High: the retry loop in src/pipeline/runner.ts can post the same batch twice; add an idempotency key before merging.",
+  "inlineComments": 1,
+  "ciSummary": "All checks passed.",
+  "level": "thorough"
+}

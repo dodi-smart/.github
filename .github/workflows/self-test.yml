@@ -42,6 +42,69 @@ jobs:
       - name: Shared semantic-release config tests
         run: npm test
 
+      # jev is not a root workspace (see AGENTS.md), so it gets its own
+      # install. Fixture playback only: this repo is public, and this job
+      # must never need AI_GATEWAY_API_KEY to pass.
+      # In the directory, not `--prefix`: npm ci with --prefix does not
+      # reliably read the prefix's own manifests (see install.sh).
+      - name: jev package tests
+        working-directory: jev
+        run: |
+          npm ci --no-audit --no-fund
+          npm test
+          npm run typecheck
+
+      # A skipped classifier must read as a notice and leave the agent path
+      # unchanged, or a missing secret looks like a passing run.
+      - name: jev-decide no-ops without a key
+        run: |
+          set -euo pipefail
+          python3 -c "
+          import sys, yaml
+          doc = yaml.safe_load(open('actions/jev-decide/action.yml'))
+          steps = doc['runs']['steps']
+          have_key = [s for s in steps if s.get('id') == 'have-key']
+          if not have_key:
+              sys.exit('::error::actions/jev-decide has no have-key step. Every later step must be able to check whether the gateway key is set.')
+          run = str(have_key[0].get('run', ''))
+          if '::notice' not in run:
+              sys.exit('::error::the have-key step does not print a ::notice. A skipped classifier must read as a notice, or a missing secret looks like a passing run.')
+          if 'ran=false' not in run:
+              sys.exit('::error::the have-key step does not write ran=false. A caller needs an output that says the classifier did not run.')
+          later = steps[steps.index(have_key[0]) + 1:]
+          bad = [s.get('name', s.get('id', '?')) for s in later if 'steps.have-key.outputs.yes' not in str(s.get('if', ''))]
+          if bad:
+              sys.exit('::error::these jev-decide steps do not gate on steps.have-key.outputs.yes: ' + ', '.join(bad)
+                        + '. An ungated step runs even when the key is empty and fails instead of no-opping.')
+          print('jev-decide no-ops without a key')
+          "
+
+      # Thresholds live in one file, and lowering one needs a test change.
+      - name: jev policy floors are pinned by a test
+        run: |
+          set -euo pipefail
+          if [ ! -f jev/tests/policy.test.ts ]; then
+            echo '::error::jev/tests/policy.test.ts is missing. jev/src/policy.ts holds every threshold, and nothing pins them to a test.'
+            exit 1
+          fi
+          for name in FIELD_THRESHOLD AREA_THRESHOLD; do
+            if ! grep -q "$name" jev/tests/policy.test.ts; then
+              echo "::error::jev/tests/policy.test.ts does not mention $name. Thresholds live in one file, and lowering one needs a test change."
+              exit 1
+            fi
+          done
+          echo 'jev policy floors are pinned by a test'
+
+      # The repo is public.
+      - name: Fixtures are synthetic
+        run: |
+          set -euo pipefail
+          if grep -rEn 'github\.com/|dodi-smart' jev/tests/fixtures; then
+            echo '::error::a jev test fixture above names a real repository or host. The repo is public; fixtures must be synthetic.'
+            exit 1
+          fi
+          echo 'jev fixtures are synthetic'
+
       # The kill switch is a claim about behaviour. Assert it.
       - name: Agent gate behaviour
         run: ./actions/agent-gate/test.sh
@@ -50,6 +113,22 @@ jobs:
       # picking wrong means a later run overwrites something it did not write.
       - name: Sticky comment picks the right comment
         run: ./actions/sticky-comment/test.sh
+
+      # Ids must resolve from this repository, not the org: a repo-scoped App
+      # installation gets a 403 on every /orgs/* path, and always will.
+      - name: set-issue-fields resolves ids from the repository
+        run: |
+          set -euo pipefail
+          ./actions/set-issue-fields/test.sh
+          if ! grep -q 'repository(owner' actions/set-issue-fields/set-issue-fields.sh; then
+            echo '::error::actions/set-issue-fields/set-issue-fields.sh no longer resolves ids from repository(owner,name), the repo-scoped query.'
+            exit 1
+          fi
+          if grep -v '^\s*#' actions/set-issue-fields/set-issue-fields.sh | grep -q '/orgs/'; then
+            echo '::error::actions/set-issue-fields/set-issue-fields.sh calls /orgs/, which 403s on a repo-scoped App installation and always will.'
+            exit 1
+          fi
+          echo 'set-issue-fields resolves ids from the repository'
 
       # `sticky-comment` is read only in tag mode, which a non-empty `prompt`
       # switches off. The pair costs a full agent run and posts nothing.
@@ -500,6 +579,12 @@ jobs:
       # word-splits `args` without honouring quotes, so an -ignore pattern with
       # spaces is torn apart. The two ignores exist because actionlint's bundled
       # snapshot predates create-github-app-token moving to `client-id`.
+      #
+      # actionlint only lints `.github/workflows/*.yml`. `actions/jev-decide/action.yml`
+      # and `actions/set-issue-fields/action.yml` are composite actions, not
+      # workflows, so this step does not check them; "Every workflow and action
+      # is parseable YAML" above and "jev-decide no-ops without a key" cover
+      # what actionlint would have missed.
       - name: actionlint
         env:
           ACTIONLINT_VERSION: 1.7.12

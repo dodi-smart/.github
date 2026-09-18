@@ -1,0 +1,9 @@
+{
+  "mode": "active",
+  "route": "skip",
+  "routeReasonContains": "injection",
+  "skipCommentFrom": "injection",
+  "type": { "value": "Task", "act": false },
+  "fields": {},
+  "labelsAdd": []
+}

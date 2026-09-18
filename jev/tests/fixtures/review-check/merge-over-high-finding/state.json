@@ -1,0 +1,6 @@
+{
+  "verdict": "Merge.\n\n- High: the new export endpoint logs the account's full statement PDF to stdout on every request.\n- Low: variable name `tmp2` could be clearer.",
+  "inlineComments": 2,
+  "ciSummary": "All checks passed.",
+  "level": "standard"
+}

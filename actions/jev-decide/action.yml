@@ -1,0 +1,155 @@
+# Run the jev classifier and expose its decisions as step outputs.
+#
+# jev is an optional accelerant, not a gate. Every caller keeps working exactly
+# as before when this action does nothing: a missing key, `mode: off`, or a
+# gateway failure all leave `ran=false` and hand the agent the same prompt it
+# would have built on its own. Nothing here ever fails the job for a runtime
+# condition; the CLI's own single exit-2 path is a usage bug in the caller, and
+# even that is left alone rather than papered over with `continue-on-error`.
+#
+# The key's presence is hoisted into its own step (`have-key`) because a
+# step-level `if:` cannot read the `secrets` context directly, only step
+# outputs and inputs. Checking it inside the CLI step instead would mean the
+# step always "runs" and a skipped classifier would show as a green no-op
+# rather than the notice it actually is.
+#
+# No `actions/cache`. jev installs four packages in a few seconds; a cache
+# entry costs more to key, restore and validate than the install it replaces,
+# and it is one more poisonable artifact for no measurable benefit.
+name: jev decide
+description: Run the jev classifier against a state file and expose its decisions as outputs.
+
+inputs:
+  task:
+    description: 'triage | review-route | review-check'
+    required: true
+  state:
+    description: 'Path to a JSON file describing what to classify.'
+    required: true
+  out:
+    description: 'Where to write the full decisions record.'
+    default: ${{ runner.temp }}/jev-decisions.json
+  mode:
+    description: 'active | shadow | off. off skips the classifier entirely, same as a missing key.'
+    default: active
+  api-key:
+    description: 'AI_GATEWAY_API_KEY. Empty skips the classifier and the agent proceeds unclassified.'
+    default: ''
+  node-version:
+    description: 'Node version to run the CLI with.'
+    default: '24'
+
+outputs:
+  ran:
+    description: '"true" when the classifier actually ran; "false" for a skip or a gateway failure'
+    value: ${{ steps.run.outputs.ran || steps.have-key.outputs.ran }}
+  route:
+    description: 'agent | skip'
+    value: ${{ steps.run.outputs.route || steps.have-key.outputs.route }}
+  route-reason:
+    value: ${{ steps.run.outputs.route-reason || steps.have-key.outputs.route-reason }}
+  type:
+    description: 'The issue type decided with high enough confidence to write, else empty'
+    value: ${{ steps.run.outputs.type || steps.have-key.outputs.type }}
+  fields:
+    description: 'Newline-separated Name=Option pairs decided with high enough confidence to write'
+    value: ${{ steps.run.outputs.fields || steps.have-key.outputs.fields }}
+  add-labels:
+    value: ${{ steps.run.outputs.add-labels || steps.have-key.outputs.add-labels }}
+  remove-labels:
+    value: ${{ steps.run.outputs.remove-labels || steps.have-key.outputs.remove-labels }}
+  level:
+    description: 'Task-specific level, e.g. review depth'
+    value: ${{ steps.run.outputs.level || steps.have-key.outputs.level }}
+  reason:
+    value: ${{ steps.run.outputs.reason || steps.have-key.outputs.reason }}
+  skip-comment:
+    description: 'Multiline. Set when the task decided the run needs no comment.'
+    value: ${{ steps.run.outputs.skip-comment || steps.have-key.outputs.skip-comment }}
+  prompt-block:
+    description: 'Multiline text meant to be pasted straight into the agent prompt.'
+    value: ${{ steps.run.outputs.prompt-block || steps.have-key.outputs.prompt-block }}
+  note:
+    description: 'Multiline free-text note from the task, when it has one.'
+    value: ${{ steps.run.outputs.note || steps.have-key.outputs.note }}
+  decisions:
+    description: 'Path to the full decisions record (same as the out input).'
+    value: ${{ inputs.out }}
+
+runs:
+  using: composite
+  steps:
+    # Hoist the key's presence into a step output. The `secrets` context is
+    # not available in a step-level `if:`, only in `env:`, so this step always
+    # runs and every later step gates on ITS output instead.
+    - id: have-key
+      shell: bash
+      env:
+        API_KEY: ${{ inputs.api-key }}
+        MODE:    ${{ inputs.mode }}
+      run: |
+        set -euo pipefail
+        if [ -z "${API_KEY:-}" ] || [ "$MODE" = "off" ]; then
+          echo "::notice title=jev is off::AI_GATEWAY_API_KEY is not set on this repository (or mode is off), so the classifier did not run and the agent proceeds as before."
+          {
+            echo "ran=false"
+            echo "route=agent"
+            echo "route-reason="
+            echo "type="
+            d="EOF_${RANDOM}${RANDOM}"; printf 'fields<<%s\n%s\n' "$d" "$d"
+            echo "add-labels="
+            echo "remove-labels="
+            echo "level="
+            echo "reason="
+            d="EOF_${RANDOM}${RANDOM}"; printf 'skip-comment<<%s\n%s\n' "$d" "$d"
+            d="EOF_${RANDOM}${RANDOM}"
+            printf 'prompt-block<<%s\nNot evaluated: AI_GATEWAY_API_KEY is not set, or mode is off. Classify everything yourself, as before.\n%s\n' "$d" "$d"
+            d="EOF_${RANDOM}${RANDOM}"; printf 'note<<%s\n%s\n' "$d" "$d"
+          } >> "$GITHUB_OUTPUT"
+          echo "yes=false" >> "$GITHUB_OUTPUT"
+        else
+          echo "yes=true" >> "$GITHUB_OUTPUT"
+        fi
+
+    - uses: actions/setup-node@v7
+      if: steps.have-key.outputs.yes == 'true'
+      with:
+        node-version: ${{ inputs.node-version }}
+
+    # Install into a private prefix under RUNNER_TEMP, never into this
+    # checkout and never into the consumer's own tree. `src/` is copied in
+    # beside the installed `node_modules` so `node src/cli.ts` resolves its
+    # dependencies without a symlink trick or a build step.
+    - id: install
+      if: steps.have-key.outputs.yes == 'true'
+      shell: bash
+      env:
+        ACTION_PATH: ${{ github.action_path }}
+      run: |
+        set -euo pipefail
+        prefix=$(mktemp -d "$RUNNER_TEMP/jev.XXXXXX")
+        src="$ACTION_PATH/../../jev"
+        cp "$src/package.json" "$src/package-lock.json" "$prefix/"
+        (cd "$prefix" && npm ci --omit=dev --ignore-scripts --no-audit --no-fund >/dev/null)
+        cp -R "$src/src" "$prefix/src"
+        echo "prefix=$prefix" >> "$GITHUB_OUTPUT"
+
+    # AI_GATEWAY_API_KEY is set only on this step, and only via env:, never
+    # interpolated into the run script text. The CLI itself exits 0 on a
+    # gateway failure and writes `ran=false` plus a `::warning`; the one exit
+    # 2 it has is a usage error in this action's own invocation, and that is
+    # left to fail the job rather than hidden behind `continue-on-error`.
+    - id: run
+      if: steps.have-key.outputs.yes == 'true'
+      shell: bash
+      env:
+        AI_GATEWAY_API_KEY: ${{ inputs.api-key }}
+        PREFIX: ${{ steps.install.outputs.prefix }}
+        TASK:   ${{ inputs.task }}
+        STATE:  ${{ inputs.state }}
+        OUT:    ${{ inputs.out }}
+        MODE:   ${{ inputs.mode }}
+      run: |
+        set -euo pipefail
+        node "$PREFIX/src/cli.ts" "$TASK" --state "$STATE" --out "$OUT" --mode "$MODE" \
+          --summary "$GITHUB_STEP_SUMMARY" --github-output "$GITHUB_OUTPUT"

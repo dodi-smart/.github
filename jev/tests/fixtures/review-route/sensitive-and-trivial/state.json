@@ -1,0 +1,12 @@
+{
+  "pr": {
+    "number": 91,
+    "title": "Bump row-level security policy version comment",
+    "body": "Only bumps the version number in the comment above the ledger row-level security policy; no logic change.",
+    "labels": [],
+    "files": ["supabase/migrations/0042_ledger_rls.sql"]
+  },
+  "diff": "--- a/supabase/migrations/0042_ledger_rls.sql\n+++ b/supabase/migrations/0042_ledger_rls.sql\n@@ -1,4 +1,4 @@\n--- policy version 3\n+-- policy version 4\n CREATE POLICY ledger_owner_read ON ledger.entries\n   FOR SELECT USING (auth.uid() = account_owner);\n",
+  "level": "standard",
+  "elevatedLevel": "thorough"
+}

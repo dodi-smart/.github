@@ -265,8 +265,10 @@ jobs:
           printf '%s\n' "$out"
           { echo "### Audit (report only)"; echo '```'; printf '%s\n' "$out"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
 
-      # One comment, updated in place. A new comment per push turns a useful
-      # signal into something people collapse and stop reading.
+      # One comment, updated in place, and ONLY when something failed. A clean
+      # result is already the green check; a table saying "passed" on every PR
+      # is the noise that teaches people to skip bot comments. A comment left
+      # from an earlier failing push is deleted once the PR is clean again.
       - if: always() && steps.present.outputs.yes == 'true' && github.event_name == 'pull_request'
         env:
           GH_TOKEN: ${{ github.token }}
@@ -298,7 +300,15 @@ jobs:
 
           id=$(gh api "/repos/$REPO/issues/$NUM/comments" --paginate \
                 --jq "[.[] | select(.body | startswith(\"$marker\"))] | .[0].id" 2>/dev/null || echo "")
-          if [ -n "$id" ] && [ "$id" != "null" ]; then
+          [ "$id" = "null" ] && id=""
+          if [ "$CHECKS" != "failure" ] && [ "$GUARDS" != "failure" ]; then
+            if [ -n "$id" ]; then
+              gh api -X DELETE "/repos/$REPO/issues/comments/$id" >/dev/null
+            fi
+            echo "clean, no comment"
+            exit 0
+          fi
+          if [ -n "$id" ]; then
             gh api -X PATCH "/repos/$REPO/issues/comments/$id" -f body="$body" >/dev/null
           else
             gh api -X POST "/repos/$REPO/issues/$NUM/comments" -f body="$body" >/dev/null

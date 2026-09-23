@@ -3,8 +3,9 @@
 #
 # claude-code-action's own sticky comment is tag-mode only, and tag mode is
 # closed to both workflows that want one here. It rewrites the prompt, so a
-# slash command never expands, and it enables commit tooling that deps-verify
-# must never have.
+# slash command never expands, and it sets up its own branch and push tooling,
+# where deps-verify pushes only from a deterministic step that checks the
+# commits first.
 #
 # The comment is found by a hidden marker in the body, never by author or
 # position: `gh pr comment --edit-last` edits the last comment by the token,

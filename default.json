@@ -43,6 +43,14 @@
   // recreate: that silently strips it from every existing PR.
   "labels": ["deps:update"],
 
+  // deps-verify pushes its fix commits as this author. Listed here, Renovate
+  // still treats the branch as its own, so it keeps rebasing it and can still
+  // automerge it. Without it the first fix marks the branch "edited", and
+  // Renovate stops touching it. A rebase drops the fix, and the next
+  // verification run makes it again. Change together with FIX_EMAIL in
+  // deps-verify.yml.
+  "gitIgnoredAuthors": ["41898282+github-actions[bot]@users.noreply.github.com"],
+
   // Weekly batch. Security PRs ignore the schedule.
   "schedule": ["before 6am on monday"],
 

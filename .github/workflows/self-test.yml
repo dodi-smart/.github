@@ -218,7 +218,7 @@ jobs:
               ('issue-implement.yml','implement'),
               ('claude-assist.yml',  'assist'),
               ('pr-review.yml',      'review'),
-              ('deps-verify.yml',    'build'),
+              ('deps-verify.yml',    'verify'),
           ]
 
           bad = []
@@ -261,6 +261,37 @@ jobs:
               sys.exit('::error::' + '; '.join(bad) + '. Folding the picker into the gate job is what makes a '
                         'proceeding agent run cost one hosted start instead of two.')
           print('every agent workflow picks its runner inside the gate job, guarded on proceed')
+          "
+
+      # deps-verify may push fix commits, so where the push happens is the
+      # guard. Only the deterministic `push` step may run `git push`, only the
+      # `publish` step may set labels, and the agent's prompt must still say it
+      # does not push, merge or approve.
+      - name: deps-verify pushes and labels only from its deterministic steps
+        run: |
+          set -euo pipefail
+          python3 -c "
+          import sys, yaml
+          steps = yaml.safe_load(open('.github/workflows/deps-verify.yml'))['jobs']['verify']['steps']
+          bad = []
+          for s in steps:
+              run = str(s.get('run', ''))
+              sid = s.get('id', s.get('name', s.get('uses', '?')))
+              if 'git push' in run and sid != 'push':
+                  bad.append('git push outside the push step (%s)' % sid)
+              if '/labels' in run and sid != 'publish':
+                  bad.append('labels written outside the publish step (%s)' % sid)
+          agent = [s for s in steps if 'run-agent@' in str(s.get('uses', ''))]
+          if len(agent) != 1:
+              bad.append('expected exactly one run-agent step, found %d' % len(agent))
+          else:
+              prompt = agent[0]['with']['prompt']
+              for phrase in ('Do NOT push', 'NEVER edit a lockfile', 'Do not comment on, label, merge or approve'):
+                  if phrase not in prompt:
+                      bad.append('agent prompt lost: ' + phrase)
+          if bad:
+              sys.exit('::error::' + '; '.join(bad))
+          print('deps-verify pushes from push, labels from publish, and the agent is told neither')
           "
 
       # pick-runner.yml is a thin wrapper around actions/pick-runner now. Every

@@ -88,17 +88,17 @@ jobs:
           bots:          'allow'
           skip-draft:    'false'
 
-      # Bots open issues at machine volume. The Renovate Dependency Dashboard
-      # is the one worth reading, and it is a standing issue, so triage it once
-      # on open and never again. This only narrows the gate above. It can never
-      # re-open a run the kill switch stopped.
+      # Bots open issues at machine volume, and none of them is work to plan.
+      # The Renovate Dependency Dashboard used to be triaged once on open, but
+      # it is a standing status page with nothing to implement, so an agent
+      # could only file it as Needs info. Every bot-authored issue stops here.
+      # This only narrows the gate above. It can never re-open a run the kill
+      # switch stopped.
       - id: bots
         env:
           PROCEED:     ${{ steps.gate.outputs.proceed }}
           MODE:        ${{ steps.gate.outputs.mode }}
           AUTHOR:      ${{ github.event.issue.user.login }}
-          TITLE:       ${{ github.event.issue.title }}
-          ACTION:      ${{ github.event.action }}
           EVENT_NAME:  ${{ github.event_name }}
           SENDER_TYPE: ${{ github.event.sender.type }}
           ISSUE_INPUT: ${{ inputs.issue-number }}
@@ -111,18 +111,13 @@ jobs:
           # author at all. Letting those through reaches claude-code-action,
           # which refuses a non-human actor and fails the run, so every reviewed
           # pull request carried a red triage check that had nothing to triage.
-          if [ "$proceed" = "true" ] && [ "$SENDER_TYPE" = "Bot" ] \
-             && ! { printf '%s' "$TITLE" | grep -qi 'dependency dashboard' && [ "$ACTION" = "opened" ]; }; then
+          if [ "$proceed" = "true" ] && [ "$SENDER_TYPE" = "Bot" ]; then
             proceed=false
             echo "bot-sent event ($EVENT_NAME), stopping before the agent"
           fi
           if [ "$proceed" = "true" ] && printf '%s' "$AUTHOR" | grep -qiE 'renovate|dependabot|\[bot\]$'; then
             proceed=false
-            if printf '%s' "$TITLE" | grep -qi 'dependency dashboard' && [ "$ACTION" = "opened" ]; then
-              proceed=true
-            else
-              echo "bot-authored issue that is not a newly opened Dependency Dashboard, stopping"
-            fi
+            echo "bot-authored issue, stopping"
           fi
           # A dispatch with nothing to triage is a clean no-op, not a failure.
           # `workflow_call` inputs and `workflow_dispatch` inputs are separate,

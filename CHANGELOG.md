@@ -1,3 +1,9 @@
+## [1.7.4](https://github.com/dodi-smart/.github/compare/v1.7.3...v1.7.4) (2026-09-23)
+
+### ⬆️ Dependencies
+
+* **deps:** update semantic-release monorepo ([2f61cd3](https://github.com/dodi-smart/.github/commit/2f61cd3330d2496a3d51b6f7f22830eda96f90d0))
+
 ## [1.7.3](https://github.com/dodi-smart/.github/compare/v1.7.2...v1.7.3) (2026-09-17)
 
 ### 🐛 Bug Fixes

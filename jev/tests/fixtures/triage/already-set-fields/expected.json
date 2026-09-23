@@ -1,0 +1,12 @@
+{
+  "mode": "active",
+  "route": "agent",
+  "type": { "value": "Bug", "act": false },
+  "fields": {
+    "Priority": { "value": "Medium", "act": false },
+    "Effort": { "value": "Low", "act": true },
+    "Risk": { "value": "Low", "act": true },
+    "Source": { "value": "Customer", "act": true }
+  },
+  "labelsAdd": ["area:onboarding"]
+}

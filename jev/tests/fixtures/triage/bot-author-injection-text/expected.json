@@ -1,0 +1,12 @@
+{
+  "mode": "active",
+  "route": "agent",
+  "type": { "value": "Chore", "act": true },
+  "fields": {
+    "Priority": { "value": "Low", "act": true },
+    "Effort": { "value": "Low", "act": true },
+    "Risk": { "value": "Low", "act": true },
+    "Source": { "value": "Bot", "act": true }
+  },
+  "labelsAdd": ["area:pipeline"]
+}

@@ -1,0 +1,96 @@
+# Set org issue fields, an issue type, and labels on one issue.
+#
+# A thin wrapper around set-issue-fields.sh: the mechanics and the reasoning
+# (why the catalog is read from the repository and never the organisation,
+# why ids must be GraphQL node ids, why the inner key is `fieldId`) live
+# there. This step builds the argument list from inputs and calls it; the
+# `script` output is the same absolute path, so a later step, an agent among
+# them, can call it again directly with arguments this action does not expose,
+# without duplicating the mechanics.
+name: Set issue fields
+description: Set org issue fields, an issue type, and labels on one issue, from plain inputs or a jev decisions file.
+
+inputs:
+  issue:
+    description: 'Issue number.'
+    required: true
+  fields:
+    description: 'Newline-separated "Name=Option" pairs.'
+    default: ''
+  type:
+    description: 'Issue type to set, e.g. Bug.'
+    default: ''
+  add-labels:
+    description: 'Space-separated label names to add.'
+    default: ''
+  remove-labels:
+    description: 'Space-separated label names to remove.'
+    default: ''
+  decisions:
+    description: 'Path to a jev decisions file. When set, act:true fields/type and labels.add/labels.remove from it are merged in via --from-decisions.'
+    default: ''
+  repository:
+    description: 'owner/repo'
+    default: ${{ github.repository }}
+  token:
+    description: 'Token to call the GitHub API with. Needs repo scope; no org permission is used or needed.'
+    default: ${{ github.token }}
+
+outputs:
+  script:
+    description: 'Absolute path to set-issue-fields.sh, for a later step to call directly with the same interface.'
+    value: ${{ steps.apply.outputs.script }}
+
+runs:
+  using: composite
+  steps:
+    - id: apply
+      shell: bash
+      env:
+        GH_TOKEN:      ${{ inputs.token }}
+        REPO:          ${{ inputs.repository }}
+        ISSUE:         ${{ inputs.issue }}
+        FIELDS:        ${{ inputs.fields }}
+        TYPE:          ${{ inputs.type }}
+        ADD_LABELS:    ${{ inputs.add-labels }}
+        REMOVE_LABELS: ${{ inputs.remove-labels }}
+        DECISIONS:     ${{ inputs.decisions }}
+        SCRIPT:        ${{ github.action_path }}/set-issue-fields.sh
+      run: |
+        set -euo pipefail
+
+        # Exported from the step, not the outputs block: the path is the one
+        # thing a caller with nothing to set still needs, and a step output
+        # is what a later step in the same job can rely on.
+        echo "script=$SCRIPT" >> "$GITHUB_OUTPUT"
+
+        if [ -z "$FIELDS$TYPE$ADD_LABELS$REMOVE_LABELS$DECISIONS" ]; then
+          echo "nothing to set"
+          exit 0
+        fi
+
+        args=(--repo "$REPO" --issue "$ISSUE")
+
+        if [ -n "$FIELDS" ]; then
+          while IFS= read -r line; do
+            [ -n "$line" ] && args+=(--field "$line")
+          done <<< "$FIELDS"
+        fi
+
+        [ -n "$TYPE" ] && args+=(--type "$TYPE")
+
+        if [ -n "$ADD_LABELS" ]; then
+          for label in $ADD_LABELS; do
+            args+=(--add-label "$label")
+          done
+        fi
+
+        if [ -n "$REMOVE_LABELS" ]; then
+          for label in $REMOVE_LABELS; do
+            args+=(--remove-label "$label")
+          done
+        fi
+
+        [ -n "$DECISIONS" ] && args+=(--from-decisions "$DECISIONS")
+
+        "$SCRIPT" "${args[@]}"

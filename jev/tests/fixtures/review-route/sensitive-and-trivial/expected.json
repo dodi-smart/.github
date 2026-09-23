@@ -1,0 +1,7 @@
+{
+  "mode": "active",
+  "route": "agent",
+  "level": "thorough",
+  "reasonContains": "jev: sensitive",
+  "descriptionMismatch": false
+}

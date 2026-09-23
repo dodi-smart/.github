@@ -1,0 +1,7 @@
+{
+  "mode": "active",
+  "route": "skip",
+  "routeReasonContains": "trivial",
+  "level": "standard",
+  "descriptionMismatch": false
+}

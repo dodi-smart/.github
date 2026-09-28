@@ -1,3 +1,9 @@
+## [1.7.5](https://github.com/dodi-smart/.github/compare/v1.7.4...v1.7.5) (2026-09-28)
+
+### ⬆️ Dependencies
+
+* **deps:** update supabase/setup-cli action to v3.0.1 ([#65](https://github.com/dodi-smart/.github/issues/65)) ([a0e2e3c](https://github.com/dodi-smart/.github/commit/a0e2e3c8a9435b5da94b9e4cc96a0b340e36c3ed))
+
 ## [1.7.4](https://github.com/dodi-smart/.github/compare/v1.7.3...v1.7.4) (2026-09-23)
 
 ### ⬆️ Dependencies

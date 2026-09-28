@@ -135,7 +135,7 @@ jobs:
           fetch-depth: 1
 
       - name: Setup Supabase CLI
-        uses: supabase/setup-cli@v3.0.0
+        uses: supabase/setup-cli@v3.0.1
         with:
           version: ${{ inputs.cli-version }}
 

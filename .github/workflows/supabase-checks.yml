@@ -115,7 +115,7 @@ jobs:
 
       - name: Setup Supabase CLI
         if: steps.changes.outputs.changed == 'true'
-        uses: supabase/setup-cli@v3.0.0
+        uses: supabase/setup-cli@v3.0.1
         with:
           version: ${{ inputs.cli-version }}
 
@@ -209,7 +209,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - uses: supabase/setup-cli@v3.0.0
+      - uses: supabase/setup-cli@v3.0.1
         with:
           version: ${{ inputs.cli-version }}
 

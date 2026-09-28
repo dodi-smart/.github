@@ -131,15 +131,23 @@ jobs:
           java-version:    ${{ inputs.java-version }}
           flutter-version: ${{ inputs.flutter-version }}
 
+      # On a dependency bot's PR an install failure is the update's problem,
+      # and pr-checks and deps-verify already report it. Failing here as well
+      # put a red knowledge-layer check on a PR whose knowledge layer nobody
+      # touched, which is what the report-only rule above exists to prevent.
+      # The checks are then skipped, because a check run without its
+      # dependencies would fail for the same reason and blame a decision.
       - name: Install dependencies for the decision checks
+        id: install
         if: steps.present.outputs.yes == 'true' && inputs.checks && steps.setup.outputs.install != ''
+        continue-on-error: ${{ steps.mode.outputs.enforce == 'false' }}
         run: |
           set -euo pipefail
           . "${{ steps.setup.outputs.env-file }}"
           ${{ steps.setup.outputs.install }}
 
       - id: checks
-        if: steps.present.outputs.yes == 'true' && inputs.checks
+        if: steps.present.outputs.yes == 'true' && inputs.checks && steps.install.outcome != 'failure'
         continue-on-error: true
         env:
           GH_TOKEN: ${{ github.token }}

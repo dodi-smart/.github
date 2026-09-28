@@ -1,5 +1,5 @@
-# Reusable: verify a Renovate/Dependabot PR by building it and reading what
-# upstream changed, and fix the code when the update broke it.
+# Reusable: verify a Renovate/Dependabot PR from the repo's own CI result and
+# what upstream changed, and fix the code when the update broke it.
 #
 # It never merges and never approves, so Renovate's own automerge rules stay
 # the sole merge policy. It may push fix commits to the dependency branch:
@@ -47,6 +47,15 @@ on:
       #   build-env: build step only.
       env:       { type: string, default: "" }   # newline-separated KEY=VALUE
       build-env: { type: string, default: "" }   # newline-separated KEY=VALUE
+
+      # Where the build verdict comes from. The run on this PR's head commit of
+      # any caller workflow that calls this path is read instead of building
+      # here. Empty means always build here.
+      ci-workflow:        { type: string, default: "dodi-smart/.github/.github/workflows/pr-checks.yml" }
+      # No such run within this long means the repo has none, and this job
+      # builds the PR itself.
+      ci-appear-minutes:  { type: number, default: 5 }
+      ci-timeout-minutes: { type: number, default: 45 }
 
       java-version:    { type: string, default: "21" }
       node-version:    { type: string, default: "24" }
@@ -121,19 +130,23 @@ jobs:
           gh-app-client-id:   ${{ secrets.GH_APP_CLIENT_ID }}
           gh-app-private-key: ${{ secrets.GH_APP_PRIVATE_KEY }}
 
-  # ONE job: the deterministic build, then the agent, then a deterministic
-  # publish. They share a checkout and an install, which the old split paid for
-  # twice. The order inside the job is the rule: nothing below the build steps
-  # can run before the build has produced its own verdict.
+  # ONE job: the build verdict (read from the repo's pr-checks run, or built
+  # here when there is none), then the agent, then a deterministic push and
+  # publish. The order inside the job is the rule: nothing below the verdict
+  # steps can run before there is a verdict.
+  #
+  # Waiting for pr-checks holds this runner idle for a few minutes. That is the
+  # price of not running a second build of the same commit beside it.
   verify:
     needs: [gate]
     if: needs.gate.outputs.proceed == 'true'
     runs-on: ${{ fromJson(needs.gate.outputs.runner) }}
-    timeout-minutes: 50
+    timeout-minutes: 120
     permissions:
       contents: read
       pull-requests: write
       id-token: write
+      actions: write   # read the pr-checks run, and re-run it once after an infra failure
     env:
       GH_TOKEN: ${{ github.token }}
       REPO:     ${{ github.repository }}
@@ -156,8 +169,10 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      # Isolation is hard-coded, never a caller input. A verification job that
-      # can see yesterday's tree is not verifying.
+      # Toolchain only. setup-stack resolves the commands and installs nothing,
+      # so the green path below never pays for an install. Isolation is
+      # hard-coded, never a caller input: a verification job that can see
+      # yesterday's tree is not verifying.
       - id: setup
         uses: dodi-smart/.github/actions/setup-stack@v1
         with:
@@ -207,15 +222,123 @@ jobs:
           } >> "$GITHUB_OUTPUT"
           echo "update=$update fix-rounds=$rounds"
 
-      # Every command runs in its OWN subshell. One shell for all of them let a
-      # caller's `cd app && ...` install leave the next step in `app/`, where
-      # `cd app` then fails, so every later step went red for a reason that had
-      # nothing to do with the update. Each step's full output is kept, because
-      # the agent below diagnoses from the log, not from a step name.
+      # The repo's own CI is the build verdict. Building here as well ran a
+      # second full build of the same commit at the same moment, on the same
+      # runner hosts, and the pair ran out of memory: `next build` SIGKILLed,
+      # the Gradle daemon killed. Both jobs then reported an update red that
+      # was fine. So this waits for the caller's pr-checks run on this exact
+      # commit and reads its conclusion, and nothing here competes with it.
       #
-      # `build-env` is exported for the build step only, exactly as pr-checks
-      # does, so a caller copies the same block into both workflows.
+      # A run that died of the runner (exit 137, a killed daemon, a lost
+      # runner, a full disk) says nothing about the update, so it is re-run
+      # ONCE, failed jobs only. A second infra failure is reported as such.
+      #
+      # No pr-checks run for this commit within `ci-appear-minutes`, or
+      # `ci-workflow: ""`, means this repo has no such CI, and the job builds
+      # here instead, in the steps below.
+      - id: ci
+        env:
+          SHA:        ${{ github.event.pull_request.head.sha }}
+          CI_WORKFLOW: ${{ inputs.ci-workflow }}
+          APPEAR:     ${{ inputs.ci-appear-minutes }}
+          TIMEOUT:    ${{ inputs.ci-timeout-minutes }}
+        run: |
+          set -euo pipefail
+          LOGS="$RUNNER_TEMP/deps-logs"
+          mkdir -p "$LOGS"
+          out() { echo "$1" >> "$GITHUB_OUTPUT"; }
+          if [ -z "$CI_WORKFLOW" ]; then
+            out mode=own
+            echo "ci-workflow is empty, so this job builds the PR itself"
+            exit 0
+          fi
+
+          # The newest run on this commit whose caller uses the shared
+          # pr-checks. A skipped run (a draft, a filtered event) is not one.
+          latest() {
+            gh api "/repos/$REPO/actions/runs?head_sha=$SHA&per_page=100" \
+              | jq -r --arg w "$CI_WORKFLOW" '
+                  [.workflow_runs[]
+                   | select(any(.referenced_workflows[]?; .path | startswith($w)))
+                   | select(.conclusion != "skipped")]
+                  | sort_by(.id) | last // empty
+                  | [.id, .status, (.conclusion // ""), .run_attempt, .html_url]
+                  | map(tostring) | join("|")'
+          }
+
+          # Sets id/status/conclusion/attempt/url. Returns 1 when no run
+          # appeared in time, 2 on the overall timeout.
+          wait_ci() {
+            local start now row
+            start=$(date +%s)
+            while :; do
+              now=$(date +%s)
+              row=$(latest || true)
+              if [ -n "$row" ]; then
+                # `|`, not a tab: read collapses adjacent tabs, and an
+                # in-progress run has an empty conclusion between two.
+                IFS='|' read -r id status conclusion attempt url <<< "$row"
+                # After a re-run the API can still show the finished first
+                # attempt for a moment, so wait for the attempt number to move.
+                [ "$status" = completed ] && [ "$attempt" -ge "$min_attempt" ] && return 0
+              elif [ $(( now - start )) -ge $(( APPEAR * 60 )) ]; then
+                return 1
+              fi
+              [ $(( now - start )) -ge $(( TIMEOUT * 60 )) ] && return 2
+              sleep 30
+            done
+          }
+
+          infra() {
+            grep -qE 'exit code 137|signal SIGKILL|daemon disappeared unexpectedly|received a shutdown signal|lost communication with the server|No space left on device|ENOSPC|JavaScript heap out of memory' "$LOGS/ci.log"
+          }
+
+          min_attempt=1
+          rc=0; wait_ci || rc=$?
+          if [ "$rc" = 1 ]; then
+            out mode=own
+            echo "::notice title=No pr-checks run::No run of $CI_WORKFLOW appeared for $SHA within $APPEAR minutes, so this job builds the PR itself."
+            exit 0
+          fi
+          out mode=ci
+          if [ "$rc" = 2 ]; then
+            out conclusion=timeout
+            out "url=${url:-}"
+            echo "::warning title=CI did not finish::pr-checks did not complete within $TIMEOUT minutes."
+            exit 0
+          fi
+
+          if [ "$conclusion" != success ]; then
+            gh run view "$id" --repo "$REPO" --log-failed > "$LOGS/ci.log" 2>&1 || true
+            if [ "$attempt" = 1 ] && infra; then
+              echo "::notice title=Re-running CI::The pr-checks run failed on the runner, not the code. Re-running its failed jobs once."
+              gh run rerun "$id" --repo "$REPO" --failed
+              min_attempt=2
+              rc=0; wait_ci || rc=$?
+              [ "$rc" = 0 ] || conclusion=timeout
+              [ "$conclusion" = success ] || gh run view "$id" --repo "$REPO" --log-failed > "$LOGS/ci.log" 2>&1 || true
+            fi
+          fi
+
+          failed=""
+          if [ "$conclusion" != success ]; then
+            failed=$(gh api "/repos/$REPO/actions/runs/$id/jobs" \
+                     --jq '[.jobs[] | select(.conclusion == "failure") | .name] | join(", ")' || true)
+            if [ -s "$LOGS/ci.log" ] && infra; then out infra=true; fi
+          fi
+          out "conclusion=$conclusion"
+          out "failed=$failed"
+          out "url=$url"
+          echo "pr-checks: $conclusion (attempt $attempt) $url ${failed:+failed: $failed}"
+
+      # Only when there is no pr-checks run to read. Every command runs in its
+      # OWN subshell: one shell for all of them let a caller's `cd app && ...`
+      # install leave the next step in `app/`, where `cd app` then fails.
+      # Each step's full output is kept, because the agent diagnoses from the
+      # log, not from a step name. `build-env` is exported for the build step
+      # only, exactly as pr-checks does.
       - id: steps
+        if: steps.ci.outputs.mode == 'own'
         continue-on-error: true
         env:
           ENV_FILE:  ${{ steps.setup.outputs.env-file }}
@@ -256,15 +379,30 @@ jobs:
           echo "failed=${fail# }" >> "$GITHUB_OUTPUT"
           [ -z "$fail" ]
 
+      # One verdict string, whichever source produced it:
+      #   green | red:<steps or jobs> | red:infra (the runner failed twice)
       - id: result
         env:
-          FAILED: ${{ steps.steps.outputs.failed }}
+          MODE:       ${{ steps.ci.outputs.mode }}
+          CONCLUSION: ${{ steps.ci.outputs.conclusion }}
+          CI_FAILED:  ${{ steps.ci.outputs.failed }}
+          INFRA:      ${{ steps.ci.outputs.infra }}
+          OWN_FAILED: ${{ steps.steps.outputs.failed }}
         run: |
-          if [ -z "${FAILED:-}" ]; then
-            echo "verdict=green" >> "$GITHUB_OUTPUT"
+          set -euo pipefail
+          if [ "$MODE" = own ]; then
+            v=green; [ -n "${OWN_FAILED:-}" ] && v="red:$OWN_FAILED"
+          elif [ "$CONCLUSION" = success ]; then
+            v=green
+          elif [ "${INFRA:-}" = true ]; then
+            v=red:infra
           else
-            echo "verdict=red:$FAILED" >> "$GITHUB_OUTPUT"
-            echo "::warning title=Dependency build failed::Failed steps: $FAILED. The agent below reads the logs and either fixes the cause or explains it on the PR."
+            v="red:${CI_FAILED:-$CONCLUSION}"
+          fi
+          echo "verdict=$v" >> "$GITHUB_OUTPUT"
+          echo "verdict: $v"
+          if [ "$v" != green ]; then
+            echo "::warning title=Dependency build failed::$v. The agent reads the logs and either fixes the cause or explains it on the PR."
           fi
 
       # Fix commits need an author, set before the agent so every commit it
@@ -298,15 +436,20 @@ jobs:
             base `${{ github.event.pull_request.base.ref }}`.
 
             Facts already established. Do not re-derive them:
-            - Build result: `${{ steps.result.outputs.verdict }}` (`green`, or
-              `red:<steps>`). Each step's full output is in `${{ runner.temp }}/deps-logs/<step>.log`.
+            - Build result: `${{ steps.result.outputs.verdict }}`.
+              `green`, `red:<failed jobs or steps>`, or `red:infra` when the
+              runner itself failed twice (out of memory, killed daemon).
+            - Source: ${{ steps.ci.outputs.mode == 'ci' && format('the repo''s own PR checks run, {0}. The failed jobs'' logs are in `{1}/deps-logs/ci.log`.', steps.ci.outputs.url, runner.temp) || format('this job''s own build. Each step''s output is in `{0}/deps-logs/<step>.log`.', runner.temp) }}
             - Update kind: `${{ steps.facts.outputs.update }}`.
             - Fix rounds already pushed: ${{ steps.facts.outputs.fix-rounds }} of 2.
             - Fix commits already on this branch:
               ${{ steps.facts.outputs.fixes }}
 
-            The repo's own commands, runnable as they are. Source the env file
-            first, and use a subshell per command:
+            Nothing is installed. Run a command only when you need to: to
+            reproduce a failure you are fixing, or to prove a fix. On a green
+            build that you do not change, run nothing. The repo's own
+            commands, runnable as they are. Source the env file first, and use
+            a subshell per command, install first:
               env file:  ${{ steps.setup.outputs.env-file }}
               install:   ${{ steps.setup.outputs.install }}
               build:     ${{ steps.setup.outputs.build }}
@@ -325,8 +468,11 @@ jobs:
             3. Grep this repo for each breaking or deprecated API. A change the
                code never touches is not a risk here.
             4. If the build is red, read the logs FIRST. Decide for each failed
-               step: caused by this update, or already failing on the base
-               branch (check with `git worktree add` on the base when unsure).
+               job or step: caused by this update, caused by the runner
+               (`red:infra`, exit 137, a killed process: never try to fix
+               those), or already failing on the base branch (check the base
+               branch's latest CI with `gh run list --branch ${{ github.event.pull_request.base.ref }}`
+               before reproducing anything).
             5. Fix when the update caused the failure, or when this repo calls
                an API the notes deprecate and name a replacement for, and only
                while fix rounds are under 2:

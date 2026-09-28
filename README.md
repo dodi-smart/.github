@@ -62,7 +62,7 @@ exactly like a busy fleet.
 | Workflow | Fires on | Does |
 |---|---|---|
 | `pr-checks.yml` | pull request | Lint, typecheck, test, build, per stack |
-| `deps-verify.yml` | Renovate/Dependabot PRs | Builds it, reads upstream changelogs, fixes code the update broke, posts a one-comment verdict. Never merges. |
+| `deps-verify.yml` | Renovate/Dependabot PRs | Reads the PR checks result, reads upstream changelogs, fixes code the update broke, posts a one-comment verdict. Never merges. |
 | `pr-review.yml` | `ready_for_review`, `agent:review` | Second-opinion review, deeper on sensitive paths |
 | `issue-triage.yml` | issue opened or reopened, `agent:triage`, `@claude triage`, manual dispatch with `issue-number` | Classifies, sets fields, then plans or asks blocking questions |
 | `issue-implement.yml` | `agent:implement`, `@claude implement` | Branch, code, draft PR. Requires a plan. Never merges. |
@@ -639,17 +639,31 @@ comments.
 
 ### Dependency verification
 
-`deps-verify.yml` builds every Renovate PR with the repo's own commands, then
-hands the result and the step logs to an agent. The agent reads the release
-notes, looks for breaking or deprecated APIs this repo actually calls, and fixes
-them when it can. The job then posts one comment, rewritten on every run, and
-sets exactly one label:
+`deps-verify.yml` gets the build verdict from the repo's own `pr-checks` run on
+the PR's head commit, and builds nothing itself when that run exists. It then
+hands the verdict and the failed jobs' logs to an agent. The agent reads the
+release notes, looks for breaking or deprecated APIs this repo actually calls,
+and fixes them when it can. The job posts one comment, rewritten on every run,
+and sets exactly one label:
 
 | Label | Means |
 |---|---|
-| `deps:verified` | Build green, nothing breaking reaches this repo |
+| `deps:verified` | CI green, nothing breaking reaches this repo |
 | `deps:fixed` | Green after a fix commit on the branch. Read the fix before merging |
 | `deps:needs-manual` | Still red, or a fix needs something the job may not do |
+
+Why it reads CI instead of building:
+
+- **A second build ran out of memory.** Building here as well ran a second full
+  build of the same commit next to `pr-checks`, on the same runner hosts. The
+  pair ran out of memory, and both reported a fine update as red.
+- **One failure on the runner gets a retry.** A `pr-checks` run that failed on
+  the runner (exit 137, a killed Gradle daemon, a lost runner, a full disk) is
+  re-run once, failed jobs only. A second failure like that is reported as
+  `red:infra`.
+- **Only a repo with no `pr-checks` builds here.** If no `pr-checks` run shows
+  up within `ci-appear-minutes`, the job builds the PR itself, isolated. It does
+  the same with `ci-workflow: ""`.
 
 The rules on fixes:
 
@@ -666,8 +680,9 @@ The rules on fixes:
 A red build is `needs-manual` even when the agent finds the cause was already on
 the base branch. The comment says so in one line.
 
-Give the job the same placeholders `pr-checks` gets, or a Next.js build fails on
-a variable the real build has. Copy the block:
+`env` and `build-env` mean what they mean in `pr-checks`. They matter when the
+agent reproduces a failure to fix it, and when the job builds on its own. Copy
+the caller's `pr-checks` block across:
 
 ```yaml
     with:

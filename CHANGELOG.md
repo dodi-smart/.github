@@ -1,3 +1,15 @@
+## [1.8.2](https://github.com/dodi-smart/.github/compare/v1.8.1...v1.8.2) (2026-09-29)
+
+### 🐛 Bug Fixes
+
+* **renovate:** stop mid-week rebases, cap PR bursts and delay Action automerge by three days ([523cc83](https://github.com/dodi-smart/.github/commit/523cc83e8bdd026a75799cbaa4736ab34b37c9a2))
+
+## [1.8.1](https://github.com/dodi-smart/.github/compare/v1.8.0...v1.8.1) (2026-09-29)
+
+### 🐛 Bug Fixes
+
+* **release:** move v1 only after Self test passes on the commit being released ([1ad287b](https://github.com/dodi-smart/.github/commit/1ad287b72cc657676dba4964a6ee3c29bbddb269))
+
 ## [1.8.0](https://github.com/dodi-smart/.github/compare/v1.7.6...v1.8.0) (2026-09-29)
 
 ### ✨ Features

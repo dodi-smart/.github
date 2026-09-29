@@ -67,6 +67,8 @@ why, not history.
 | `.github/workflows/pr-checks.yml` | The `pr-checks` job always runs (`if: always()`) and is the only context a branch ruleset should require | It is the one status-check context that exists on every push in both single-job and split mode, and on a docs-only change where `checks`/`test`/`build`/`all` are skipped. `paths-ignore` on a caller creates no context at all, so a ruleset requiring one waits forever; this job exists precisely so callers can drop `paths-ignore`. |
 | `.github/workflows/deps-verify.yml` | Verification isolates and never uses GitHub package cache | Hard-coded `isolate: true` and `cache: false`. Not a caller-facing input: a verification job that can see yesterday's tree is not verifying. |
 | `default.json` | `gitIgnoredAuthors` names the author of deps-verify's fix commits, and changes together with `FIX_EMAIL` there | Without it the first fix marks the branch edited, Renovate stops rebasing it, and it can never automerge. |
+| `default.json` | `updateNotScheduled` is `false` and `rebaseWhen` is `conflicted` | The weekly schedule only gates new branches. By default an open branch is rebased and re-pushed all week, and each push reruns the whole PR check suite: most of a repo's CI went to Renovate. Rulesets here require a status check, not an up-to-date branch, so a conflict-only rebase cannot stall automerge. If a ruleset ever requires up-to-date branches, revert `rebaseWhen`. |
+| `default.json` | The `github-actions` automerge rule carries `minimumReleaseAge` | A merged Action bump cuts a release and moves `v1`, so an upstream tag reaches every consumer within minutes, often with write tokens. `config:best-practices` delays npm only. Compromised tags have been caught within days, so the rule waits three. `pinDigests` stays false; this is the control instead. |
 | `.github/workflows/issue-triage.yml` | Bot-authored issues, the Dependency Dashboard included, are never triaged | A dashboard is a standing status page with nothing to plan, so an agent could only file it as Needs info. |
 | `.github/workflows/zavet-check.yml` | On a dependency bot's PR a failed install skips the checks, never fails the job | The install fails for the update's reason, which pr-checks already reports. A red knowledge-layer check on a PR that touched no decision is noise, and checks run without dependencies would blame a decision. |
 | `.github/workflows/zavet-check.yml` | Comments only when a check or guard failed, and deletes its comment once clean | The green check already says it passed. A "passed" table on every PR teaches people to skip bot comments. |
@@ -74,6 +76,7 @@ why, not history.
 | `.github/workflows/release.yml` | The semantic-release tooling is installed with `npm install --no-save`, never `-D` | `-D` wrote the tooling into the caller's `package.json` and created a `package-lock.json`, and the release commit committed both. In a bun repo Renovate then updated the npm lockfile instead of `bun.lock`, and every dependency PR failed its frozen install. |
 | `.github/workflows/release.yml` | The `backmerge` job auto-resolves `package.json`, `package-lock.json`, `bun.lock`, `pnpm-lock.yaml`, `yarn.lock` and `CHANGELOG.md` toward the release branch, plus whatever `backmerge-resolve-paths` names, and fails on any other conflict | The shared git plugin's default assets cover every lockfile it might commit, so a real backmerge in a bun or pnpm repo conflicts on more than `package.json`. `backmerge-resolve-paths` covers a caller's own manifest, e.g. one kept in a subdirectory. Widening the built-in list further would resolve a real conflict silently; add a caller path instead. |
 | `.github/workflows/release.yml` | The release commit, the tag and the backmerge are pushed with the org App's token whenever `GH_APP_CLIENT_ID` is set, never only with `GITHUB_TOKEN` | The org rulesets that protect `develop` and `main` name the App as their bypass actor. `GITHUB_TOKEN` is not one and cannot be made one, so a push with it is rejected on every protected branch; every develop release in the fleet failed that way for two days in September 2026. The fallback to `GITHUB_TOKEN` exists only for a repo outside the rulesets. |
+| `.github/workflows/publish-release.yml` | `v1` moves only after `Self test` passes on the exact commit being released: the `release` job `needs` a `self-test` job that calls `self-test.yml`, which has no push trigger | semantic-release force-moves `v1` the moment it succeeds, and a PR's `Self test` covers the PR head, not the merge result. Run in parallel, a merge that is broken only in combination reached every caller before the test reported. `Self test` asserts the `needs` edge. Only a pull request run shares a concurrency group, so nothing cancels the run a release waits on. |
 | all workflows | Callers pin a released tag | `v1` moves only after a change runs green on a real repo. Changing or removing an input is breaking. Add an alias and warn, as `deps-verify` does for `setup:`, or cut `v2`. |
 | `README.md` | The onboarding badge says `v1`, and it moves only when the tag it names does | The badge in a consuming repo's README asserts that repo calls these workflows at `@v1`. It is verified against live state by the onboarding tooling, which fails a repo displaying it while its workflows are disabled or its properties unset. Changing the badge's version here without cutting that version is how every onboarded repo starts advertising something untrue at once. |
 | `README.md` | The badge names no repo but this one | It is rendered inside repos this org does not control the visibility of, and it is the one artefact from here that a reader outside the org may see in context. Keep its text to what these workflows are, never who uses them. |
@@ -180,14 +183,15 @@ The workflows in this repo call each other, and their composite actions, at
 `v1` is moved by semantic-release, not by hand. `release.config.mjs` runs a
 `successCmd` that force-moves the major tag onto each release, so the version
 comes from the commit messages and the tag follows it. Write conventional commits
-or nothing is released.
+or nothing is released. A red `Self test` on the merge commit leaves `v1` where
+it was (see the `publish-release.yml` row).
 
 Three consequences, and the first one is the one people get wrong:
 
 - **Merging to `main` is a rollout, not a staging step.** The tag moves in the
-  same run, so every caller is on the new code before anyone looks at it. That
-  includes the picker and composite actions these workflows call at `@v1`
-  internally. Verify in the pull request. After the merge it is already live.
+  same run, once `Self test` passes on the merge commit, so every caller is on
+  the new code before anyone looks at it. That includes the picker and
+  composite actions these workflows call at `@v1` internally. Verify in the pull request. After the merge it is already live.
 - **Rolling back is a tag move.** `git tag -f v1 <previous tag> && git push -f
   origin v1`. There is no other undo, because the callers hold no version of
   their own.

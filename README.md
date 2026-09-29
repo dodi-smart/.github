@@ -232,6 +232,7 @@ The log shows the deployment id and commit before the routes are probed.
 | `actions/deps-intent` | Decides from a dependency PR's diff whether `deps-verify.yml` has anything new to judge. Internal to that workflow |
 | `actions/release-tooling` | Installs semantic-release and its default plugins from a pinned lockfile into a private prefix, cached on the lockfile hash, and puts `semantic-release` on `PATH` |
 | `actions/semantic-release-config` | Links the shared semantic-release config into a consumer's `node_modules` from a private prefix, never from a registry and never into the checkout it came with |
+| `actions/lcov-report` | Overall and changed-file line coverage from an LCOV file, posted as a sticky comment, with optional floors. What `pr-checks.yml`'s `coverage: lcov` calls |
 | `actions/changed-files` | A pull request's changed files through the API, with no checkout, and whether any, or every one, match a set of globs |
 | `actions/run-phases` | Runs a job's install, lint, design-lint, typecheck, test, build and smoke commands as timed phases, each in its own subshell, and writes a timing table to the job summary. `log-dir` also writes each phase's output to a file; `keep-going: true` runs every phase and the `failed` output lists the ones that failed. What `pr-checks.yml` and `deps-verify.yml` run their commands with |
 | `actions/wait-for-deployment` | Waits for the frontend host's successful GitHub Deployment of the checked-out commit, or for a route to report its sha. What `supabase-deploy.yml`'s health check calls |
@@ -443,6 +444,46 @@ light and the heavy runner (skipping whichever `single-job` does not need), so
 picking twice costs one hosted job instead of two. It needs no checkout: it
 reads the changed files through the API.
 
+### Coverage
+
+`coverage` picks how a coverage comment is made. It is `none` by default, which
+posts nothing and adds no job. Otherwise a small `coverage` job on the light pool
+posts the comment from the report your tests write, after they pass. It runs none
+of your code. `AGENTS.md` has the reasoning.
+
+| `coverage` | Your test command must write | `coverage-path` | Comment from |
+|---|---|---|---|
+| `none` | nothing | ignored | none |
+| `vitest` | `coverage/coverage-summary.json` and `coverage/coverage-final.json` (reporters `json-summary` and `json`) | ignored | `vitest-coverage-report-action`. Thresholds come from your vitest config |
+| `kover` | a Kover XML report | required, for example `app/build/reports/kover/reportDebug.xml` | `kover-report` |
+| `lcov` | an LCOV file | optional, default `coverage/lcov.info` | `actions/lcov-report` |
+
+`coverage-min-overall` and `coverage-min-changed` are percentages that fail the
+`coverage` job, and so `pr-checks`, when a figure is below them. `0`, the
+default, means no floor. `vitest` takes its floors from the vitest config
+instead.
+
+`lcov` takes anything that emits LCOV. Overall coverage is lines hit over lines
+found across the whole file. Changed-file coverage covers only the files the
+pull request touches that the report lists, so docs and config do not count as
+0%. The comment shows both figures and the lowest changed files.
+
+```yaml
+# bun
+with:
+  stack: bun
+  test: bun test --coverage --coverage-reporter=lcov
+  coverage: lcov
+  coverage-min-overall: 70
+
+# Rust
+with:
+  stack: rust
+  test: cargo llvm-cov --lcov --output-path lcov.info
+  coverage: lcov
+  coverage-path: lcov.info
+```
+
 ### When `build` starts
 
 In the split shape `build` starts right after `pick`, beside `checks` and
@@ -493,8 +534,9 @@ as normal.
 
 `pr-checks.yml` grants `contents: read` at the workflow level, so a job that
 needs more asks for it: `pick` and `commitlint` read pull requests, `zavet` and
-`react-doctor` write them for their comments, and `test` and `all` write them
-for the coverage comment. A checkout in these workflows never keeps the job
+`react-doctor` write them for their comments, and only the `coverage` job
+writes them for the coverage comment, so `test` and `all` run your tests with no
+write token. A checkout in these workflows never keeps the job
 token in its git config, so a caller's install, test and build scripts cannot
 read it. Only `zavet` and `react-doctor` clone full history.
 

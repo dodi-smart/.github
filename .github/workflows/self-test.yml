@@ -64,6 +64,10 @@ jobs:
       - name: Changed files count every doubt as a match
         run: ./actions/changed-files/test.sh
 
+      # A wrong percentage, or a floor that never trips, reads as a healthy repo.
+      - name: LCOV report does the arithmetic and enforces the floors
+        run: ./actions/lcov-report/test.sh
+
       # A phase's command reaches the shell unmangled, each phase gets its own
       # subshell, and the first failure stops the rest. pr-checks runs on this.
       - name: run-phases runs each phase alone and stops at the first failure
@@ -357,6 +361,29 @@ jobs:
           if errors:
               sys.exit('::error::' + ' '.join(errors))
           print('every checkout drops credentials, no run: script in pr-checks holds an expression, pick and the gate clone nothing')
+          "
+
+      # `test` and `all` run the caller's whole test suite, so the comment token
+      # lives in a job that runs none of it and reads the report as an artifact.
+      - name: pr-checks posts coverage from a job that runs no repo code
+        run: |
+          set -euo pipefail
+          python3 -c "
+          import sys, yaml
+          jobs = yaml.safe_load(open('.github/workflows/pr-checks.yml'))['jobs']
+          errors = []
+          writers = [n for n, j in jobs.items() if (j.get('permissions') or {}).get('pull-requests') == 'write']
+          # zavet and react-doctor post their own comments, as their standalone workflows do.
+          if set(writers) - {'coverage', 'zavet', 'react-doctor'} or 'coverage' not in writers:
+              errors.append('test/all/build must hold no pull-requests: write, and coverage must: found ' + repr(writers))
+          uses = [str(st.get('uses', '')) for st in jobs['coverage']['steps']]
+          if 'coverage' not in jobs['pr-checks']['needs']:
+              errors.append('the pr-checks summary must need coverage, or a breached floor stops failing the required context.')
+          if not any('actions/lcov-report@' in u for u in uses):
+              errors.append('the coverage job must handle coverage: lcov through actions/lcov-report.')
+          if errors:
+              sys.exit('::error::' + ' '.join(errors))
+          print('only coverage holds pull-requests: write, and the summary needs it')
           "
 
       # Each agent workflow used to run the picker as its own hosted job, needed

@@ -52,6 +52,12 @@ jobs:
   gate:
     runs-on: ubuntu-latest
     timeout-minutes: 10   # the picker calls the org API and may retry
+    # Read access is for the gate's live label lookup. Left to inherit, a
+    # private repo's default token cannot read labels.
+    permissions:
+      contents: read
+      issues: read
+      pull-requests: read
     outputs:
       proceed: ${{ steps.gate.outputs.proceed }}
       runner:  ${{ steps.pick.outputs.runner }}
@@ -62,6 +68,7 @@ jobs:
           # An issue and a PR keep their labels in different places. Whichever
           # is absent is an empty list, so the kill switch reads the right one.
           labels: ${{ github.event.issue.number && toJson(github.event.issue.labels.*.name) || toJson(github.event.pull_request.labels.*.name) }}
+          number:       ${{ github.event.issue.number || github.event.pull_request.number }}
           event-name:   ${{ github.event_name }}
           event-action: ${{ github.event.action }}
           author:       ${{ github.event.issue.user.login || github.event.pull_request.user.login }}

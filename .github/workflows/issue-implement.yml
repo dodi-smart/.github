@@ -69,6 +69,7 @@ jobs:
         uses: dodi-smart/.github/actions/agent-gate@v1
         with:
           labels:        ${{ toJson(github.event.issue.labels.*.name) }}
+          number:        ${{ github.event.issue.number }}
           event-name:    ${{ github.event_name }}
           event-action:  ${{ github.event.action }}
           label:         ${{ github.event.label.name }}

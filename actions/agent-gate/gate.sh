@@ -54,13 +54,31 @@ fi
   echo "dependency-bots=$DEPENDENCY_BOTS"
 } >> "$GITHUB_OUTPUT"
 
+# The event payload holds the labels as they were when the event fired, and a
+# re-run replays that payload. An `agent:no-touch` added after the push would be
+# missed, so when the caller names an issue or PR, read its labels now and UNION
+# them with the payload's. The read only ever adds labels. A failed or empty read
+# keeps the payload list and warns, so it can never open a run the payload
+# stopped. It runs on every call that has a number, not just re-runs: one API
+# call is cheaper than working out when a payload could be stale. The issues
+# endpoint serves pull requests too.
+labels="${LABELS:-}"
+if [ -n "${NUMBER:-}" ]; then
+  live="$(gh api "/repos/${REPO:?REPO is required with NUMBER}/issues/$NUMBER/labels?per_page=100" --jq '[.[].name]' 2>/dev/null || true)"
+  if [ -n "$live" ]; then
+    labels="$labels $live"
+  else
+    echo "::warning title=agent-gate::could not read the live labels of #$NUMBER, so agent:no-touch is judged from the event payload only"
+  fi
+fi
+
 # ------------------------------------------------------------------
 # RULE 0, the kill switch. First, always, with no exemption. Not for
 # workflow_dispatch, not for an explicit command, not for a
 # maintainer. A kill switch that works on only some paths is not a
 # kill switch. Do not move this below anything.
 # ------------------------------------------------------------------
-if printf '%s' "$LABELS" | grep -q '"agent:no-touch"'; then
+if printf '%s' "$labels" | grep -q '"agent:no-touch"'; then
   stop "agent:no-touch"
 fi
 

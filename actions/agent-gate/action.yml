@@ -13,6 +13,18 @@ inputs:
   labels:
     description: 'toJson(...labels.*.name) for the issue or PR. Required for the kill switch to work at all.'
     required: true
+  number:
+    description: >-
+      Issue or PR number. When set, the gate also reads the item's current labels
+      and unions them with `labels`, so an `agent:no-touch` added after the event
+      fired still stops a re-run. Empty means no lookup.
+    default: ''
+  repository:
+    description: 'owner/name the number belongs to'
+    default: ${{ github.repository }}
+  token:
+    description: 'Token for the label lookup. Needs issues: read or pull-requests: read.'
+    default: ${{ github.token }}
   event-name:
     description: 'github.event_name'
     required: true
@@ -91,6 +103,9 @@ runs:
       shell: bash
       env:
         LABELS:   ${{ inputs.labels }}
+        NUMBER:   ${{ inputs.number }}
+        REPO:     ${{ inputs.repository }}
+        GH_TOKEN: ${{ inputs.token }}
         EVENT:    ${{ inputs.event-name }}
         ACTION:   ${{ inputs.event-action }}
         LABEL:    ${{ inputs.label }}

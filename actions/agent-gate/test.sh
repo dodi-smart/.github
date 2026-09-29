@@ -134,6 +134,45 @@ for login in 'renovate[bot]' 'dependabot[bot]' 'app/renovate'; do
   esac
 done
 
+# The live label lookup. A fake `gh` on PATH answers from $FAKE_GH_LABELS, fails
+# when that is "FAIL", and records every call so a run with no NUMBER can be
+# shown to make none. The payload can only be added to, never replaced.
+mkdir "$TMP/bin"
+cat > "$TMP/bin/gh" <<'FAKE'
+#!/usr/bin/env bash
+echo "$*" >> "$FAKE_GH_LOG"
+[ "$FAKE_GH_LABELS" = "FAIL" ] && exit 1
+printf '%s' "$FAKE_GH_LABELS"
+FAKE
+chmod +x "$TMP/bin/gh"
+
+# $1 want proceed, $2 desc, $3 payload labels, $4 NUMBER, $5 fake gh answer,
+# $6 want warning (yes|no), $7 want gh calls
+live_() {
+  export GITHUB_OUTPUT="$TMP/out"; : > "$GITHUB_OUTPUT"
+  : > "$TMP/gh.log"
+  PATH="$TMP/bin:$PATH" FAKE_GH_LOG="$TMP/gh.log" FAKE_GH_LABELS="$5" REPO=o/r NUMBER="$4" \
+  LABELS="$3" EVENT=pull_request ACTION=synchronize LABEL='' REQUEST='' AUTHOR=alice DRAFT=false \
+  COMMENT='' COMMANDS='' BOTS=allow SKIPDRAFT=false FILES='' \
+    bash "$HERE/gate.sh" >"$TMP/log" 2>&1
+  local got warned calls mark
+  got=$(grep '^proceed=' "$GITHUB_OUTPUT" | tail -1 | cut -d= -f2)
+  if grep -q '^::warning' "$TMP/log"; then warned=yes; else warned=no; fi
+  calls=$(wc -l < "$TMP/gh.log" | tr -d ' ')
+  if [ "$got" = "$1" ] && [ "$warned" = "$6" ] && [ "$calls" = "$7" ]; then mark="ok  "; pass=$((pass+1))
+  else mark="FAIL"; fail=$((fail+1)); fi
+  printf '  %s %-46s proceed=%-6s warning=%s gh-calls=%s\n' "$mark" "$2" "$got" "$warned" "$calls"
+}
+echo "== live labels (a re-run replays a stale payload) =="
+live_ false "live no-touch, absent from payload"      '["bug"]'             7 '["bug","agent:no-touch"]' no  1
+live_ false "payload no-touch, live read fails"       '["agent:no-touch"]'  7 FAIL                       yes 1
+live_ false "payload no-touch, live read empty"       '["agent:no-touch"]'  7 ''                         yes 1
+live_ false "payload no-touch, live list lacks it"    '["agent:no-touch"]'  7 '["bug"]'                  no  1
+live_ true  "live read fails, payload clean"          '["bug"]'             7 FAIL                       yes 1
+live_ true  "live read clean, payload clean"          '["bug"]'             7 '["bug"]'                  no  1
+live_ true  "empty NUMBER makes no lookup"            '["bug"]'             '' '["agent:no-touch"]'      no  0
+live_ false "empty NUMBER, payload no-touch"          '["agent:no-touch"]'  '' '[]'                      no  0
+
 echo
 echo "pass=$pass fail=$fail"
 [ "$fail" -eq 0 ]

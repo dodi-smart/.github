@@ -54,25 +54,10 @@
   // Weekly batch. Security PRs ignore the schedule.
   "schedule": ["before 6am on monday"],
 
-  // The schedule only gates creating branches. With the default
-  // (updateNotScheduled: true) an open branch is still rebased and re-pushed
-  // all week, and every push reruns the whole PR check suite. False keeps
-  // branches still outside the window. Security PRs are unaffected: they carry
-  // their own empty schedule.
+  // The schedule only gates new branches. These keep open ones still outside
+  // the window too, and rebase them only on a conflict. See AGENTS.md.
   "updateNotScheduled": false,
-
-  // Rebase only on a real conflict, not each time the base branch moves. The
-  // org branch rulesets require a passing status check but not an up-to-date
-  // branch, so this cannot stall automerge. If a ruleset ever requires
-  // up-to-date branches, revert this: automerge would stall on any branch that
-  // is behind but not conflicted.
   "rebaseWhen": "conflicted",
-
-  // Limits on how fast new PRs open, so one Monday does not queue a repo's
-  // whole CI. Both are Renovate's own defaults or close to them (2 and 10);
-  // set here so the org value is visible. prHourlyLimit counts PR creation
-  // only, not rebases. Security PRs are exempt from both limits.
-  "prHourlyLimit": 2,
   "prConcurrentLimit": 8,
 
   // NOTE: vulnerabilityAlerts is on by default via config:recommended and works
@@ -92,12 +77,8 @@
       "matchUpdateTypes": ["minor", "patch"],
       "groupName": "github actions",
       "automerge": true,
-      // A merged Action bump moves the tag every consumer runs, often with
-      // write tokens. Compromised tags have been caught within days, so wait.
-      // best-practices delays npm only. "strict" (also the default) keeps the
-      // PR closed until a release is old enough, instead of opening it pending.
-      "minimumReleaseAge": "3 days",
-      "internalChecksFilter": "strict"
+      // A merged Action bump moves the tag every consumer runs. See AGENTS.md.
+      "minimumReleaseAge": "3 days"
     },
 
     // Majors are labelled for visibility, never auto-merged (automerge defaults

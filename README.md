@@ -640,8 +640,8 @@ comments.
 Updates arrive weekly, before 6am on Monday. Branches outside that window are
 left alone (`updateNotScheduled: false`) and rebased only on a conflict
 (`rebaseWhen: conflicted`), so a repo's CI is not rerun all week by Renovate.
-New PRs open at most two an hour and eight at a time; security PRs ignore the
-schedule and both limits. Non-major Action bumps wait three days after release
+At most eight PRs are open at once; security PRs ignore the schedule and the
+limit. Non-major Action bumps wait three days after release
 before a PR opens, then automerge.
 
 ### Dependency verification

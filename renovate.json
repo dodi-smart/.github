@@ -1,5 +1,24 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
   "extends": ["github>dodi-smart/.github"],
-  "baseBranchPatterns": ["main"]
+  "baseBranchPatterns": ["main"],
+  "customManagers": [
+    {
+      "description": "Tool versions Self test downloads, marked with a `# renovate: datasource=... depName=...` comment after the version",
+      "customType": "regex",
+      "managerFilePatterns": ["/^\\.github/workflows/self-test\\.yml$/"],
+      "matchStrings": [
+        "(?<currentValue>\\d+\\.\\d+\\.\\d+) # renovate: datasource=(?<datasource>\\S+) depName=(?<depName>\\S+)"
+      ],
+      "extractVersionTemplate": "^v?(?<version>.+)$"
+    }
+  ],
+  "packageRules": [
+    {
+      "description": "A bump to a Self test tool changes nothing callers run, so it must not cut a release",
+      "matchManagers": ["custom.regex"],
+      "semanticCommitType": "ci",
+      "semanticCommitScope": "self-test"
+    }
+  ]
 }

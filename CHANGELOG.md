@@ -1,3 +1,13 @@
+## [1.14.0](https://github.com/dodi-smart/.github/compare/v1.13.3...v1.14.0) (2026-09-29)
+
+### ✨ Features
+
+* **pr-checks:** add `coverage: lcov` with a reporter that reads any LCOV file ([746bf88](https://github.com/dodi-smart/.github/commit/746bf88b5a84e65fe71ea10cf313c95db54801a8))
+
+### 🐛 Bug Fixes
+
+* **pr-checks:** post the coverage comment from a job that runs none of the caller's code ([7c54f69](https://github.com/dodi-smart/.github/commit/7c54f69edf9b9c342e8c1eebfaf6696595e5b6c1))
+
 ## [1.13.3](https://github.com/dodi-smart/.github/compare/v1.13.2...v1.13.3) (2026-09-29)
 
 ### ⚡ Performance Improvements

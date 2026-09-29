@@ -1,0 +1,12 @@
+{
+  "pr": {
+    "number": 90,
+    "title": "Fix typo in onboarding welcome email",
+    "body": "Fixes a typo in the welcome email subject line.",
+    "labels": [],
+    "files": ["src/onboarding/welcome-email.ts", "src/onboarding/templates.ts", "src/onboarding/index.ts"]
+  },
+  "diff": "--- a/src/onboarding/welcome-email.ts\n+++ b/src/onboarding/welcome-email.ts\n@@ -3,3 +3,3 @@\n-const SUBJECT = 'Welcom to the platform';\n+const SUBJECT = 'Welcome to the platform';\n--- a/src/onboarding/templates.ts\n+++ b/src/onboarding/templates.ts\n@@ -10,6 +10,14 @@\n+export function renderStep3(state) {\n+  if (state.country === 'US') return renderUsStep3(state);\n+  return renderDefaultStep3(state);\n+}\n--- a/src/onboarding/index.ts\n+++ b/src/onboarding/index.ts\n@@ -40,2 +40,3 @@\n-  return steps[2];\n+  return state.country === 'US' ? renderStep3(state) : steps[2];\n",
+  "level": "standard",
+  "elevatedLevel": "thorough"
+}

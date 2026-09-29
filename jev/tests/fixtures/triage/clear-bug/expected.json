@@ -1,0 +1,12 @@
+{
+  "mode": "active",
+  "route": "agent",
+  "type": { "value": "Bug", "act": true },
+  "fields": {
+    "Priority": { "value": "High", "act": true },
+    "Effort": { "value": "Low", "act": true },
+    "Risk": { "value": "Low", "act": true },
+    "Source": { "value": "Customer", "act": true }
+  },
+  "labelsAdd": ["area:ledger"]
+}

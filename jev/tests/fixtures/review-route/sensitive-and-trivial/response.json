@@ -1,0 +1,10 @@
+{
+  "answers": {
+    "sensitive": { "type": "boolean", "probability": 0.95 },
+    "trivial": { "type": "boolean", "probability": 0.98 },
+    "descriptionMatchesDiff": { "type": "boolean", "probability": 0.85 }
+  },
+  "confidence": {},
+  "usage": { "inputTokens": 140, "outputTokens": 25 },
+  "modelId": "typesafe-ai/jev-2026-08"
+}

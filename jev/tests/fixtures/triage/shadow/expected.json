@@ -1,0 +1,12 @@
+{
+  "mode": "shadow",
+  "route": "agent",
+  "type": { "value": "Bug", "act": false },
+  "fields": {
+    "Priority": { "value": "High", "act": false },
+    "Effort": { "value": "Low", "act": false },
+    "Risk": { "value": "Low", "act": false },
+    "Source": { "value": "Customer", "act": false }
+  },
+  "labelsAdd": []
+}

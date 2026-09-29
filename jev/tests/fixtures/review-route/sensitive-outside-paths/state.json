@@ -1,0 +1,12 @@
+{
+  "pr": {
+    "number": 88,
+    "title": "Add a support impersonation helper for debugging tickets",
+    "body": "Adds a small helper support engineers can call to view an account as that account would see it, to debug tickets faster.",
+    "labels": [],
+    "files": ["src/support/impersonate.ts", "src/support/impersonate.test.ts"]
+  },
+  "diff": "--- a/src/support/impersonate.ts\n+++ b/src/support/impersonate.ts\n@@ -0,0 +1,18 @@\n+export function impersonate(sessionStore, supportUserId, targetAccountId) {\n+  // Support engineers can already read account data; this mints a session\n+  // token scoped to the target account so the UI renders as they'd see it.\n+  const grant = sessionStore.mintSessionToken(targetAccountId, { grantedBy: supportUserId, scope: 'read' });\n+  return grant;\n+}\n",
+  "level": "standard",
+  "elevatedLevel": "thorough"
+}

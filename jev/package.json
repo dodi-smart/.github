@@ -1,0 +1,23 @@
+{
+  "name": "@dodi-smart/jev",
+  "version": "0.0.0-managed-by-semantic-release",
+  "private": true,
+  "description": "Typed, probabilistic pre-classification for the agent workflows. Runs as `node src/cli.ts`; nothing is built and nothing is published.",
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "@ai-sdk/gateway": "4.0.86",
+    "ai": "7.0.106"
+  },
+  "devDependencies": {
+    "@types/node": "24.13.5",
+    "typescript": "7.0.2",
+    "vitest": "5.0.1"
+  }
+}

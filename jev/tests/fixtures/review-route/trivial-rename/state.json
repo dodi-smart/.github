@@ -1,0 +1,12 @@
+{
+  "pr": {
+    "number": 89,
+    "title": "Rename ledgerSvc to ledgerService",
+    "body": "Pure rename for clarity, no behaviour change.",
+    "labels": [],
+    "files": ["src/pipeline/runner.ts"]
+  },
+  "diff": "--- a/src/pipeline/runner.ts\n+++ b/src/pipeline/runner.ts\n@@ -4,7 +4,7 @@\n-import { ledgerSvc } from '../ledger/service.ts';\n+import { ledgerService } from '../ledger/service.ts';\n@@ -20,3 +20,3 @@\n-  return ledgerSvc.recalculate(batch);\n+  return ledgerService.recalculate(batch);\n",
+  "level": "standard",
+  "elevatedLevel": "thorough"
+}

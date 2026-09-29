@@ -1,0 +1,5 @@
+{
+  "verdict": "Thank you so much for the opportunity to review this comprehensive and robust pull request. I want to first acknowledge the effort that clearly went into this seamless change before delving into the details. Overall this is a solid contribution that leverages existing patterns well.\n\nMerge.\n\n- Low: consider a comment on the retry loop.",
+  "inlineComments": 1,
+  "ciSummary": "All checks passed."
+}

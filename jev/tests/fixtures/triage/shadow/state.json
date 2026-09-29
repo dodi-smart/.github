@@ -1,0 +1,23 @@
+{
+  "issue": {
+    "number": 409,
+    "title": "Ledger balances are off by one cent after the midnight rollover",
+    "body": "Every account that carries a fractional cent forward shows a balance one cent lower than the statement once the nightly rollover runs.",
+    "authorType": "User",
+    "labels": [],
+    "type": null,
+    "action": "opened"
+  },
+  "fields": {},
+  "areas": {
+    "areas": [
+      { "name": "ledger", "description": "the double-entry ledger engine and its reconciliation jobs", "paths": ["src/ledger/"] },
+      { "name": "onboarding", "description": "new-account signup and identity verification", "paths": ["src/onboarding/"] },
+      { "name": "pipeline", "description": "the nightly batch pipeline that recalculates balances", "paths": ["src/pipeline/"] }
+    ],
+    "rules": [
+      "Prefer area:ledger when the issue mentions balances, postings, or reconciliation.",
+      "Prefer area:onboarding when the issue mentions signup, KYC, or identity verification."
+    ]
+  }
+}

@@ -1,0 +1,23 @@
+{
+  "answers": {
+    "injection": { "type": "boolean", "probability": 0.01 },
+    "spam": { "type": "boolean", "probability": 0.01 },
+    "type": { "type": "choice", "choice": "Bug", "probabilities": { "Bug": 0.93, "Improvement": 0.07 } },
+    "Priority": { "type": "choice", "choice": "High", "probabilities": { "High": 0.91, "Medium": 0.09 } },
+    "Effort": { "type": "choice", "choice": "Medium", "probabilities": { "Medium": 0.92, "Low": 0.08 } },
+    "Risk": { "type": "choice", "choice": "High", "probabilities": { "High": 0.7, "Medium": 0.3 } },
+    "Source": { "type": "choice", "choice": "Internal", "probabilities": { "Internal": 0.9, "Customer": 0.1 } },
+    "area_ledger": { "type": "boolean", "probability": 0.94 },
+    "area_onboarding": { "type": "boolean", "probability": 0.02 },
+    "area_pipeline": { "type": "boolean", "probability": 0.4 }
+  },
+  "confidence": {
+    "type": 0.93,
+    "Priority": 0.91,
+    "Effort": 0.92,
+    "Risk": 0.7,
+    "Source": 0.9
+  },
+  "usage": { "inputTokens": 260, "outputTokens": 55 },
+  "modelId": "typesafe-ai/jev-2026-08"
+}

@@ -1,0 +1,13 @@
+{
+  "issue": {
+    "number": 408,
+    "title": "Support script for exporting a single account's history",
+    "body": "Support keeps asking engineering to run an ad hoc query to export one account's full transaction history as CSV. Would like a small script for this so it stops eating engineering time.",
+    "authorType": "User",
+    "labels": [],
+    "type": null,
+    "action": "opened"
+  },
+  "fields": {},
+  "areas": null
+}

@@ -48,8 +48,15 @@ inputs:
       and the reason both lists live in this action instead of in every repo.
     default: ''
   bots:
-    description: 'How to treat bot authors: reject (default) | only | allow'
+    description: >-
+      How to treat bot authors: reject (default, any non-human) | only
+      (dependency bots) | allow
     default: 'reject'
+  events:
+    description: >-
+      Space-separated `github.event_name` values this workflow handles. Any
+      other event stops the run, right after agent:no-touch. Empty allows every event.
+    default: ''
   skip-draft:
     description: 'Stop on draft PRs'
     default: 'true'
@@ -67,6 +74,14 @@ outputs:
   mode:
     description: 'The matched command verb, when one triggered this run'
     value: ${{ steps.gate.outputs.mode }}
+  author-kind:
+    description: >-
+      dependency (Renovate, Dependabot) | agent (claude[bot]) | automation (any
+      other bot) | human. Set on every run, including one the kill switch stopped.
+    value: ${{ steps.gate.outputs.author-kind }}
+  dependency-bots:
+    description: 'Comma-separated dependency-bot logins, for claude-code-action allowed_bots'
+    value: ${{ steps.gate.outputs.dependency-bots }}
 
 runs:
   using: composite
@@ -86,6 +101,7 @@ runs:
         MENTION:  ${{ inputs.mention }}
         EXCLUDE:  ${{ inputs.exclude-commands }}
         BOTS:     ${{ inputs.bots }}
+        EVENTS:   ${{ inputs.events }}
         SKIPDRAFT: ${{ inputs.skip-draft }}
         FILES:    ${{ inputs.changed-files }}
       run: ${{ github.action_path }}/gate.sh

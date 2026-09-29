@@ -451,12 +451,12 @@ selecting; call the action directly from inside a job that is already hosted
 `gate` job does, once, after `agent-gate` decides the run should proceed)
 rather than paying for a second hosted job just to reuse the workflow.
 
-| `weight` | Selector | Use |
-|---|---|---|
-| `light` | `self-hosted,Linux,light` | lint, typecheck, checks, releases, reading a diff |
-| `heavy` | `self-hosted,Linux,large` | builds, Docker, full suites |
-| `apple` | `self-hosted,macOS,ARM64` | Apple toolchain, signing |
-| `hosted` | none | forces `hosted-runner`, `ubuntu-latest` by default |
+| `weight` | Selector | Falls back to | Use |
+|---|---|---|---|
+| `light` | `self-hosted,Linux,light` | the same light pool, when no runner is online and idle (`fallback-when: busy`) | lint, typecheck, checks, releases, reading a diff |
+| `heavy` | `self-hosted,Linux,large` | `hosted-runner`, only when no runner is online (`fallback-when: offline`); a busy pool queues | builds, Docker, full suites |
+| `apple` | `self-hosted,macOS,ARM64` | nothing: it queues, and warns when no runner is online | Apple toolchain, signing |
+| `hosted` | none | not applicable | forces `hosted-runner`, `ubuntu-latest` by default |
 
 Selectors name capability labels, never an architecture and never a machine name.
 A runner of any arch that joins a pool is picked up with no change here, and a
@@ -466,10 +466,37 @@ machine name would not survive re-registration.
 work. They stay apart even when one pool could serve both, because re-tiering is
 then two lines here instead of an audit of every caller.
 
-A selector that cannot be reached falls back to `fallback`, the light pool by
-default, so an unreachable large pool costs capacity rather than hosted minutes.
-Set `fallback: ubuntu-latest` for a job that must finish even with the whole
-fleet offline, because a self-hosted fallback queues instead.
+### Falling back
+
+The picker reads the org's runner list once, then decides from it. A runner
+"matches" when it carries every label in the selector.
+
+- `fallback-when: busy` goes to the fallback when no matching runner is online
+  and idle. Short jobs would rather run now than wait.
+- `fallback-when: offline` goes to the fallback only when no matching runner is
+  online. If some are online but busy, the job gets the primary selector and
+  queues. Long jobs want this: hosted costs more than the queue.
+
+`heavy` never falls back to the light pool. A heavy build there runs out of
+memory beside the light pool's other jobs (exit 137). A busy large pool queues
+the job, and a large pool with nothing online sends it to hosted.
+
+Both inputs default to the weight's own policy in the table, so leave them empty
+unless you know better. An explicit `fallback` or `fallback-when` always wins.
+A `labels` selector with no explicit `fallback` keeps the original behaviour:
+`self-hosted,Linux,light`, when no runner is idle.
+
+If the fleet cannot be read (no GitHub App token, or an API error), the picker
+cannot tell busy from offline, so it emits the primary selector and the job
+queues, with a warning. It no longer sends that job to the fallback.
+
+A self-hosted fallback queues when the whole fleet is offline, where a hosted one
+runs. Set `fallback: ubuntu-latest` for a light job that must finish even then.
+
+The `fell-back` output is `true` when the picked runner is the fallback, so a
+caller can widen `max-parallel` on hosted. The list is cached for the rest of the
+job, so `actions/pick-runner` called twice in one job (light, then heavy) mints one
+token and reads the fleet once.
 
 Public repos and fork pull requests **always** get hosted runners, with no way to
 opt out. The runner group refuses public repos, and a fork PR would otherwise run

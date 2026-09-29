@@ -637,6 +637,13 @@ extends this preset, so resolution goes circular and every repo silently drops
 to stock defaults. Renovate parses a `.json` preset as JSONC, so it keeps its
 comments.
 
+Updates arrive weekly, before 6am on Monday. Branches outside that window are
+left alone (`updateNotScheduled: false`) and rebased only on a conflict
+(`rebaseWhen: conflicted`), so a repo's CI is not rerun all week by Renovate.
+New PRs open at most two an hour and eight at a time; security PRs ignore the
+schedule and both limits. Non-major Action bumps wait three days after release
+before a PR opens, then automerge.
+
 ### Dependency verification
 
 `deps-verify.yml` gets the build verdict from the repo's own `pr-checks` run on

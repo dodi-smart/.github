@@ -424,6 +424,10 @@ jobs:
             if (!Array.isArray(o.packageRules)) throw new Error("packageRules missing");
             if (!o.labels.includes("deps:update")) throw new Error("deps:update label missing");
             if (o.dependencyDashboard !== true) throw new Error("dependencyDashboard is off, so no repo gets a dashboard issue");
+            if (o.updateNotScheduled !== false) throw new Error("updateNotScheduled must be false: the weekly schedule only gates new branches, so open branches would be rebased and re-tested all week");
+            if (o.rebaseWhen !== "conflicted") throw new Error("rebaseWhen must be conflicted: any other value rebases every open branch each time the base moves, and each push reruns the PR checks");
+            const actions = o.packageRules.find(r => r.automerge === true && (r.matchManagers || []).includes("github-actions"));
+            if (!actions || !actions.minimumReleaseAge) throw new Error("the github-actions automerge rule needs a minimumReleaseAge: without it an upstream tag reaches every consumer within minutes");
             for (const e of o.extends || []) {
               if (e.includes("dodi-smart/.github")) throw new Error("the preset extends itself: " + e + ", which resolves to nothing");
             }

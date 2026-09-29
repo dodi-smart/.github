@@ -63,7 +63,10 @@ git commit -q -m "feat(app): first"
 git push -q origin main
 
 before=$(git status --porcelain | shasum)
-PATH="$prefix/node_modules/.bin:$PATH" NODE_PATH="$prefix/node_modules" \
+# Without the runner's own CI variables: in Actions, semantic-release would read
+# the branch from the PR under test instead of this scratch repository.
+env -u GITHUB_ACTIONS -u GITHUB_REF -u GITHUB_HEAD_REF -u GITHUB_EVENT_NAME -u GITHUB_EVENT_PATH -u CI \
+  PATH="$prefix/node_modules/.bin:$PATH" NODE_PATH="$prefix/node_modules" \
   semantic-release --dry-run --no-ci > "$tmp/out" 2>&1 \
   || { cat "$tmp/out"; echo "FAIL: semantic-release did not run"; exit 1; }
 grep -q "Published release 1.0.0" "$tmp/out" \

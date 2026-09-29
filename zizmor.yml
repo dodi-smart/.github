@@ -1,0 +1,17 @@
+# Config for zizmor, the workflow security linter that Self test runs.
+#
+# Actions here are pinned by a readable tag (`@v7`), not a commit SHA, on purpose.
+# The shared Renovate preset sets `pinDigests: false` and holds a bump back for a
+# release-age delay instead, so a SHA pin would only make every update unreadable.
+# Allow a ref pin everywhere, or the linter reports every `uses:` in the repo.
+# A bare `uses: owner/repo` with no ref still fails. A branch ref such as `@main`
+# passes here, so Self test's "No action is pinned to a branch" step catches it.
+rules:
+  unpinned-uses:
+    config:
+      policies:
+        "*": ref-pin
+  # The one `./` call is Publish release running this repo's own Self test. The
+  # `$/` form it suggests is new, and actionlint does not parse it yet.
+  self-repository:
+    disable: true

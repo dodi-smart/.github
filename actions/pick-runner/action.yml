@@ -120,7 +120,8 @@ runs:
         PRIVATE:       ${{ github.event.repository.private }}
         FORK:          ${{ github.event.pull_request.head.repo.fork }}
         GUARD:         ${{ inputs.guard-public }}
-      run: ${{ github.action_path }}/pick.sh resolve
+        ACTION_PATH: ${{ github.action_path }}
+      run: '"$ACTION_PATH/pick.sh" resolve'
 
     # A second call in the same job (pr-checks picks light, then heavy) reuses
     # the first call's listing, and mints no second token.
@@ -150,9 +151,11 @@ runs:
           echo "::warning title=Runner selector cannot be validated::GH_APP_CLIENT_ID is not set on this repository, so the org runner list cannot be read. The job will queue on the selector, and it will queue forever if no runner matches it. Add GH_APP_CLIENT_ID and GH_APP_PRIVATE_KEY to fix."
         fi
 
+    # The org runner list is an org-level endpoint, so this token cannot be
+    # limited to one repository. It only ever reads that list.
     - id: app-token
       if: steps.have-app.outputs.yes == 'true'
-      uses: actions/create-github-app-token@v3
+      uses: actions/create-github-app-token@v3 # zizmor: ignore[github-app]
       with:
         client-id:   ${{ inputs.gh-app-client-id }}
         private-key: ${{ inputs.gh-app-private-key }}
@@ -198,4 +201,5 @@ runs:
         SELECTOR:      ${{ steps.resolve.outputs.selector }}
         FLEET_FILE:    ${{ steps.cache.outputs.file }}
         FLEET_ERR:     ${{ steps.fleet.outputs.err }}
-      run: ${{ github.action_path }}/pick.sh decide
+        ACTION_PATH: ${{ github.action_path }}
+      run: '"$ACTION_PATH/pick.sh" decide'

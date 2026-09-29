@@ -219,7 +219,7 @@ jobs:
     steps:
       # Credentials persist here on purpose: the review agent works in this
       # checkout and may fetch from it.
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7 # zizmor: ignore[artipacked]
         with:
           fetch-depth: 0
 

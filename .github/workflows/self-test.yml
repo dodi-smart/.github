@@ -31,6 +31,7 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
+        with: { persist-credentials: false }
 
       # The beta plugins the shared config pins (commit-analyzer, release-notes-generator)
       # require Node ^22.22.2 or >=24.15. Node 24 satisfies that everywhere the
@@ -327,26 +328,16 @@ jobs:
           "
 
       # This workflow runs the caller's own code, so no job holds a write token
-      # it does not use, no checkout leaves credentials in .git/config, and no
-      # expression is pasted into a script body.
-      - name: pr-checks and pr-review keep the token and shell hardening
+      # it does not use. zizmor covers checkouts and script expressions.
+      - name: pr-checks keeps a read-only token and clones nothing to list files
         run: |
           set -euo pipefail
           python3 -c "
           import sys, yaml
           errors = []
-          for f in ('pr-checks', 'pr-review'):
-              doc = yaml.safe_load(open('.github/workflows/%s.yml' % f))
-              if f == 'pr-checks' and doc.get('permissions') != {'contents': 'read'}:
-                  errors.append('pr-checks.yml needs workflow-level permissions: {contents: read}, so a job with no block of its own gets no more.')
-              for name, job in doc['jobs'].items():
-                  for step in job.get('steps') or []:
-                      # The review agent works in its checkout, so that one keeps credentials.
-                      if str(step.get('uses', '')).startswith('actions/checkout@') and (f, name) != ('pr-review', 'review'):
-                          if (step.get('with') or {}).get('persist-credentials') is not False:
-                              errors.append('%s.yml job %s: checkout must set persist-credentials: false, or the token stays in the checkout for the caller scripts to read.' % (f, name))
-                      if f == 'pr-checks' and '$' + '{{' in str(step.get('run', '')):
-                          errors.append('pr-checks.yml job %s: a run: script contains an expression. Pass it through env: and quote the variable.' % name)
+          doc = yaml.safe_load(open('.github/workflows/pr-checks.yml'))
+          if doc.get('permissions') != {'contents': 'read'}:
+              errors.append('pr-checks.yml needs workflow-level permissions: {contents: read}, so a job with no block of its own gets no more.')
           # The docs-only decision reads the API, never a clone: a hosted job
           # that clones to list files is the cost this replaced.
           pick = yaml.safe_load(open('.github/workflows/pr-checks.yml'))['jobs']['pick']
@@ -360,7 +351,7 @@ jobs:
               errors.append('pick.docs_only must come from changed-files all-matched, so only a fully read list can skip the checks.')
           if errors:
               sys.exit('::error::' + ' '.join(errors))
-          print('every checkout drops credentials, no run: script in pr-checks holds an expression, pick and the gate clone nothing')
+          print('pr-checks holds contents: read at workflow level, pick and the gate clone nothing')
           "
 
       # `test` and `all` run the caller's whole test suite, so the comment token
@@ -641,22 +632,14 @@ jobs:
           print('no build directory is cached')
           "
 
-      # Two governed rules about the Supabase workflows. A value from `inputs` or
-      # `github` reaches a script through `env:`, never inside the script body,
-      # where it is a template injection. And the image cache key is exact: a
-      # `restore-keys` line would load images the CLI no longer asks for.
-      - name: Supabase workflows keep scripts clean and the image cache exact
+      # The image cache key is exact: a `restore-keys` line would load images the
+      # CLI no longer asks for.
+      - name: Supabase image cache key is exact
         run: |
           set -euo pipefail
           python3 - <<'SUPABASE'
           import sys, yaml
           bad = []
-          for f in ['.github/workflows/supabase-checks.yml', '.github/workflows/supabase-deploy.yml']:
-              doc = yaml.safe_load(open(f))
-              for name, job in doc['jobs'].items():
-                  for step in job.get('steps') or []:
-                      if '$' + '{{' in str(step.get('run', '')):
-                          bad.append('%s: %s interpolates an expression into a run script' % (f, step.get('name') or step.get('id')))
           start = yaml.safe_load(open('actions/supabase-start/action.yml'))['runs']['steps']
           caches = [s for s in start if str(s.get('uses', '')).startswith('actions/cache@')]
           if len(caches) != 1:
@@ -666,7 +649,7 @@ jobs:
           if bad:
               print('::error::' + '; '.join(bad) + '. See AGENTS.md.')
               sys.exit(1)
-          print('supabase workflows: scripts clean, cache key exact')
+          print('supabase cache key exact')
           SUPABASE
 
       # v1 moves the moment semantic-release succeeds, so the only thing between
@@ -889,22 +872,52 @@ jobs:
             echo "::error::pin a tag or a full SHA, never a branch"; exit 1
           fi
 
+      # shellcheck ships on ubuntu-latest, so installing it only cost time.
       - name: Shell scripts pass shellcheck
         run: |
-          sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
+          if ! command -v shellcheck >/dev/null; then
+            echo "::error::shellcheck is not on this runner image. It ships on ubuntu-latest, so check the image before adding an install step."
+            exit 1
+          fi
           shellcheck actions/*/*.sh
 
       # Run the binary, not `uses: docker://rhysd/actionlint`: that form
       # word-splits `args` without honouring quotes, so an -ignore pattern with
       # spaces is torn apart. The two ignores exist because actionlint's bundled
       # snapshot predates create-github-app-token moving to `client-id`.
+      # The release tarball is checked against the checksums file published with
+      # it, so a truncated or swapped download fails instead of running.
       - name: actionlint
         env:
-          ACTIONLINT_VERSION: 1.7.12
+          ACTIONLINT_VERSION: 1.7.12 # renovate: datasource=github-releases depName=rhysd/actionlint
         run: |
           set -euo pipefail
-          bash <(curl -fsSL https://raw.githubusercontent.com/rhysd/actionlint/main/scripts/download-actionlint.bash) \
-            "$ACTIONLINT_VERSION" >/dev/null
-          ./actionlint -color \
+          os=$(uname -s | tr '[:upper:]' '[:lower:]')
+          case "$(uname -m)" in
+            x86_64)        arch=amd64 ;;
+            aarch64|arm64) arch=arm64 ;;
+            *) echo "::error::no actionlint build for $(uname -m)"; exit 1 ;;
+          esac
+          base="https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}"
+          tarball="actionlint_${ACTIONLINT_VERSION}_${os}_${arch}.tar.gz"
+          dir=$(mktemp -d "${RUNNER_TEMP:-${TMPDIR:-/tmp}}/actionlint.XXXXXX")
+          curl -fsSL -o "$dir/$tarball" "$base/$tarball"
+          curl -fsSL -o "$dir/checksums.txt" "$base/actionlint_${ACTIONLINT_VERSION}_checksums.txt"
+          (cd "$dir" && grep " ${tarball}\$" checksums.txt | shasum -a 256 -c -)
+          tar -xzf "$dir/$tarball" -C "$dir" actionlint
+          "$dir/actionlint" -color \
             -ignore 'input "client-id" is not defined in action "actions/create-github-app-token' \
             -ignore 'missing input "app-id" which is required by action "actions/create-github-app-token'
+
+      # Workflow security: template injection, token scope, credential
+      # persistence. Every severity must be clean, or carry an inline
+      # `zizmor: ignore[rule]` with the reason beside it. Offline, so the audits
+      # that ask GitHub about a ref cannot flake this job. `pipx` ships on
+      # ubuntu-latest. `zizmor.yml` explains why tag pins are allowed.
+      - name: zizmor
+        env:
+          ZIZMOR_VERSION: 1.30.1 # renovate: datasource=pypi depName=zizmor
+        run: |
+          set -euo pipefail
+          pipx run "zizmor==${ZIZMOR_VERSION}" --offline --config zizmor.yml \
+            --no-progress .github/workflows actions

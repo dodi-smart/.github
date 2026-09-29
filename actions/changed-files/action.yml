@@ -55,4 +55,5 @@ runs:
         NUMBER:   ${{ inputs.number }}
         PATTERNS: ${{ inputs.patterns }}
         GH_TOKEN: ${{ inputs.token }}
-      run: ${{ github.action_path }}/changed-files.sh
+        ACTION_PATH: ${{ github.action_path }}
+      run: '"$ACTION_PATH/changed-files.sh"'

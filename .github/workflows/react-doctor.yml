@@ -55,11 +55,14 @@ jobs:
   # No `if:` here. A skipped caller job instantiates neither of these, so the
   # picker costs nothing for a pull request that will not be scanned.
   pick:
+    permissions: {}   # the picker reads no GITHUB_TOKEN
     uses: dodi-smart/.github/.github/workflows/pick-runner.yml@v1
     with:
       weight: ${{ inputs.runner-weight }}
       labels: ${{ inputs.runner-labels }}
-    secrets: inherit
+    secrets:
+      GH_APP_CLIENT_ID:   ${{ secrets.GH_APP_CLIENT_ID }}
+      GH_APP_PRIVATE_KEY: ${{ secrets.GH_APP_PRIVATE_KEY }}
 
   doctor:
     name: React Doctor

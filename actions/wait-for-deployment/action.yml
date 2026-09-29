@@ -49,4 +49,5 @@ runs:
         INTERVAL:        ${{ inputs.interval-seconds }}
         REPO:            ${{ inputs.repository }}
         GH_TOKEN:        ${{ inputs.token }}
-      run: ${{ github.action_path }}/wait.sh
+        ACTION_PATH: ${{ github.action_path }}
+      run: '"$ACTION_PATH/wait.sh"'

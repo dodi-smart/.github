@@ -24,4 +24,5 @@ runs:
     - shell: bash
       env:
         CONSUMER: ${{ inputs.working-directory }}
-      run: ${{ github.action_path }}/install.sh "${{ github.action_path }}/../.." "$CONSUMER"
+        ACTION_PATH: ${{ github.action_path }}
+      run: '"$ACTION_PATH/install.sh" "$ACTION_PATH/../.." "$CONSUMER"'

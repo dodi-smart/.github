@@ -526,9 +526,10 @@ jobs:
           echo "No dependency versions changed, only lock files." > "$RUNNER_TEMP/deps-verdict.md"
 
       # Minted after the agent, so no dependency script ever ran beside it.
+      # Not narrowed with permission-*: the push must satisfy the org rulesets the App bypasses.
       - id: app-token
         if: ${{ !cancelled() && env.HAS_APP == 'true' }}
-        uses: actions/create-github-app-token@v3
+        uses: actions/create-github-app-token@v3 # zizmor: ignore[github-app]
         with:
           client-id:    ${{ secrets.GH_APP_CLIENT_ID }}
           private-key:  ${{ secrets.GH_APP_PRIVATE_KEY }}

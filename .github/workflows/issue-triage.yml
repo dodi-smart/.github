@@ -160,7 +160,7 @@ jobs:
       id-token: write
     steps:
       - uses: actions/checkout@v7
-        with: { fetch-depth: 1 }
+        with: { fetch-depth: 1, persist-credentials: false }
 
       - name: Load repo area vocabulary
         id: areas

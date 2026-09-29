@@ -113,4 +113,5 @@ runs:
         EVENTS:   ${{ inputs.events }}
         SKIPDRAFT: ${{ inputs.skip-draft }}
         FILES:    ${{ inputs.changed-files }}
-      run: ${{ github.action_path }}/gate.sh
+        ACTION_PATH: ${{ github.action_path }}
+      run: '"$ACTION_PATH/gate.sh"'

@@ -1,3 +1,10 @@
+## [1.14.1](https://github.com/dodi-smart/.github/compare/v1.14.0...v1.14.1) (2026-09-29)
+
+### 🐛 Bug Fixes
+
+* **ci:** drop persisted checkout credentials, scope publish-release writes and the picker jobs, and justify the App token uses ([f0eae60](https://github.com/dodi-smart/.github/commit/f0eae60e357e9bcf7263c28e6d81cd5df8c69978))
+* **ci:** pass the action path through env and enforce zizmor at every severity ([4951ac0](https://github.com/dodi-smart/.github/commit/4951ac0436b5cc38e8257cfc81e882da2af46302))
+
 ## [1.14.0](https://github.com/dodi-smart/.github/compare/v1.13.3...v1.14.0) (2026-09-29)
 
 ### ✨ Features

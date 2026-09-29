@@ -15,16 +15,9 @@ inputs:
     required: true
   number:
     description: >-
-      Issue or PR number. When set, the gate also reads the item's current labels
-      and unions them with `labels`, so an `agent:no-touch` added after the event
-      fired still stops a re-run. Empty means no lookup.
+      Override for the issue or PR number, which the gate reads from the event
+      payload. Set it only where the payload has none (a `workflow_dispatch`).
     default: ''
-  repository:
-    description: 'owner/name the number belongs to'
-    default: ${{ github.repository }}
-  token:
-    description: 'Token for the label lookup. Needs issues: read or pull-requests: read.'
-    default: ${{ github.token }}
   event-name:
     description: 'github.event_name'
     required: true
@@ -104,8 +97,8 @@ runs:
       env:
         LABELS:   ${{ inputs.labels }}
         NUMBER:   ${{ inputs.number }}
-        REPO:     ${{ inputs.repository }}
-        GH_TOKEN: ${{ inputs.token }}
+        REPO:     ${{ github.repository }}
+        GH_TOKEN: ${{ github.token }}
         EVENT:    ${{ inputs.event-name }}
         ACTION:   ${{ inputs.event-action }}
         LABEL:    ${{ inputs.label }}

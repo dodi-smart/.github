@@ -1,10 +1,6 @@
 #!/usr/bin/env bash
-# The gate, as a standalone script so it can be tested without a runner.
-#
-# Reads its inputs from the environment and writes proceed/reason/mode, plus
-# author-kind and dependency-bots, to $GITHUB_OUTPUT. action.yml is a thin
-# wrapper around this file; test.sh runs it directly. Keeping the logic out of YAML is what makes the kill switch
-# something we can actually assert on (see test.sh).
+# The gate as a standalone script, so test.sh can run it without a runner.
+# It reads its inputs from the environment and writes its outputs to $GITHUB_OUTPUT.
 set -euo pipefail
 
 stop() {
@@ -16,7 +12,24 @@ stop() {
   echo "gate: STOP: $1"
   exit 0
 }
+# A re-run replays the event payload, so an `agent:no-touch` added since is
+# missed. Before any run proceeds, read the item's labels once; a failed read only warns.
+live_no_touch() {
+  local live number="${NUMBER:-}"
+  if [ -z "$number" ] && [ -n "${GITHUB_EVENT_PATH:-}" ] && [ -f "$GITHUB_EVENT_PATH" ]; then
+    number="$(jq -r '.issue.number // .pull_request.number // empty' "$GITHUB_EVENT_PATH" 2>/dev/null || true)"
+  fi
+  [ -n "$number" ] || return 0
+  if live="$(gh api "/repos/${REPO:?REPO is required}/issues/$number/labels?per_page=100" --jq '[.[].name]' 2>/dev/null)"; then
+    if printf '%s' "$live" | grep -q '"agent:no-touch"'; then
+      stop "agent:no-touch (added after the event)"
+    fi
+  else
+    echo "::warning title=agent-gate::could not read the live labels of #$number, so agent:no-touch was judged from the event payload only"
+  fi
+}
 go() {
+  live_no_touch
   {
     echo "proceed=true"
     echo "reason=$1"
@@ -54,31 +67,13 @@ fi
   echo "dependency-bots=$DEPENDENCY_BOTS"
 } >> "$GITHUB_OUTPUT"
 
-# The event payload holds the labels as they were when the event fired, and a
-# re-run replays that payload. An `agent:no-touch` added after the push would be
-# missed, so when the caller names an issue or PR, read its labels now and UNION
-# them with the payload's. The read only ever adds labels. A failed or empty read
-# keeps the payload list and warns, so it can never open a run the payload
-# stopped. It runs on every call that has a number, not just re-runs: one API
-# call is cheaper than working out when a payload could be stale. The issues
-# endpoint serves pull requests too.
-labels="${LABELS:-}"
-if [ -n "${NUMBER:-}" ]; then
-  live="$(gh api "/repos/${REPO:?REPO is required with NUMBER}/issues/$NUMBER/labels?per_page=100" --jq '[.[].name]' 2>/dev/null || true)"
-  if [ -n "$live" ]; then
-    labels="$labels $live"
-  else
-    echo "::warning title=agent-gate::could not read the live labels of #$NUMBER, so agent:no-touch is judged from the event payload only"
-  fi
-fi
-
 # ------------------------------------------------------------------
 # RULE 0, the kill switch. First, always, with no exemption. Not for
 # workflow_dispatch, not for an explicit command, not for a
 # maintainer. A kill switch that works on only some paths is not a
 # kill switch. Do not move this below anything.
 # ------------------------------------------------------------------
-if printf '%s' "$labels" | grep -q '"agent:no-touch"'; then
+if printf '%s' "${LABELS:-}" | grep -q '"agent:no-touch"'; then
   stop "agent:no-touch"
 fi
 

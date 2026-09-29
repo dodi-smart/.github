@@ -65,8 +65,6 @@ jobs:
   gate:
     runs-on: ubuntu-latest
     timeout-minutes: 10   # the picker calls the org API and may retry
-    # issues: read is for the gate's live label lookup. Left to inherit, a
-    # private repo's default token cannot read labels.
     permissions:
       contents: read
       issues: read
@@ -83,7 +81,7 @@ jobs:
         uses: dodi-smart/.github/actions/agent-gate@v1
         with:
           labels:        ${{ toJson(github.event.issue.labels.*.name) }}
-          number:        ${{ github.event.issue.number || inputs.issue-number }}
+          number:        ${{ inputs.issue-number }}
           event-name:    ${{ github.event_name }}
           event-action:  ${{ github.event.action }}
           label:         ${{ github.event.label.name }}

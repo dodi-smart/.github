@@ -203,12 +203,8 @@ jobs:
           print('dependency bots are listed once, in the gate')
           "
 
-      # A payload's labels are frozen at the event, and a re-run replays them, so
-      # an agent:no-touch added later is missed unless the gate reads the live
-      # labels. It does that only when handed a number, so a workflow that drops
-      # the `number` input quietly goes back to trusting the payload. The gate
-      # job also needs a token that can read labels.
-      - name: Every agent workflow gives the gate its number
+      # The gate reads the live labels, which needs a token that can read them.
+      - name: Every agent gate job can read labels
         run: |
           set -euo pipefail
           python3 -c "
@@ -216,15 +212,12 @@ jobs:
           bad = []
           for f in ['issue-triage', 'issue-implement', 'claude-assist', 'pr-review', 'deps-verify']:
               gate = yaml.safe_load(open('.github/workflows/' + f + '.yml'))['jobs']['gate']
-              step = [s for s in gate['steps'] if s.get('id') == 'gate'][0]
-              if not str((step.get('with') or {}).get('number', '')).strip():
-                  bad.append(f + ' does not pass number to agent-gate')
               perms = gate.get('permissions') or {}
               if not any(perms.get(k) in ('read', 'write') for k in ('issues', 'pull-requests')):
-                  bad.append(f + ' gate job cannot read labels (needs issues or pull-requests)')
+                  bad.append(f)
           if bad:
-              sys.exit('::error::' + '; '.join(bad) + '. The gate unions the live labels with the payload only when given a number.')
-          print('every agent workflow passes a number and can read labels')
+              sys.exit('::error::gate job cannot read labels (needs issues or pull-requests): ' + ', '.join(bad))
+          print('every agent gate job can read labels')
           "
 
       # `track_progress` forces tag mode, and tag mode renders only three issue

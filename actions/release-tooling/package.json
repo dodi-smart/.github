@@ -1,0 +1,17 @@
+{
+  "name": "release-tooling",
+  "version": "0.0.0-never-published",
+  "private": true,
+  "description": "The semantic-release tooling release.yml installs when the caller does not name its own packages.",
+  "dependencies": {
+    "@kilianpaquier/semantic-release-backmerge": "1.9.2",
+    "@semantic-release/changelog": "7.0.0",
+    "@semantic-release/exec": "7.1.0",
+    "@semantic-release/git": "11.0.1",
+    "@semantic-release/github": "12.0.10",
+    "conventional-changelog-conventionalcommits": "9.3.1",
+    "semantic-release": "25.0.9",
+    "semantic-release-replace-plugin": "1.2.7",
+    "semantic-release-scope-filter": "1.0.1-beta.1"
+  }
+}

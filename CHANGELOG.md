@@ -1,3 +1,10 @@
+## [1.12.1](https://github.com/dodi-smart/.github/compare/v1.12.0...v1.12.1) (2026-09-29)
+
+### ⚡ Performance Improvements
+
+* **release:** add release-tooling, semantic-release installed in a private prefix from a lockfile ([33f0db3](https://github.com/dodi-smart/.github/commit/33f0db3e77e17a2185e1d724d05e01d74d48ddd1))
+* **release:** use release-tooling and run the backmerge inside the release job ([a5fbc71](https://github.com/dodi-smart/.github/commit/a5fbc715cd6ada0e7f181aaf538578e9fe945358))
+
 ## [1.12.0](https://github.com/dodi-smart/.github/compare/v1.11.0...v1.12.0) (2026-09-29)
 
 ### ✨ Features

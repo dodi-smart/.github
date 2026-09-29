@@ -103,6 +103,18 @@ rewrote, so the job auto-resolves `package.json`, `package-lock.json`,
 `backmerge-from` and fails on any other conflict. `backmerge-resolve-paths`
 extends that list; it does not replace it.
 
+The backmerge is the last step of the `release` job, not a job of its own, so
+it reuses that job's token and checkout. It fetches `backmerge-from` again
+before merging, and a failed backmerge fails the job, so a caller chaining a
+deploy on `release.yml` starts it after the backmerge.
+
+When it drives semantic-release itself (no `release-command`), `release.yml`
+installs the tooling into a private prefix under `RUNNER_TEMP`, never into the
+checkout, so the caller's own dependency tree is not installed alongside it.
+`semantic-release-packages` empty (the default) installs the versions pinned in
+`actions/release-tooling`, from a lockfile, cached on its hash. A list there
+replaces that set and installs exactly those packages, unpinned.
+
 ### Release, then deploy
 
 `supabase-deploy.yml` is not triggered on its own. It is a job the caller
@@ -217,7 +229,7 @@ The log shows the deployment id and commit before the routes are probed.
 | `actions/run-agent` | Invokes the agent with the org's tool allowlist and reporting defaults |
 | `actions/setup-stack` | Installs a toolchain, resolves cache isolation, supplies conventional commands |
 | `actions/sticky-comment` | One keyed comment per pull request, rewritten in place on every later run |
-| `actions/deps-intent` | Hashes a dependency PR's manifest diff and decides whether `deps-verify.yml`'s agent has anything new to judge |
+| `actions/release-tooling` | Installs semantic-release and its default plugins from a pinned lockfile into a private prefix, cached on the lockfile hash, and puts `semantic-release` on `PATH` |
 | `actions/semantic-release-config` | Links the shared semantic-release config into a consumer's `node_modules` from a private prefix, never from a registry and never into the checkout it came with |
 | `actions/changed-files` | A pull request's changed files through the API, with no checkout, and whether any match a set of globs |
 | `actions/wait-for-deployment` | Waits for the frontend host's successful GitHub Deployment of the checked-out commit, or for a route to report its sha. What `supabase-deploy.yml`'s health check calls |

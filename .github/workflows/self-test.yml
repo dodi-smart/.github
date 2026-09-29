@@ -711,9 +711,18 @@ jobs:
           if inputs['backmerge-resolve-paths'].get('default') != '':
               sys.exit('::error::backmerge-resolve-paths must default to \"\", so today\'s behaviour is unchanged when a caller does not set it')
 
-          step = [s for s in doc['jobs']['backmerge']['steps'] if 'RESOLVE_EXTRA' in str(s.get('env', {}))]
+          # The backmerge is the release job's last step: a job of its own
+          # mints a second App token and makes a second full clone.
+          if 'backmerge' in doc['jobs']:
+              sys.exit('::error::release.yml has a backmerge job again; it belongs in the release job, sharing its token and checkout')
+          steps = doc['jobs']['release']['steps']
+          step = [s for s in steps if 'RESOLVE_EXTRA' in str(s.get('env', {}))]
           if not step:
               sys.exit('::error::the backmerge step no longer wires backmerge-resolve-paths through as RESOLVE_EXTRA')
+          if steps[-1] is not step[0]:
+              sys.exit('::error::the backmerge step is no longer the last step of the release job, so it could run before the release finished')
+          if 'inputs.backmerge' not in str(step[0].get('if')):
+              sys.exit('::error::the backmerge step lost its condition (inputs.backmerge on the backmerge-from branch)')
           script = step[0]['run']
           for f in ('package.json', 'package-lock.json', 'bun.lock', 'pnpm-lock.yaml', 'yarn.lock', 'CHANGELOG.md', '\$RESOLVE_EXTRA'):
               if f not in script:
@@ -724,6 +733,35 @@ jobs:
       # What a consumer gets from the installer, checked by resolving.
       - name: Shared config links into a consumer
         run: ./actions/semantic-release-config/test.sh
+
+      # The tooling is installed outside the checkout, so an install there
+      # also resolving the caller's whole dependency tree cannot come back.
+      - name: Release tooling installs outside the checkout and runs
+        run: ./actions/release-tooling/test.sh
+
+      - name: release.yml installs its tooling in a private prefix
+        run: |
+          set -euo pipefail
+          python3 -c "
+          import sys, yaml
+          doc = yaml.safe_load(open('.github/workflows/release.yml'))
+          inputs = doc[True]['workflow_call']['inputs']
+          if inputs['semantic-release-packages'].get('default') != '':
+              sys.exit('::error::semantic-release-packages must default to \"\", which installs the set pinned in actions/release-tooling')
+          steps = doc['jobs']['release']['steps']
+          install = [s for s in steps if s.get('name') == 'Install semantic-release']
+          if len(install) != 1 or install[0].get('uses') != 'dodi-smart/.github/actions/release-tooling@v1':
+              sys.exit('::error::the Install semantic-release step must use actions/release-tooling, which installs into a private prefix')
+          text = '\n'.join(str(s.get('run', '')) for s in steps)
+          for bad in ('npx semantic-release', 'npm install', '--no-save'):
+              if bad in text:
+                  sys.exit('::error::release.yml contains ' + bad + '. Tooling installed into the checkout also installs the caller\'s dependency tree, and npx ignores the private prefix.')
+          action = yaml.safe_load(open('actions/release-tooling/action.yml'))
+          for s in action['runs']['steps']:
+              if 'actions/cache' in str(s.get('uses', '')) and (s.get('with') or {}).get('restore-keys'):
+                  sys.exit('::error::release-tooling caches with restore-keys. Only an exact key, or a poisoned entry is reimported.')
+          print('release.yml installs its tooling in a private prefix')
+          "
 
       # env and build-env parsing, and bun version resolution.
       - name: setup-stack parses env files and resolves bun

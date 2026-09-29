@@ -1,0 +1,47 @@
+# Install the semantic-release tooling outside the caller's checkout.
+#
+# Thin wrapper; the mechanics and the reasoning are in install.sh. Adds an
+# exact-key cache of the installed tree: the key is the lockfile's hash, or the
+# hash of the caller's package list, so a changed pin never reuses an old tree.
+# No restore-keys, so a miss installs from scratch and never from a near match.
+name: Release tooling
+description: Install semantic-release and its plugins into a private prefix and put semantic-release on PATH.
+
+inputs:
+  packages:
+    description: >-
+      Space-separated package specs to install instead of the pinned set in
+      this directory. Empty installs the pinned set.
+    default: ""
+
+runs:
+  using: composite
+  steps:
+    - id: key
+      shell: bash
+      env:
+        PACKAGES: ${{ inputs.packages }}
+        ACTION_DIR: ${{ github.action_path }}
+      run: |
+        set -euo pipefail
+        if [ -z "$PACKAGES" ]; then
+          hash=$(shasum -a 256 "$ACTION_DIR/package-lock.json" | cut -c1-16)
+        else
+          hash=$(printf '%s' "$PACKAGES" | shasum -a 256 | cut -c1-16)
+        fi
+        node_major=$(node -p 'process.versions.node.split(".")[0]')
+        echo "key=release-tooling-$RUNNER_OS-$RUNNER_ARCH-node$node_major-$hash" >> "$GITHUB_OUTPUT"
+
+    - id: cache
+      uses: actions/cache@v6
+      with:
+        path: ${{ runner.temp }}/release-tooling
+        key: ${{ steps.key.outputs.key }}
+
+    - shell: bash
+      env:
+        PACKAGES: ${{ inputs.packages }}
+        PREFIX: ${{ runner.temp }}/release-tooling
+        ACTION_DIR: ${{ github.action_path }}
+      run: |
+        "$ACTION_DIR/install.sh" "$ACTION_DIR" "$PREFIX" "$PACKAGES"

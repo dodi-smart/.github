@@ -1,0 +1,42 @@
+# Run a job's install/lint/typecheck/test/build commands as timed phases.
+#
+# pr-checks used to repeat a source-the-env-file step per command in four jobs,
+# which left no timings anywhere. This runs the commands setup-stack resolved,
+# in a fixed order, each in its own subshell inside a log group, stops at the
+# first failure, and writes a `| phase | result | seconds |` table to the job
+# summary. Logic and its tests live in run-phases.sh and test.sh.
+name: Run phases
+description: Run resolved commands as timed phases in their own subshells, stop at the first failure, and write a timing table to the job summary.
+
+inputs:
+  env-file:
+    description: 'Shell file sourced before every phase except `build` (setup-stack `env-file`). Empty sources nothing.'
+    default: ''
+  build-env-file:
+    description: 'Shell file sourced before the `build` phase (setup-stack `build-env-file`). Empty falls back to `env-file`.'
+    default: ''
+
+  # One input per phase, run in this order. An empty command skips the phase.
+  install:     { description: 'Install command', default: '' }
+  lint:        { description: 'Lint command', default: '' }
+  design-lint: { description: 'Design-lint command', default: '' }
+  typecheck:   { description: 'Typecheck command', default: '' }
+  test:        { description: 'Test command', default: '' }
+  build:       { description: 'Build command', default: '' }
+
+runs:
+  using: composite
+  steps:
+    # Commands go through the environment, never into the script text.
+    - shell: bash
+      env:
+        ACTION_PATH:       ${{ github.action_path }}
+        ENV_FILE:          ${{ inputs.env-file }}
+        BUILD_ENV_FILE:    ${{ inputs.build-env-file }}
+        PHASE_INSTALL:     ${{ inputs.install }}
+        PHASE_LINT:        ${{ inputs.lint }}
+        PHASE_DESIGN_LINT: ${{ inputs.design-lint }}
+        PHASE_TYPECHECK:   ${{ inputs.typecheck }}
+        PHASE_TEST:        ${{ inputs.test }}
+        PHASE_BUILD:       ${{ inputs.build }}
+      run: '"$ACTION_PATH/run-phases.sh"'

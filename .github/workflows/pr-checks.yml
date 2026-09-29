@@ -11,6 +11,10 @@
 # tests) to the large one. Any step whose command resolves to empty is skipped.
 # `single-job: true` collapses the split onto the heavy runner; see that input.
 #
+# `zavet` and `react-doctor` are opt-in jobs on the light pool that replace the
+# standalone zavet-check and react-doctor workflows, each of which paid its own
+# hosted picker. Neither feeds the `pr-checks` summary (see that job).
+#
 # ONE hosted `pick` job resolves both runners (and whether the change is
 # docs-only), instead of two hosted picker jobs. Picking twice used to cost two
 # full hosted minutes before any real work started; picking once from inside a
@@ -78,6 +82,28 @@ on:
       commitlint:        { type: boolean, default: false }
       commitlint-config: { type: string,  default: ".commitlintrc.json" }
 
+      # Opt-in knowledge-layer check, the same steps as zavet-check.yml (see
+      # actions/zavet-check). Its own status context: the `pr-checks` summary
+      # ignores it, so turning it on never makes it a required check. A caller
+      # that wants it required requires the `zavet` job itself.
+      # `zavet-stack` is the toolchain the decision checks run on, `none` for
+      # plain-shell checks. Versions and `install` come from this workflow's.
+      zavet:       { type: boolean, default: false }
+      zavet-dir:   { type: string,  default: ".zavet" }
+      zavet-stack: { type: string,  default: "none" }
+
+      # Opt-in React Doctor, the same step as react-doctor.yml. It runs only when
+      # a changed file matches `react-doctor-paths` (newline globs, like
+      # `docs-only-paths`), and on any doubt about the file list. Empty paths
+      # mean every change. Advisory by default (`blocking: none`) and never part
+      # of the `pr-checks` summary, so it must not be a required check.
+      react-doctor:           { type: boolean, default: false }
+      react-doctor-paths:     { type: string,  default: "" }
+      react-doctor-directory: { type: string,  default: "." }
+      react-doctor-scope:     { type: string,  default: "changed" }
+      react-doctor-blocking:  { type: string,  default: "none" }
+      react-doctor-version:   { type: string,  default: "" }
+
       coverage:      { type: string, default: "none" }   # none | vitest | kover
       coverage-path: { type: string, default: "" }
       coverage-min-overall: { type: number, default: 0 }
@@ -126,6 +152,9 @@ jobs:
       light:     ${{ steps.light.outputs.runner }}
       heavy:     ${{ steps.heavy.outputs.runner }}
       docs_only: ${{ steps.docs.outputs.all-matched }}
+      # `true` only when react-doctor is on and a changed file matches, or when
+      # that cannot be told (`matched` is `true` on every doubt).
+      react_doctor: ${{ inputs.react-doctor && steps.rd.outputs.matched == 'true' }}
     steps:
       # `all-matched` is a positive claim, never a fallback: it is `true` only
       # when the whole list was read and every file matches `docs-only-paths`.
@@ -136,11 +165,20 @@ jobs:
         with:
           patterns: ${{ inputs.docs-only-paths }}
 
-      # The picker carries the same `if:` as the job it feeds. In single-job
-      # mode nothing runs on the light pool; in a docs-only change neither
-      # pool is needed at all.
+      - id: rd
+        if: ${{ inputs.react-doctor }}
+        uses: dodi-smart/.github/actions/changed-files@v1
+        with:
+          patterns: ${{ inputs.react-doctor-paths }}
+
+      # The picker carries the same `if:` as the jobs it feeds. In single-job
+      # mode `checks` does not run and a docs-only change needs neither pool,
+      # but `commitlint`, `zavet` and `react-doctor` still use the light pool,
+      # and a docs-only change is exactly where a zavet decision moves.
       - id: light
-        if: ${{ !inputs.single-job && steps.docs.outputs.all-matched != 'true' }}
+        if: >-
+          ${{ (!inputs.single-job && steps.docs.outputs.all-matched != 'true')
+          || inputs.commitlint || inputs.zavet || steps.rd.outputs.matched == 'true' }}
         uses: dodi-smart/.github/actions/pick-runner@v1
         with:
           weight:             ${{ inputs.light-weight }}
@@ -155,11 +193,15 @@ jobs:
           gh-app-client-id:   ${{ secrets.GH_APP_CLIENT_ID }}
           gh-app-private-key: ${{ secrets.GH_APP_PRIVATE_KEY }}
 
-  # Hosted on purpose: needs full history and no toolchain, so the large pool
-  # would be wasted on it. The only job here that keeps full history.
+  # On the light pool: public repos and forks resolve to hosted inside `pick`.
+  # The action reads the pull request's commits through the API and bundles the
+  # shared commitlint configs, so the checkout only supplies the caller's config
+  # file and needs no history. It runs on the runner's own node, so the light
+  # pool needs no toolchain for it.
   commitlint:
     if: inputs.commitlint
-    runs-on: ubuntu-latest
+    needs: [pick]
+    runs-on: ${{ fromJson(needs.pick.outputs.light) }}
     timeout-minutes: 10
     permissions:
       contents: read
@@ -167,11 +209,64 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
-          fetch-depth: 0
           persist-credentials: false
       - uses: wagoid/commitlint-github-action@v6
         with:
           configFile: ${{ inputs.commitlint-config }}
+
+  # The knowledge-layer check. Its own status context, deliberately absent from
+  # the `pr-checks` summary's `needs`. Full history, because guards walk the
+  # pull request's commits.
+  zavet:
+    name: Zavet Check
+    if: inputs.zavet
+    needs: [pick]
+    runs-on: ${{ fromJson(needs.pick.outputs.light) }}
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      pull-requests: write     # the failure comment
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: dodi-smart/.github/actions/zavet-check@v1
+        with:
+          zavet-dir:       ${{ inputs.zavet-dir }}
+          stack:           ${{ inputs.zavet-stack }}
+          install:         ${{ inputs.install }}
+          node-version:    ${{ inputs.node-version }}
+          bun-version:     ${{ inputs.bun-version }}
+          java-version:    ${{ inputs.java-version }}
+          flutter-version: ${{ inputs.flutter-version }}
+
+  # Runs only when `pick` matched a changed file against `react-doctor-paths`,
+  # so a pull request touching no React source shows a skipped job and nothing
+  # red. Not in the summary's `needs`: never a required check.
+  react-doctor:
+    name: React Doctor
+    if: ${{ needs.pick.outputs.react_doctor == 'true' }}
+    needs: [pick]
+    runs-on: ${{ fromJson(needs.pick.outputs.light) }}
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      pull-requests: write     # the action posts its own sticky comment
+      statuses: write          # and a commit status carrying the score
+    steps:
+      # Full history is required for `scope: changed`: without it the action
+      # cannot reach the merge base and reports every issue in the changed files.
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: millionco/react-doctor@v2
+        with:
+          directory: ${{ inputs.react-doctor-directory }}
+          scope:     ${{ inputs.react-doctor-scope }}
+          blocking:  ${{ inputs.react-doctor-blocking }}
+          version:   ${{ inputs.react-doctor-version }}
 
   # ---------------------------------------------------------------------------
   # Split shape: light work on the small pool, heavy work on the large one.
@@ -375,6 +470,11 @@ jobs:
   #
   # It needs `checks`, so a red lint fails the required context even though
   # `build` runs beside it.
+  #
+  # `zavet` and `react-doctor` are NOT in `needs` and not in the loop below, on
+  # purpose. A job listed here joins the one required context, so an opt-in
+  # advisory check would silently start blocking merges, and the summary would
+  # also wait for it.
   pr-checks:
     name: PR Checks
     needs: [pick, commitlint, checks, test, build, all]

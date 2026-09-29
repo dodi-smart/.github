@@ -185,7 +185,7 @@ jobs:
               if re.search(r'renovate\[bot\]|dependabot\[bot\]|app/renovate', open(f).read()):
                   bad.append(f + ' names a dependency-bot login')
           wf = lambda n: yaml.safe_load(open('.github/workflows/' + n))['jobs']
-          zsteps = wf('zavet-check.yml')['check']['steps']
+          zsteps = yaml.safe_load(open('actions/zavet-check/action.yml'))['runs']['steps']
           author = [s for s in zsteps if s.get('id') == 'author']
           if not author or 'agent-gate@' not in str(author[0].get('uses', '')):
               bad.append('zavet-check no longer reads the author from agent-gate')
@@ -255,6 +255,41 @@ jobs:
               sys.exit('::error::the pr-checks job must run unconditionally (if: always()), or it silently '
                         'skips instead of reporting the jobs it summarizes.')
           print('pr-checks.yml has one picker job (%s) and an always-on pr-checks summary job' % pickers[0])
+          "
+
+      # zavet and react-doctor are opt-in jobs that must never join the required
+      # context, and both zavet entry points must run the one composite action.
+      # commitlint runs on the light runner from `pick`, not on a hosted one.
+      - name: pr-checks keeps zavet and react-doctor out of the summary
+        run: |
+          set -euo pipefail
+          python3 -c "
+          import sys, yaml
+          jobs = yaml.safe_load(open('.github/workflows/pr-checks.yml'))['jobs']
+          errors = []
+          summary = jobs['pr-checks']
+          for j in ('zavet', 'react-doctor'):
+              if j not in jobs:
+                  errors.append('pr-checks.yml lost the ' + j + ' job.')
+              if j in summary['needs']:
+                  errors.append('the pr-checks summary must not need ' + j + ', or an opt-in check becomes a required one.')
+              for step in summary['steps']:
+                  if ('\"' + j + ':') in str(step.get('run', '')):
+                      errors.append('the pr-checks summary loop must not list ' + j + '.')
+          for j in ('zavet', 'react-doctor', 'commitlint'):
+              if jobs[j].get('runs-on') != '$' + '{{ fromJson(needs.pick.outputs.light) }}':
+                  errors.append(j + ' must run on needs.pick.outputs.light, not a hosted runner of its own.')
+          uses = lambda job: [str(s.get('uses', '')) for s in job['steps']]
+          if not any('actions/zavet-check@' in u for u in uses(jobs['zavet'])):
+              errors.append('the pr-checks zavet job must run actions/zavet-check.')
+          zc = yaml.safe_load(open('.github/workflows/zavet-check.yml'))['jobs']['check']
+          if not any('actions/zavet-check@' in u for u in uses(zc)):
+              errors.append('zavet-check.yml must run actions/zavet-check, so both entry points share one implementation.')
+          if 'react_doctor' not in jobs['pick']['outputs']:
+              errors.append('pick must compute the react_doctor output from changed-files.')
+          if errors:
+              sys.exit('::error::' + ' '.join(errors))
+          print('zavet and react-doctor stay out of the summary, and share their implementations')
           "
 
       # `build` runs beside `checks`, and the summary must still require

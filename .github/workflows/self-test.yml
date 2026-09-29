@@ -367,6 +367,47 @@ jobs:
           print('pr-checks holds contents: read at workflow level, pick and the gate clone nothing')
           "
 
+      # The opt-in `hk` input runs the caller's own hk.pkl over the whole tree.
+      # No job holds security-events: a code scanning upload would force that
+      # grant on every caller, so the SARIF stays an artifact.
+      - name: pr-checks hk is opt-in, checks the whole tree and and holds no new permission
+        run: |
+          set -euo pipefail
+          python3 -c "
+          import sys, yaml
+          errors = []
+          # Built in pieces: a run script never holds an expression of its own.
+          ON = '\$' + '{{ inputs.hk }}'
+          OFF = '\$' + '{{ !inputs.hk'
+          doc = yaml.safe_load(open('.github/workflows/pr-checks.yml'))
+          inp = doc[True]['workflow_call']['inputs'].get('hk')
+          if not inp or inp.get('type') != 'boolean' or inp.get('default') is not False:
+              errors.append('the hk input must be a boolean that defaults to false, so a caller that never sets it behaves as before.')
+          jobs = doc['jobs']
+          for name in ('checks', 'all'):
+              job = jobs[name]
+              if 'security-events' in (job.get('permissions') or {}):
+                  errors.append(name + ' runs the caller code and must not hold security-events: write.')
+              steps = job['steps']
+              runs = [st.get('run', '') for st in steps]
+              hk = [i for i, r in enumerate(runs) if 'hk check' in r]
+              if len(hk) != 1 or 'hk check --all --sarif hk.sarif' not in runs[hk[0]] or '--pr' in runs[hk[0]]:
+                  errors.append(name + ' must run hk check --all --sarif hk.sarif exactly once, never --pr.')
+                  continue
+              uses = [str(st.get('uses', '')) for st in steps]
+              if not any(u.startswith('jdx/mise-action@') for u in uses[:hk[0]]):
+                  errors.append(name + ' must run jdx/mise-action before hk check.')
+              if not any(st.get('if') == ON for st in steps[:hk[0]] if 'run-phases' in str(st.get('uses', ''))):
+                  errors.append(name + ' must run install (hk only) before hk check.')
+              if not any(str(st.get('if', '')).startswith(OFF) for st in steps if 'run-phases' in str(st.get('uses', ''))):
+                  errors.append(name + ' must skip its ordinary Run phases step when hk is on, or lint runs twice.')
+          if any('security-events' in (j.get('permissions') or {}) for j in jobs.values()):
+              errors.append('no pr-checks job may hold security-events: a code scanning upload would force that permission on every caller.')
+          if errors:
+              sys.exit('::error::' + ' '.join(errors))
+          print('hk defaults off, runs hk check --all in checks and all, and no job holds security-events')
+          "
+
       # `test` and `all` run the caller's whole test suite, so the comment token
       # lives in a job that runs none of it and reads the report as an artifact.
       - name: pr-checks posts coverage from a job that runs no repo code

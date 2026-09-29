@@ -411,6 +411,36 @@ with:
 Warnings are advisory. `--max-warnings N` in the caller's own command is the
 ratchet -- tighten it there as the count comes down.
 
+### hk
+
+An opt-in step that runs the caller's own [hk](https://hk.jdx.dev) config over
+the whole tree, so the same `hk.pkl` that drives the local git hooks reports in
+the shared CI. Default `false`: every caller that never sets it behaves exactly
+as before, and no new permission is needed. It sits beside `lint` and replaces
+nothing.
+
+```yaml
+jobs:
+  pr-checks:
+    uses: dodi-smart/.github/.github/workflows/pr-checks.yml@v1
+    with:
+      stack: bun
+      hk: true
+```
+
+With `hk: true`, `checks` (or `all`, with `single-job`) runs `install`, then
+`jdx/mise-action` (which installs the tools the caller's `mise.toml` pins), then
+`hk check --all --sarif hk.sarif`, then the remaining phases. `--all`, never
+`--pr`: type-aware and cross-file rules need the whole tree.
+
+Findings show in the job log, and the first 50 KB of hk's output is appended to
+the job summary. The SARIF file is kept as the `hk-sarif` artifact (one day),
+even when `hk check` failed. This workflow does not upload it to code scanning:
+that needs `security-events: write`, and GitHub checks a called workflow's
+permissions when the run starts, so every caller would have to grant it, hk on
+or off. A repo that wants code scanning downloads the artifact in its own
+workflow and runs `github/codeql-action/upload-sarif` there.
+
 ### One job or three
 
 `pr-checks.yml` splits light work from heavy by default. `single-job: true`

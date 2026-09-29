@@ -872,52 +872,10 @@ jobs:
             echo "::error::pin a tag or a full SHA, never a branch"; exit 1
           fi
 
-      # shellcheck ships on ubuntu-latest, so installing it only cost time.
-      - name: Shell scripts pass shellcheck
-        run: |
-          if ! command -v shellcheck >/dev/null; then
-            echo "::error::shellcheck is not on this runner image. It ships on ubuntu-latest, so check the image before adding an install step."
-            exit 1
-          fi
-          shellcheck actions/*/*.sh
-
-      # Run the binary, not `uses: docker://rhysd/actionlint`: that form
-      # word-splits `args` without honouring quotes, so an -ignore pattern with
-      # spaces is torn apart. The two ignores exist because actionlint's bundled
-      # snapshot predates create-github-app-token moving to `client-id`.
-      # The release tarball is checked against the checksums file published with
-      # it, so a truncated or swapped download fails instead of running.
-      - name: actionlint
-        env:
-          ACTIONLINT_VERSION: 1.7.12 # renovate: datasource=github-releases depName=rhysd/actionlint
-        run: |
-          set -euo pipefail
-          os=$(uname -s | tr '[:upper:]' '[:lower:]')
-          case "$(uname -m)" in
-            x86_64)        arch=amd64 ;;
-            aarch64|arm64) arch=arm64 ;;
-            *) echo "::error::no actionlint build for $(uname -m)"; exit 1 ;;
-          esac
-          base="https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}"
-          tarball="actionlint_${ACTIONLINT_VERSION}_${os}_${arch}.tar.gz"
-          dir=$(mktemp -d "${RUNNER_TEMP:-${TMPDIR:-/tmp}}/actionlint.XXXXXX")
-          curl -fsSL -o "$dir/$tarball" "$base/$tarball"
-          curl -fsSL -o "$dir/checksums.txt" "$base/actionlint_${ACTIONLINT_VERSION}_checksums.txt"
-          (cd "$dir" && grep " ${tarball}\$" checksums.txt | shasum -a 256 -c -)
-          tar -xzf "$dir/$tarball" -C "$dir" actionlint
-          "$dir/actionlint" -color \
-            -ignore 'input "client-id" is not defined in action "actions/create-github-app-token' \
-            -ignore 'missing input "app-id" which is required by action "actions/create-github-app-token'
-
-      # Workflow security: template injection, token scope, credential
-      # persistence. Every severity must be clean, or carry an inline
-      # `zizmor: ignore[rule]` with the reason beside it. Offline, so the audits
-      # that ask GitHub about a ref cannot flake this job. `pipx` ships on
-      # ubuntu-latest. `zizmor.yml` explains why tag pins are allowed.
-      - name: zizmor
-        env:
-          ZIZMOR_VERSION: 1.30.1 # renovate: datasource=pypi depName=zizmor
-        run: |
-          set -euo pipefail
-          pipx run "zizmor==${ZIZMOR_VERSION}" --offline --config zizmor.yml \
-            --no-progress .github/workflows actions
+      # shellcheck, actionlint, zizmor, typos and the whitespace checks all run
+      # from hk.pkl, the same definition the local git hooks use. mise.toml
+      # pins every tool, and Renovate bumps the pins. The actionlint ignores
+      # and the offline zizmor run are explained in hk.pkl.
+      - uses: jdx/mise-action@v5
+      - name: Lint (hk check --all)
+        run: hk check --all

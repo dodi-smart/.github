@@ -1,0 +1,57 @@
+// One definition of this repo's lint, used by the git hooks, `hk check`
+// locally and `hk check --all` in self-test.
+amends "package://github.com/jdx/hk/releases/download/v2.4.0/hk@2.4.0#/Config.pkl"
+import "package://github.com/jdx/hk/releases/download/v2.4.0/hk@2.4.0#/Builtins.pkl"
+
+local linters = new Mapping<String, Step> {
+  // The two ignores exist because actionlint's bundled snapshot predates
+  // create-github-app-token moving to `client-id`.
+  ["actionlint"] = (Builtins.actionlint) {
+    check = new CommandSpec {
+      command = new Command {
+        argv = List(
+          "actionlint", "-color",
+          "-ignore", #"input "client-id" is not defined in action "actions/create-github-app-token"#,
+          "-ignore", #"missing input "app-id" which is required by action "actions/create-github-app-token"#,
+          "{{files}}",
+        )
+      }
+      effect = "read"
+    }
+  }
+  // Offline, so audits that ask GitHub about a ref cannot flake. No fix
+  // command: a hook must not rewrite workflow permissions on its own.
+  // `zizmor.yml` explains why tag pins are allowed.
+  ["zizmor"] = (Builtins.zizmor) {
+    glob = List(".github/workflows/*.yml", "actions/*/action.yml")
+    check = new CommandSpec {
+      command = new Command {
+        argv = List("zizmor", "--offline", "--config", "zizmor.yml", "--no-progress", "{{files}}")
+      }
+      effect = "read"
+    }
+    fix = null
+  }
+  ["shellcheck"] = Builtins.shellcheck
+  ["typos"] = Builtins.typos
+  ["check_merge_conflict"] = Builtins.check_merge_conflict
+  ["trailing_whitespace"] = Builtins.trailing_whitespace
+}
+
+hooks {
+  ["pre-commit"] {
+    fix = true
+    stash = "git"
+    steps = linters
+  }
+  ["commit-msg"] {
+    steps {
+      ["conventional-commit"] = Builtins.check_conventional_commit
+    }
+  }
+  ["check"] { steps = linters }
+  ["fix"] {
+    fix = true
+    steps = linters
+  }
+}

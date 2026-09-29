@@ -1,24 +1,44 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
-  "extends": ["github>dodi-smart/.github"],
-  "baseBranchPatterns": ["main"],
+  "extends": [
+    "github>dodi-smart/.github"
+  ],
+  "baseBranchPatterns": [
+    "main"
+  ],
   "customManagers": [
     {
-      "description": "Tool versions Self test downloads, marked with a `# renovate: datasource=... depName=...` comment after the version",
+      "description": "The hk schema hk.pkl amends, pinned in its package URL. Grouped with the hk binary in mise.toml so both move together",
       "customType": "regex",
-      "managerFilePatterns": ["/^\\.github/workflows/self-test\\.yml$/"],
-      "matchStrings": [
-        "(?<currentValue>\\d+\\.\\d+\\.\\d+) # renovate: datasource=(?<datasource>\\S+) depName=(?<depName>\\S+)"
+      "managerFilePatterns": [
+        "/^hk\\.pkl$/"
       ],
-      "extractVersionTemplate": "^v?(?<version>.+)$"
+      "matchStrings": [
+        "package://github\\.com/jdx/hk/releases/download/v(?<currentValue>\\d+\\.\\d+\\.\\d+)/hk@\\d+\\.\\d+\\.\\d+#"
+      ],
+      "depNameTemplate": "jdx/hk",
+      "datasourceTemplate": "github-releases",
+      "extractVersionTemplate": "^v?(?<version>.+)$",
+      "autoReplaceStringTemplate": "package://github.com/jdx/hk/releases/download/v{{{newValue}}}/hk@{{{newValue}}}#"
     }
   ],
   "packageRules": [
     {
-      "description": "A bump to a Self test tool changes nothing callers run, so it must not cut a release",
-      "matchManagers": ["custom.regex"],
+      "description": "A bump to a lint tool in mise.toml or hk.pkl changes nothing callers run, so it must not cut a release",
+      "matchManagers": [
+        "mise",
+        "custom.regex"
+      ],
       "semanticCommitType": "ci",
       "semanticCommitScope": "self-test"
+    },
+    {
+      "description": "The hk binary and the hk.pkl schema version move in one PR",
+      "matchPackageNames": [
+        "jdx/hk",
+        "aqua:jdx/hk"
+      ],
+      "groupName": "hk"
     }
   ]
 }

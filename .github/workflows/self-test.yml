@@ -328,26 +328,16 @@ jobs:
           "
 
       # This workflow runs the caller's own code, so no job holds a write token
-      # it does not use, no checkout leaves credentials in .git/config, and no
-      # expression is pasted into a script body.
-      - name: pr-checks and pr-review keep the token and shell hardening
+      # it does not use. zizmor covers checkouts and script expressions.
+      - name: pr-checks keeps a read-only token and clones nothing to list files
         run: |
           set -euo pipefail
           python3 -c "
           import sys, yaml
           errors = []
-          for f in ('pr-checks', 'pr-review'):
-              doc = yaml.safe_load(open('.github/workflows/%s.yml' % f))
-              if f == 'pr-checks' and doc.get('permissions') != {'contents': 'read'}:
-                  errors.append('pr-checks.yml needs workflow-level permissions: {contents: read}, so a job with no block of its own gets no more.')
-              for name, job in doc['jobs'].items():
-                  for step in job.get('steps') or []:
-                      # The review agent works in its checkout, so that one keeps credentials.
-                      if str(step.get('uses', '')).startswith('actions/checkout@') and (f, name) != ('pr-review', 'review'):
-                          if (step.get('with') or {}).get('persist-credentials') is not False:
-                              errors.append('%s.yml job %s: checkout must set persist-credentials: false, or the token stays in the checkout for the caller scripts to read.' % (f, name))
-                      if f == 'pr-checks' and '$' + '{{' in str(step.get('run', '')):
-                          errors.append('pr-checks.yml job %s: a run: script contains an expression. Pass it through env: and quote the variable.' % name)
+          doc = yaml.safe_load(open('.github/workflows/pr-checks.yml'))
+          if doc.get('permissions') != {'contents': 'read'}:
+              errors.append('pr-checks.yml needs workflow-level permissions: {contents: read}, so a job with no block of its own gets no more.')
           # The docs-only decision reads the API, never a clone: a hosted job
           # that clones to list files is the cost this replaced.
           pick = yaml.safe_load(open('.github/workflows/pr-checks.yml'))['jobs']['pick']
@@ -361,7 +351,7 @@ jobs:
               errors.append('pick.docs_only must come from changed-files all-matched, so only a fully read list can skip the checks.')
           if errors:
               sys.exit('::error::' + ' '.join(errors))
-          print('every checkout drops credentials, no run: script in pr-checks holds an expression, pick and the gate clone nothing')
+          print('pr-checks holds contents: read at workflow level, pick and the gate clone nothing')
           "
 
       # `test` and `all` run the caller's whole test suite, so the comment token
@@ -642,22 +632,14 @@ jobs:
           print('no build directory is cached')
           "
 
-      # Two governed rules about the Supabase workflows. A value from `inputs` or
-      # `github` reaches a script through `env:`, never inside the script body,
-      # where it is a template injection. And the image cache key is exact: a
-      # `restore-keys` line would load images the CLI no longer asks for.
-      - name: Supabase workflows keep scripts clean and the image cache exact
+      # The image cache key is exact: a `restore-keys` line would load images the
+      # CLI no longer asks for.
+      - name: Supabase image cache key is exact
         run: |
           set -euo pipefail
           python3 - <<'SUPABASE'
           import sys, yaml
           bad = []
-          for f in ['.github/workflows/supabase-checks.yml', '.github/workflows/supabase-deploy.yml']:
-              doc = yaml.safe_load(open(f))
-              for name, job in doc['jobs'].items():
-                  for step in job.get('steps') or []:
-                      if '$' + '{{' in str(step.get('run', '')):
-                          bad.append('%s: %s interpolates an expression into a run script' % (f, step.get('name') or step.get('id')))
           start = yaml.safe_load(open('actions/supabase-start/action.yml'))['runs']['steps']
           caches = [s for s in start if str(s.get('uses', '')).startswith('actions/cache@')]
           if len(caches) != 1:
@@ -667,7 +649,7 @@ jobs:
           if bad:
               print('::error::' + '; '.join(bad) + '. See AGENTS.md.')
               sys.exit(1)
-          print('supabase workflows: scripts clean, cache key exact')
+          print('supabase cache key exact')
           SUPABASE
 
       # v1 moves the moment semantic-release succeeds, so the only thing between
@@ -890,35 +872,6 @@ jobs:
             echo "::error::pin a tag or a full SHA, never a branch"; exit 1
           fi
 
-      # A checkout that keeps its credentials leaves the job token in .git/config,
-      # where any install script, test or build can read it. Only a job that
-      # pushes with that checkout, or an agent working in it, may keep them. Add
-      # a job to this list only with the reason beside its checkout.
-      - name: Only checkouts that push keep their credentials
-        run: |
-          set -euo pipefail
-          python3 -c "
-          import glob, yaml
-          keeps = {('release', 'release'), ('publish-release', 'release'), ('pr-review', 'review'), ('issue-implement', 'implement')}
-          errors = []
-          for path in sorted(glob.glob('.github/workflows/*.yml')):
-              doc = yaml.safe_load(open(path))
-              wf = path.split('/')[-1][:-4]
-              for name, job in (doc.get('jobs') or {}).items():
-                  for step in job.get('steps') or []:
-                      if str(step.get('uses', '')).startswith('actions/checkout@') and (wf, name) not in keeps:
-                          if (step.get('with') or {}).get('persist-credentials') is not False:
-                              errors.append('%s job %s: checkout needs persist-credentials: false.' % (wf, name))
-          for path in sorted(glob.glob('actions/*/action.yml')):
-              for step in yaml.safe_load(open(path)).get('runs', {}).get('steps') or []:
-                  if str(step.get('uses', '')).startswith('actions/checkout@'):
-                      if (step.get('with') or {}).get('persist-credentials') is not False:
-                          errors.append(path + ': checkout needs persist-credentials: false.')
-          if errors:
-              raise SystemExit('::error::' + ' '.join(errors))
-          print('every checkout outside the pushing jobs drops its credentials')
-          "
-
       # shellcheck ships on ubuntu-latest, so installing it only cost time.
       - name: Shell scripts pass shellcheck
         run: |
@@ -957,7 +910,7 @@ jobs:
             -ignore 'missing input "app-id" which is required by action "actions/create-github-app-token'
 
       # Workflow security: template injection, token scope, credential
-      # persistence. Medium and above must be clean, or carry an inline
+      # persistence. Every severity must be clean, or carry an inline
       # `zizmor: ignore[rule]` with the reason beside it. Offline, so the audits
       # that ask GitHub about a ref cannot flake this job. `pipx` ships on
       # ubuntu-latest. `zizmor.yml` explains why tag pins are allowed.
@@ -967,4 +920,4 @@ jobs:
         run: |
           set -euo pipefail
           pipx run "zizmor==${ZIZMOR_VERSION}" --offline --config zizmor.yml \
-            --min-severity medium --no-progress .github/workflows actions
+            --no-progress .github/workflows actions

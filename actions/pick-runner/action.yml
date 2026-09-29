@@ -120,7 +120,8 @@ runs:
         PRIVATE:       ${{ github.event.repository.private }}
         FORK:          ${{ github.event.pull_request.head.repo.fork }}
         GUARD:         ${{ inputs.guard-public }}
-      run: ${{ github.action_path }}/pick.sh resolve
+        ACTION_PATH: ${{ github.action_path }}
+      run: '"$ACTION_PATH/pick.sh" resolve'
 
     # A second call in the same job (pr-checks picks light, then heavy) reuses
     # the first call's listing, and mints no second token.
@@ -158,7 +159,7 @@ runs:
       with:
         client-id:   ${{ inputs.gh-app-client-id }}
         private-key: ${{ inputs.gh-app-private-key }}
-        owner:       ${{ github.repository_owner }} # zizmor: ignore[github-app]
+        owner:       ${{ github.repository_owner }}
 
     # Reads the fleet once. Only a listing that was really read is cached, so a
     # failed read is retried by the next call rather than remembered.
@@ -200,4 +201,5 @@ runs:
         SELECTOR:      ${{ steps.resolve.outputs.selector }}
         FLEET_FILE:    ${{ steps.cache.outputs.file }}
         FLEET_ERR:     ${{ steps.fleet.outputs.err }}
-      run: ${{ github.action_path }}/pick.sh decide
+        ACTION_PATH: ${{ github.action_path }}
+      run: '"$ACTION_PATH/pick.sh" decide'

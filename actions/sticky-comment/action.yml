@@ -53,4 +53,5 @@ runs:
         NUMBER:    ${{ inputs.number }}
         REPO:      ${{ inputs.repository }}
         GH_TOKEN:  ${{ inputs.token }}
-      run: ${{ github.action_path }}/sticky.sh
+        ACTION_PATH: ${{ github.action_path }}
+      run: '"$ACTION_PATH/sticky.sh"'

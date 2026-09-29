@@ -53,7 +53,8 @@ runs:
         MIN_OVERALL:   ${{ inputs.min-overall }}
         MIN_CHANGED:   ${{ inputs.min-changed }}
         OUT:           ${{ runner.temp }}/lcov-report.md
-      run: ${{ github.action_path }}/lcov-report.sh
+        ACTION_PATH: ${{ github.action_path }}
+      run: '"$ACTION_PATH/lcov-report.sh"'
 
     # Post before failing, so the comment says why the job is red.
     - if: ${{ inputs.number != '' }}

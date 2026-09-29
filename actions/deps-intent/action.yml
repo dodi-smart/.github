@@ -58,4 +58,5 @@ runs:
         VERDICT:  ${{ inputs.verdict }}
         REPO:     ${{ inputs.repository }}
         GH_TOKEN: ${{ inputs.token }}
-      run: ${{ github.action_path }}/intent.sh run
+        ACTION_PATH: ${{ github.action_path }}
+      run: '"$ACTION_PATH/intent.sh" run'

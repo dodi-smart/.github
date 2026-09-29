@@ -223,7 +223,8 @@ runs:
       shell: bash
       env:
         BUN_VERSION: ${{ inputs.bun-version }}
-      run: ${{ github.action_path }}/bun-version.sh "$BUN_VERSION"
+        ACTION_PATH: ${{ github.action_path }}
+      run: '"$ACTION_PATH/bun-version.sh" "$BUN_VERSION"'
 
     - if: inputs.stack == 'bun'
       uses: oven-sh/setup-bun@v2
@@ -310,14 +311,15 @@ runs:
       env:
         STEP_ENV: ${{ inputs.env }}
         BUILD_ENV: ${{ inputs.build-env }}
+        ACTION_PATH: ${{ github.action_path }}
       run: |
         set -euo pipefail
         file="${RUNNER_TEMP}/setup-stack-env.sh"
         build_file="${RUNNER_TEMP}/setup-stack-build-env.sh"
-        "${{ github.action_path }}/envfile.sh" "$file" <<< "$STEP_ENV"
+        "$ACTION_PATH/envfile.sh" "$file" <<< "$STEP_ENV"
         # The build file is env followed by build-env, so a build step sources
         # one file and a build-env key wins over the same key in env.
-        "${{ github.action_path }}/envfile.sh" "$build_file" <<< "$STEP_ENV"$'\n'"$BUILD_ENV"
+        "$ACTION_PATH/envfile.sh" "$build_file" <<< "$STEP_ENV"$'\n'"$BUILD_ENV"
         {
           echo "file=$file"
           echo "build-file=$build_file"

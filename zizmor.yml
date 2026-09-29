@@ -11,3 +11,7 @@ rules:
     config:
       policies:
         "*": ref-pin
+  # The one `./` call is Publish release running this repo's own Self test. The
+  # `$/` form it suggests is new, and actionlint does not parse it yet.
+  self-repository:
+    disable: true

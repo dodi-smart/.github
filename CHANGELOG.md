@@ -1,3 +1,9 @@
+## [1.13.1](https://github.com/dodi-smart/.github/compare/v1.13.0...v1.13.1) (2026-09-29)
+
+### 🐛 Bug Fixes
+
+* **deps-verify:** judge from the PR's current labels, not the event snapshot ([1c6d20c](https://github.com/dodi-smart/.github/commit/1c6d20c469d29192687ec894c1585dff1df2fd05))
+
 ## [1.13.0](https://github.com/dodi-smart/.github/compare/v1.12.3...v1.13.0) (2026-09-29)
 
 ### ✨ Features

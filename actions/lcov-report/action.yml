@@ -1,0 +1,73 @@
+# Coverage from an LCOV file: a sticky comment plus an optional floor.
+# Thin wrapper; the arithmetic and the reasoning are in lcov-report.sh.
+name: LCOV report
+description: Post overall and changed-file line coverage from an LCOV file as a sticky comment, and fail below a minimum.
+
+inputs:
+  path:
+    description: The LCOV file.
+    default: coverage/lcov.info
+  source-root:
+    description: >-
+      Workspace of the runner that wrote the report. Absolute `SF:` paths under it
+      become repo-relative, so they match the changed files. Empty means this
+      job's own workspace.
+    default: ''
+  min-overall:
+    description: Minimum overall line coverage, in percent. 0 means no floor.
+    default: '0'
+  min-changed:
+    description: Minimum line coverage of the changed files, in percent. 0 means no floor.
+    default: '0'
+  number:
+    description: Pull request number.
+    default: ${{ github.event.pull_request.number }}
+  token:
+    description: 'Token to list changed files and comment with. Needs pull-requests: write.'
+    default: ${{ github.token }}
+
+outputs:
+  overall:
+    description: Overall line coverage in percent, empty when the report has no lines.
+    value: ${{ steps.report.outputs.overall }}
+  changed:
+    description: Changed-file line coverage in percent, empty when no changed file has lines.
+    value: ${{ steps.report.outputs.changed }}
+
+runs:
+  using: composite
+  steps:
+    # No patterns: the whole list, not a filtered one.
+    - id: files
+      uses: dodi-smart/.github/actions/changed-files@v1
+      with:
+        number: ${{ inputs.number }}
+        token:  ${{ inputs.token }}
+
+    - id: report
+      shell: bash
+      env:
+        LCOV_FILE:     ${{ inputs.path }}
+        ROOT:          ${{ inputs.source-root || github.workspace }}
+        CHANGED_FILES: ${{ steps.files.outputs.files }}
+        MIN_OVERALL:   ${{ inputs.min-overall }}
+        MIN_CHANGED:   ${{ inputs.min-changed }}
+        OUT:           ${{ runner.temp }}/lcov-report.md
+      run: ${{ github.action_path }}/lcov-report.sh
+
+    # Post before failing, so the comment says why the job is red.
+    - if: ${{ inputs.number != '' }}
+      uses: dodi-smart/.github/actions/sticky-comment@v1
+      with:
+        key:       coverage
+        body-file: ${{ runner.temp }}/lcov-report.md
+        number:    ${{ inputs.number }}
+        token:     ${{ inputs.token }}
+
+    - if: ${{ steps.report.outputs.failed != '' }}
+      shell: bash
+      env:
+        FAILED: ${{ steps.report.outputs.failed }}
+      run: |
+        echo "::error::coverage: $FAILED"
+        exit 1

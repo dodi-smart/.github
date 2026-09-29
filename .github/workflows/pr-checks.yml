@@ -78,7 +78,10 @@ on:
       commitlint:        { type: boolean, default: false }
       commitlint-config: { type: string,  default: ".commitlintrc.json" }
 
-      coverage:      { type: string, default: "none" }   # none | vitest | kover
+      # none | vitest | kover | lcov. `lcov`: the test command writes an LCOV
+      # file (bun test, cargo llvm-cov, c8, nyc) and `coverage-path` points at
+      # it; the default is coverage/lcov.info.
+      coverage:      { type: string, default: "none" }
       coverage-path: { type: string, default: "" }
       coverage-min-overall: { type: number, default: 0 }
       coverage-min-changed: { type: number, default: 0 }
@@ -251,6 +254,12 @@ jobs:
 
       - if: always() && inputs.coverage == 'vitest'
         uses: davelosert/vitest-coverage-report-action@v2
+      - if: always() && inputs.coverage == 'lcov'
+        uses: dodi-smart/.github/actions/lcov-report@v1
+        with:
+          path:        ${{ inputs.coverage-path || 'coverage/lcov.info' }}
+          min-overall: ${{ inputs.coverage-min-overall }}
+          min-changed: ${{ inputs.coverage-min-changed }}
       - if: always() && inputs.coverage == 'kover'
         uses: mi-kas/kover-report@v2
         with:
@@ -351,6 +360,12 @@ jobs:
       # written on one runner is not readable from another.
       - if: always() && inputs.coverage == 'vitest'
         uses: davelosert/vitest-coverage-report-action@v2
+      - if: always() && inputs.coverage == 'lcov'
+        uses: dodi-smart/.github/actions/lcov-report@v1
+        with:
+          path:        ${{ inputs.coverage-path || 'coverage/lcov.info' }}
+          min-overall: ${{ inputs.coverage-min-overall }}
+          min-changed: ${{ inputs.coverage-min-changed }}
       - if: always() && inputs.coverage == 'kover'
         uses: mi-kas/kover-report@v2
         with:

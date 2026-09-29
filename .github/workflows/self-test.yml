@@ -64,6 +64,10 @@ jobs:
       - name: Changed files count every doubt as a match
         run: ./actions/changed-files/test.sh
 
+      # A wrong percentage, or a floor that never trips, reads as a healthy repo.
+      - name: LCOV report does the arithmetic and enforces the floors
+        run: ./actions/lcov-report/test.sh
+
       # A phase's command reaches the shell unmangled, each phase gets its own
       # subshell, and the first failure stops the rest. pr-checks runs on this.
       - name: run-phases runs each phase alone and stops at the first failure

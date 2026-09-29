@@ -2,6 +2,8 @@
 #
 # Everything here is deterministic and hosted-only. This repo is public, and a
 # public repo never touches a self-hosted runner.
+#
+# No push trigger: Publish release calls this before it moves `v1`.
 name: Self test
 
 # No `paths:` filter on purpose. The run takes about 15 seconds, and two of the
@@ -11,12 +13,13 @@ name: Self test
 # pull request produces no check run at all and could never merge.
 on:
   pull_request:
-  push:
-    branches: [main]
+  workflow_call:
   workflow_dispatch:
 
+# A newer push cancels a pull request's run. Any other run gets a group of its
+# own, so the run a release waits on is never cancelled and never shares a group.
 concurrency:
-  group: self-test-${{ github.event.pull_request.number || github.ref }}
+  group: self-test-${{ github.event.pull_request.number || github.run_id }}
   cancel-in-progress: true
 
 permissions:
@@ -388,6 +391,29 @@ jobs:
                     + '. Reuse of compiled output is the build tool job, by content hash. See AGENTS.md.')
               sys.exit(1)
           print('no build directory is cached')
+          "
+
+      # v1 moves the moment semantic-release succeeds, so the only thing between
+      # a broken merge and every caller is this `needs`. Without it the two
+      # workflows race, and v1 has already moved when Self test reports.
+      - name: Publish release waits for Self test
+        run: |
+          set -euo pipefail
+          python3 -c "
+          import sys, yaml
+          doc = yaml.safe_load(open('.github/workflows/publish-release.yml'))
+          jobs = doc['jobs']
+          gate = [n for n, j in jobs.items() if j.get('uses') == './.github/workflows/self-test.yml']
+          if not gate:
+              print('::error::publish-release.yml no longer calls self-test.yml, so v1 can move before Self test passes')
+              sys.exit(1)
+          needs = jobs['release'].get('needs') or []
+          if isinstance(needs, str):
+              needs = [needs]
+          if not set(gate) <= set(needs):
+              print('::error::the release job does not need ' + ', '.join(gate) + ', so v1 can move before Self test passes')
+              sys.exit(1)
+          print('release needs ' + ', '.join(gate))
           "
 
       - name: Every workflow and action is parseable YAML

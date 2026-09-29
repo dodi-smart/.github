@@ -237,6 +237,7 @@ The log shows the deployment id and commit before the routes are probed.
 | `actions/wait-for-deployment` | Waits for the frontend host's successful GitHub Deployment of the checked-out commit, or for a route to report its sha. What `supabase-deploy.yml`'s health check calls |
 | `actions/supabase-start` | Starts the local Supabase database with the stack's Docker images restored from the cache, saved on a miss. What both jobs of `supabase-checks.yml` call |
 | `actions/zavet-check` | Verifies a repo's `.zavet/` knowledge layer: decision checks, guard trailers, an optional audit, and a comment only on failure. What `zavet-check.yml` and `pr-checks.yml`'s `zavet` job run. The caller checks out with full history first. |
+| `actions/react-doctor` | Checks out with full history and runs React Doctor. What `react-doctor.yml` and `pr-checks.yml`'s `react-doctor` job run. |
 | `actions/pick-runner` | Resolves a runner weight to a selector, validated against the live fleet. What `pick-runner.yml` calls, and what a job that already runs hosted (like `pr-checks.yml`'s `pick`) calls directly to pick more than once without a second hosted job. |
 
 `actions/changed-files` needs no checkout. It takes `patterns` (newline-separated
@@ -542,13 +543,9 @@ jobs:
 Then delete the caller's `zavet-check` and `react-doctor` jobs, and their
 `paths:` filter if it existed only for React Doctor.
 
-| Input | Default | Meaning |
-|---|---|---|
-| `zavet` | `false` | Run the knowledge-layer check, the same steps as `zavet-check.yml` (report-only on dependency and automation bot PRs, "could not run" reported apart from "failed", a comment only on failure). |
-| `zavet-dir`, `zavet-stack` | `.zavet`, `none` | Where the layer lives, and the toolchain its checks need. `install` and the version inputs are `pr-checks.yml`'s own. |
-| `react-doctor` | `false` | Run React Doctor. |
-| `react-doctor-paths` | empty | Newline-separated globs. The job runs only when a changed file matches, and whenever the file list cannot be read in full. Empty means every change. |
-| `react-doctor-directory`, `-scope`, `-blocking`, `-version` | `.`, `changed`, `none`, empty | The same inputs `react-doctor.yml` has. |
+`zavet-dir` sets where the layer lives and `react-doctor-directory` which project to scan. The React Doctor job uses React
+Doctor's defaults, so it stays advisory (`blocking: none`, `scope: changed`). A
+repo that needs to tune scope, blocking or version keeps `react-doctor.yml`.
 
 **Neither result is part of the `pr-checks` summary.** The `zavet` and
 `react-doctor` jobs are separate status contexts. Turning them on does not make

@@ -71,19 +71,8 @@ jobs:
       pull-requests: write   # the action posts its own sticky comment
       statuses: write        # and a commit status carrying the score
     steps:
-      # `fetch-depth: 0` is REQUIRED for `scope: changed`. Without full history
-      # the action cannot reach the merge base and reports every issue in the
-      # changed files rather than the ones this pull request introduced.
-      #
-      # `clean` stays at its default, even though that discards the doctor's own
-      # cache every run. Do NOT set `clean: false`. A workspace holding the
-      # previous pull request's files is how a scan reports on a file this one
-      # deleted. The win on self-hosted is the runner's own ~/.npm volume.
-      - uses: actions/checkout@v7
-        with:
-          fetch-depth: 0
-
-      - uses: millionco/react-doctor@v2
+      # Checkout and scan live in the action, shared with pr-checks.yml.
+      - uses: dodi-smart/.github/actions/react-doctor@v1
         with:
           directory: ${{ inputs.directory }}
           scope: ${{ inputs.scope }}

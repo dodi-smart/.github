@@ -84,20 +84,6 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      # `migrations-paths` names files and directories, the way a pathspec does.
-      # The changed-files action matches globs, where a directory needs a `dir/*`
-      # of its own.
-      - name: Turn the migration paths into globs
-        id: globs
-        env:
-          PATHS: ${{ inputs.migrations-paths }}
-        run: |
-          {
-            echo "patterns<<GLOBS_EOF"
-            printf '%s\n' "$PATHS" | sed -e '/^[[:space:]]*$/d' -e 's|[/[:space:]]*$||' -e p -e 's|$|/*|'
-            echo "GLOBS_EOF"
-          } >> "$GITHUB_OUTPUT"
-
       # Only a pull request has a diff to read. Any other event (a dispatch, a
       # push) matches everything, since someone pressing the button wants the
       # checks, not a filter. So does a diff the API could not return.
@@ -105,7 +91,7 @@ jobs:
         id: changes
         uses: dodi-smart/.github/actions/changed-files@v1
         with:
-          patterns: ${{ steps.globs.outputs.patterns }}
+          patterns: ${{ inputs.migrations-paths }}
 
       - name: Skip (no migration or seed changes)
         if: steps.changes.outputs.matched != 'true'
@@ -194,30 +180,16 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      # The same paths as the `types` job, plus the tests themselves. A blank
-      # `migrations-paths` means no filter, so the tests glob is left out then:
-      # it would turn "always run" into "run when a test changed".
-      - name: Turn the migration paths into globs
-        id: globs
-        env:
-          PATHS: ${{ inputs.migrations-paths }}
-        run: |
-          {
-            echo "patterns<<GLOBS_EOF"
-            if [ -n "$(printf '%s' "$PATHS" | tr -d '[:space:]')" ]; then
-              printf '%s\n' "$PATHS" | sed -e '/^[[:space:]]*$/d' -e 's|[/[:space:]]*$||' -e p -e 's|$|/*|'
-              echo "supabase/tests/*"
-            fi
-            echo "GLOBS_EOF"
-          } >> "$GITHUB_OUTPUT"
-
       # Reports success, not skipped, when nothing relevant changed, the way the
       # `types` job does, so a caller can require it on every pull request.
       - name: Check for migration, seed or test changes
         id: changes
         uses: dodi-smart/.github/actions/changed-files@v1
         with:
-          patterns: ${{ steps.globs.outputs.patterns }}
+          # The same paths as the `types` job, plus the tests themselves. A blank
+          # `migrations-paths` means no filter, so the tests path is left out then:
+          # it would turn "always run" into "run when a test changed".
+          patterns: ${{ inputs.migrations-paths != '' && format('{0}{1}supabase/tests', inputs.migrations-paths, fromJSON('"\n"')) || '' }}
 
       - name: Skip (no migration, seed or test changes)
         if: steps.changes.outputs.matched != 'true'

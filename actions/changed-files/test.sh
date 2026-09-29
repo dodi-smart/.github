@@ -28,7 +28,9 @@ match() {
   if [ "$got" = "$3" ]; then ok "$1"; else bad "$1" "got $got, wanted $3"; fi
 }
 
-P=$'supabase/migrations/*\nsupabase/seed.sql'
+P=$'supabase/migrations\nsupabase/seed.sql'
+printf 'supabase/migrations/a/b.sql\n'           | match "a directory covers what is under it" $'supabase/migrations/\n' true
+printf 'supabase/migrations-old/a.sql\n'         | match "a directory is not a name prefix" "$P" false
 printf 'src/a.ts\nsupabase/migrations/1_x.sql\n' | match "a migration matches"        "$P" true
 printf 'src/a.ts\nREADME.md\n'                   | match "nothing relevant"           "$P" false
 printf 'supabase/migrations/a/b/c.sql\n'         | match "a star crosses a slash"     "$P" true

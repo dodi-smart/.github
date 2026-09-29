@@ -22,12 +22,14 @@ names() {
   awk -F'\t' 'NF && $1 != "" { print $1; if ($2 != "") print $2 }' | sort -u
 }
 
-# Paths on stdin, newline-separated globs in $1. `fnmatch`-style, so `*` crosses
-# `/`, the same as pr-checks' `docs-only-paths`.
+# Paths on stdin, newline-separated patterns in $1. `fnmatch`-style, so `*` crosses
+# `/`, the same as pr-checks' `docs-only-paths`. A pattern also matches everything
+# under it, so a directory needs no `dir/*` of its own.
 matches() {
   python3 -c '
 import fnmatch, sys
-pats = [p.strip() for p in sys.argv[1].splitlines() if p.strip()]
+pats = [p.strip().rstrip("/") for p in sys.argv[1].splitlines() if p.strip()]
+pats += [p + "/*" for p in pats]
 files = [f for f in sys.stdin.read().splitlines() if f]
 print("true" if any(fnmatch.fnmatchcase(f, p) for f in files for p in pats) else "false")
 ' "$1"

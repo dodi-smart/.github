@@ -13,8 +13,8 @@
 # postgres major version, and which services are on), and the pins `supabase
 # link` writes to `supabase/.temp/*-version`.
 #
-# Only the images `db start` pulled are saved. Anything a later step pulls, such
-# as the type generator's image, is pulled as before.
+# Only the images of the containers `db start` launched are saved. Anything a
+# later step pulls, such as the type generator's image, is pulled as before.
 name: Supabase start
 description: Start the local Supabase database, restoring the stack's Docker images from the cache and saving them on a miss.
 
@@ -69,7 +69,7 @@ runs:
         TAR: ${{ runner.temp }}/supabase-images.tar
       run: |
         set -euo pipefail
-        images="$(docker images --format '{{.Repository}}:{{.Tag}}' | grep -E '(public\.ecr\.aws|ghcr\.io)/supabase/' | grep -v ':<none>$' || true)"
+        images="$(docker ps --format '{{.Image}}' | grep -E '(public\.ecr\.aws|ghcr\.io)/supabase/' | sort -u || true)"
         if [ -z "$images" ]; then
           echo "::notice::no Supabase images found to cache"
           exit 0

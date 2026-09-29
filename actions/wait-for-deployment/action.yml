@@ -17,7 +17,7 @@ inputs:
       skips this proof.
     default: ""
   timeout-minutes:
-    description: 'How long to wait for each proof before failing.'
+    description: 'How long the whole wait may take, both proofs together, before failing.'
     default: '10'
   interval-seconds:
     description: 'Pause between polls.'
@@ -36,9 +36,6 @@ outputs:
   sha:
     description: 'The commit that was proven: the deployment''s, or the one `sha-url` reported.'
     value: ${{ steps.wait.outputs.sha }}
-  url:
-    description: 'The deployment''s own URL (`environment_url`, else `target_url`). Empty when the host set neither.'
-    value: ${{ steps.wait.outputs.url }}
 
 runs:
   using: composite

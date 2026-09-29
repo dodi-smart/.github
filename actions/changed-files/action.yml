@@ -7,9 +7,9 @@ description: List a pull request's changed files without a checkout, and say whe
 inputs:
   patterns:
     description: >-
-      Newline-separated globs, `fnmatch`-style (`*` crosses `/`). A directory
-      needs its own glob: `supabase/migrations/*`, not `supabase/migrations`.
-      Empty means "no filter", so `matched` is `true`.
+      Newline-separated paths or globs, `fnmatch`-style (`*` crosses `/`). A
+      pattern also matches everything under it, so `supabase/migrations` covers
+      the directory. Empty means "no filter", so `matched` is `true`.
     default: ""
   number:
     description: >-

@@ -61,8 +61,8 @@ dep() {
   printf '{"id":%s,"sha":"%s","environment":"staging","created_at":"%s","creator":{"login":"%s"},"performed_via_github_app":%s}' \
     "$1" "$2" "$5" "$3" "$app"
 }
-# status <state> [url]
-status() { printf '[{"state":"%s","environment_url":"%s","target_url":"%s"}]' "$1" "${2:-}" "${2:-}"; }
+# status <state>
+status() { printf '[{"state":"%s"}]' "$1"; }
 
 reset() { rm -rf "$FIX"; mkdir "$FIX"; OUT="$WORK/out"; : > "$OUT"; }
 
@@ -77,37 +77,41 @@ run() {
 }
 out_has() { grep -qxF "$2" "$OUT" && ok "$1" || bad "$1" "no '$2' in: $(tr '\n' '|' < "$OUT")"; }
 
-# --- the pure pieces ----------------------------------------------------------
-cands=$(cd "$REPO_DIR" && "$SCRIPT" --candidates | tr '\n' ' ')
-[ "$cands" = "$RELEASE $MERGE " ] && ok "a [skip ci] commit also counts its parent" || bad "candidates of a release commit" "$cands"
-git -C "$REPO_DIR" checkout -q --detach "$MERGE"
-cands=$(cd "$REPO_DIR" && "$SCRIPT" --candidates | tr '\n' ' ')
-[ "$cands" = "$MERGE " ] && ok "an ordinary commit counts only itself" || bad "candidates of an ordinary commit" "$cands"
-git -C "$REPO_DIR" checkout -q --detach "$RELEASE"
-
-picked=$( { printf '['; dep 1 "$RELEASE" azlekov github-actions 2026-09-11T07:28:58Z; printf ','
-  dep 2 "$MERGE" 'host[bot]' null 2026-09-11T07:28:04Z; printf ',';
-  dep 3 "$MERGE" 'host[bot]' null 2026-09-11T07:20:00Z; printf ']'; } | "$SCRIPT" --pick | jq -r .id)
-[ "$picked" = 2 ] && ok "pick skips the job's own deployment and takes the newest" || bad "pick" "$picked"
-[ -z "$(echo '[]' | "$SCRIPT" --pick)" ] && ok "pick of nothing is nothing" || bad "pick of nothing" "not empty"
-[ "$(status success https://x.example | "$SCRIPT" --state)" = $'success\thttps://x.example' ] \
-  && ok "state reads the newest status and its url" || bad "state" "$(status success https://x.example | "$SCRIPT" --state)"
-[ "$(echo '[]' | "$SCRIPT" --state)" = $'none\t' ] && ok "no statuses yet reads as none" || bad "state of nothing" "?"
-
 # --- the wait -----------------------------------------------------------------
 reset
 echo "[$(dep 2 "$MERGE" 'host[bot]' null 2026-09-11T07:28:04Z)]" > "$FIX/deployments-$MERGE.json"
 status in_progress > "$FIX/statuses-2.1.json"; status queued > "$FIX/statuses-2.2.json"
-status success https://d.example > "$FIX/statuses-2.3.json"
+status success > "$FIX/statuses-2.3.json"
 run "waits through in-progress, then passes on success" 0 ENVIRONMENT=staging
 out_has "  reports the deployment id" "deployment-id=2"
 out_has "  reports the sha it proved" "sha=$MERGE"
-out_has "  reports the deployment url" "url=https://d.example"
+
+# The newest deployment decides, and the parent of a [skip ci] commit counts.
+reset
+echo "[$(dep 2 "$MERGE" 'host[bot]' null 2026-09-11T07:20:00Z),$(dep 3 "$MERGE" 'host[bot]' null 2026-09-11T07:28:04Z)]" > "$FIX/deployments-$MERGE.json"
+status failure > "$FIX/statuses-2.1.json"; status success > "$FIX/statuses-3.1.json"
+run "the newest deployment decides" 0 ENVIRONMENT=staging
+out_has "  and is the one reported" "deployment-id=3"
+
+# An ordinary commit counts only itself, not a later commit.
+reset
+git -C "$REPO_DIR" checkout -q --detach "$MERGE"
+echo "[$(dep 2 "$RELEASE" 'host[bot]' null 2026-09-11T07:28:04Z)]" > "$FIX/deployments-$RELEASE.json"
+status success > "$FIX/statuses-2.1.json"
+run "a deployment of another commit does not count" 1 ENVIRONMENT=staging TIMEOUT_MINUTES=0
+git -C "$REPO_DIR" checkout -q --detach "$RELEASE"
 
 reset
 echo "[$(dep 1 "$RELEASE" azlekov github-actions 2026-09-11T07:28:58Z)]" > "$FIX/deployments-$RELEASE.json"
 status success > "$FIX/statuses-1.1.json"
 run "the job's own deployment never counts (times out)" 1 ENVIRONMENT=staging TIMEOUT_MINUTES=0
+
+reset
+echo "[$(dep 2 "$MERGE" 'host[bot]' null 2026-09-11T07:28:04Z)]" > "$FIX/deployments-$MERGE.json"
+status success > "$FIX/statuses-2.1.json"
+echo "{\"sha\":\"${MERGE:0:7}\"}" > "$FIX/route-body"
+run "both proofs pass together" 0 ENVIRONMENT=staging SHA_URL=https://x.example/api/version
+out_has "  reports the deployment id" "deployment-id=2"
 
 reset
 run "no deployment at all times out" 1 ENVIRONMENT=staging TIMEOUT_MINUTES=0

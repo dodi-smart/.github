@@ -1,3 +1,9 @@
+## [1.16.3](https://github.com/dodi-smart/.github/compare/v1.16.2...v1.16.3) (2026-09-29)
+
+### 🐛 Bug Fixes
+
+* **pr-checks:** fail the coverage job when a kover report is below coverage-min-overall ([c8a94db](https://github.com/dodi-smart/.github/commit/c8a94dbfddb892a314940d82f2c051fce53d5f97))
+
 ## [1.16.2](https://github.com/dodi-smart/.github/compare/v1.16.1...v1.16.2) (2026-09-29)
 
 ### 🐛 Bug Fixes

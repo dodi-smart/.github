@@ -187,6 +187,7 @@ nobody then goes back to question.
 | `actions/run-agent` | Invokes the agent with the org's tool allowlist and reporting defaults |
 | `actions/setup-stack` | Installs a toolchain, resolves cache isolation, supplies conventional commands |
 | `actions/sticky-comment` | One keyed comment per pull request, rewritten in place on every later run |
+| `actions/deps-intent` | Hashes a dependency PR's manifest diff and decides whether `deps-verify.yml`'s agent has anything new to judge |
 | `actions/semantic-release-config` | Links the shared semantic-release config into a consumer's `node_modules` from a private prefix, never from a registry and never into the checkout it came with |
 | `actions/pick-runner` | Resolves a runner weight to a selector, validated against the live fleet. What `pick-runner.yml` calls, and what a job that already runs hosted (like `pr-checks.yml`'s `pick`) calls directly to pick more than once without a second hosted job. |
 
@@ -736,6 +737,27 @@ The rules on fixes:
 
 A red build is `needs-manual` even when the agent finds the cause was already on
 the base branch. The comment says so in one line.
+
+Which runner it takes:
+
+- **A green build waits and reads on a light runner.** A `wait` job starts on the
+  light pool, polls the `pr-checks` run and decides the verdict. The `verify` job
+  then runs on the light pool too when the verdict is green, so a green PR never
+  holds a heavy slot. It takes the heavy pool only to build or fix: a red or
+  infra verdict, or a repo with no `pr-checks` that builds here. With an `apple`
+  or `hosted` `runner-weight`, or explicit `runner-labels`, there is no lighter
+  pool, so both jobs use that selector.
+- **A rebase of an unchanged update is not judged twice.** The job hashes the
+  manifest diff against the base branch (package manifests, Gradle build files
+  and version catalog, `Cargo.toml`, `pubspec.yaml`, `Package.swift`, `go.mod`;
+  never lockfiles) and records the hash in its comment. When the build is green,
+  the PR already carries `deps:verified` (or `deps:fixed` with its fix commits
+  still on the branch) and the hash is the same, the agent is skipped and the
+  label and comment stay. A changed manifest diff, a missing record, or any red
+  build goes to the agent.
+- **Lock file maintenance is judged by the build.** A green build gets
+  `deps:verified` and a one-line comment, with no agent. A red one goes to the
+  agent as before.
 
 `env` and `build-env` mean what they mean in `pr-checks`. They matter when the
 agent reproduces a failure to fix it, and when the job builds on its own. Copy

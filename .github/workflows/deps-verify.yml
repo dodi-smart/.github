@@ -82,7 +82,8 @@ jobs:
       proceed: ${{ steps.gate.outputs.proceed }}
       dependency-bots: ${{ steps.gate.outputs.dependency-bots }}
       stack:   ${{ steps.stack.outputs.stack }}
-      runner:  ${{ steps.pick.outputs.runner }}
+      light:   ${{ steps.pick-light.outputs.runner }}
+      heavy:   ${{ steps.pick-heavy.outputs.runner }}
     steps:
       # `bots: only` is the inverse of every other agent workflow: this one runs
       # for Renovate and Dependabot and nothing else. It also absorbs the author
@@ -119,7 +120,22 @@ jobs:
 
       # Only when the run above is still proceeding: a human-authored PR (this
       # workflow runs for bots only) must never pay for a hosted picker.
-      - id: pick
+      #
+      # Both pools are picked here, because the wait job below runs on light and
+      # the verify job takes heavy only when there is something to build. The
+      # action caches the fleet listing, so the second call costs no API calls.
+      # An `apple` or `hosted` weight, or an explicit selector, has no lighter
+      # pool to wait on (the light pool cannot run Xcode), so light follows it.
+      - id: pick-light
+        if: steps.gate.outputs.proceed == 'true'
+        uses: dodi-smart/.github/actions/pick-runner@v1
+        with:
+          weight:             ${{ (inputs.runner-weight == 'apple' || inputs.runner-weight == 'hosted') && inputs.runner-weight || 'light' }}
+          labels:             ${{ inputs.runner-labels }}
+          gh-app-client-id:   ${{ secrets.GH_APP_CLIENT_ID }}
+          gh-app-private-key: ${{ secrets.GH_APP_PRIVATE_KEY }}
+
+      - id: pick-heavy
         if: steps.gate.outputs.proceed == 'true'
         uses: dodi-smart/.github/actions/pick-runner@v1
         with:
@@ -128,23 +144,149 @@ jobs:
           gh-app-client-id:   ${{ secrets.GH_APP_CLIENT_ID }}
           gh-app-private-key: ${{ secrets.GH_APP_PRIVATE_KEY }}
 
-  # ONE job: the build verdict (read from the repo's pr-checks run, or built
-  # here when there is none), then the agent, then a deterministic push and
-  # publish. The order inside the job is the rule: nothing below the verdict
-  # steps can run before there is a verdict.
+  # Waits for the caller's pr-checks run on a LIGHT runner and decides the build
+  # verdict. On most Renovate PRs pr-checks is green and the agent only reads
+  # release notes, so a heavy slot held here for the whole wait would sit idle,
+  # and it would take a slot from the very pr-checks builds being waited on.
+  # `verify` takes the heavy pool only when there is something to build or fix.
   #
-  # Waiting for pr-checks holds this runner idle for a few minutes. That is the
-  # price of not running a second build of the same commit beside it.
-  verify:
+  # Whether the repo calls pr-checks is read from its own workflow files, never
+  # guessed from a timer. Building here as well ran a second full build of the
+  # same commit at the same moment, on the same runner hosts, and the pair ran
+  # out of memory. A run that died of the runner (exit 137, a killed daemon, a
+  # lost runner, a full disk) says nothing about the update, so it is re-run
+  # ONCE, failed jobs only. A second infra failure is reported as such.
+  wait:
     needs: [gate]
     if: needs.gate.outputs.proceed == 'true'
-    runs-on: ${{ fromJson(needs.gate.outputs.runner) }}
+    runs-on: ${{ fromJson(needs.gate.outputs.light) }}
+    timeout-minutes: 120
+    permissions:
+      contents: read
+      actions: write   # read the pr-checks run, and re-run it once after an infra failure
+    outputs:
+      mode:       ${{ steps.ci.outputs.mode }}        # own | ci
+      verdict:    ${{ steps.ci.outputs.verdict }}     # ci mode only; own mode is decided by the build
+      conclusion: ${{ steps.ci.outputs.conclusion }}
+      failed:     ${{ steps.ci.outputs.failed }}
+      url:        ${{ steps.ci.outputs.url }}
+      run-id:     ${{ steps.ci.outputs.run-id }}
+      infra:      ${{ steps.ci.outputs.infra }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPO:     ${{ github.repository }}
+    steps:
+      # Only the workflow files, to see who calls pr-checks. No credentials
+      # persist, and nothing from the PR is installed or run here.
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.ref }}
+          sparse-checkout: .github/workflows
+          persist-credentials: false
+
+      - id: ci
+        env:
+          SHA:         ${{ github.event.pull_request.head.sha }}
+          CI_WORKFLOW: ${{ inputs.ci-workflow }}
+          TIMEOUT:     ${{ inputs.ci-timeout-minutes }}
+        run: |
+          set -euo pipefail
+          LOGS="$RUNNER_TEMP/deps-logs"
+          mkdir -p "$LOGS"
+          out() { echo "$1" >> "$GITHUB_OUTPUT"; }
+          if [ -z "$CI_WORKFLOW" ] || ! grep -rqF "$CI_WORKFLOW@" .github/workflows 2>/dev/null; then
+            out mode=own
+            echo "no workflow here calls ${CI_WORKFLOW:-a CI workflow}, so this job builds the PR itself"
+            exit 0
+          fi
+          out mode=ci
+
+          # The newest run on this commit whose workflow calls CI_WORKFLOW. A
+          # skipped run (a draft, a filtered event) is not one. Listed only
+          # until it is found; after that the run itself is polled.
+          find_run() {
+            gh api "/repos/$REPO/actions/runs?head_sha=$SHA&per_page=100" \
+              | jq -r --arg w "$CI_WORKFLOW" '
+                  [.workflow_runs[]
+                   | select(any(.referenced_workflows[]?; .path | startswith($w)))
+                   | select(.conclusion != "skipped")]
+                  | sort_by(.id) | last | .id // empty'
+          }
+          # `|`, not a tab: read collapses adjacent tabs, and an in-progress
+          # run has an empty conclusion between two.
+          poll_run() {
+            IFS='|' read -r status conclusion attempt url < <(gh api "/repos/$REPO/actions/runs/$id" \
+              --jq '[.status, (.conclusion // ""), .run_attempt, .html_url] | map(tostring) | join("|")')
+          }
+          # Returns 1 on timeout. After a re-run the API can still show the
+          # finished first attempt for a moment, so it waits for the attempt
+          # number to move as well.
+          wait_ci() {
+            local deadline=$(( $(date +%s) + TIMEOUT * 60 ))
+            while [ "$(date +%s)" -lt "$deadline" ]; do
+              [ -n "$id" ] || id=$(find_run || true)
+              if [ -n "$id" ]; then
+                poll_run || true
+                [ "$status" = completed ] && [ "$attempt" -ge "$min_attempt" ] && return 0
+              fi
+              sleep 30
+            done
+            return 1
+          }
+          fetch_log() { gh run view "$id" --repo "$REPO" --log-failed > "$LOGS/ci.log" 2>&1 || true; }
+          infra() {
+            grep -qE 'exit code 137|signal SIGKILL|daemon disappeared unexpectedly|received a shutdown signal|lost communication with the server|No space left on device|ENOSPC|JavaScript heap out of memory' "$LOGS/ci.log"
+          }
+
+          id="" status="" conclusion="" attempt=0 url="" min_attempt=1
+          wait_ci || conclusion=timeout
+          if [ "$conclusion" != success ] && [ "$conclusion" != timeout ] && [ "$attempt" = 1 ] \
+             && { fetch_log; infra; }; then
+            echo "::notice title=Re-running CI::The pr-checks run failed on the runner, not the code. Re-running its failed jobs once."
+            gh run rerun "$id" --repo "$REPO" --failed
+            min_attempt=2
+            wait_ci || conclusion=timeout
+          fi
+
+          failed="" is_infra=""
+          if [ "$conclusion" != success ] && [ -n "$id" ]; then
+            fetch_log
+            failed=$(gh api "/repos/$REPO/actions/runs/$id/jobs" \
+                     --jq '[.jobs[] | select(.conclusion == "failure") | .name] | join(", ")' || true)
+            if infra; then is_infra=true; out infra=true; fi
+          fi
+          out "conclusion=$conclusion"
+          out "failed=$failed"
+          out "url=$url"
+          echo "pr-checks: $conclusion (attempt $attempt) $url ${failed:+failed: $failed}"
+
+          # One verdict string: green | red:<failed jobs> | red:infra (the runner
+          # failed twice). Decided here so `verify` can pick its runner from it.
+          if [ "$conclusion" = success ]; then v=green
+          elif [ "$is_infra" = true ]; then v=red:infra
+          else v="red:${failed:-$conclusion}"
+          fi
+          out "verdict=$v"
+          out "run-id=$id"
+          echo "verdict: $v"
+
+  # ONE job past the wait: the build (here, when the repo has no pr-checks), then
+  # the agent, then a deterministic push and publish. The order inside the job is
+  # the rule: nothing below the verdict steps can run before there is a verdict.
+  #
+  # The runner follows the verdict. A green pr-checks run leaves only reading to
+  # do, so it stays on the light pool; a red one, an infra failure, or a repo
+  # that builds here needs the heavy pool to reproduce and fix.
+  verify:
+    needs: [gate, wait]
+    if: needs.gate.outputs.proceed == 'true'
+    runs-on: ${{ fromJson(needs.wait.outputs.verdict == 'green' && needs.gate.outputs.light || needs.gate.outputs.heavy) }}
     timeout-minutes: 120
     permissions:
       contents: read
       pull-requests: write
       id-token: write
-      actions: write   # read the pr-checks run, and re-run it once after an infra failure
+      actions: read   # the failed jobs' logs of the pr-checks run
     env:
       GH_TOKEN: ${{ github.token }}
       REPO:     ${{ github.repository }}
@@ -225,91 +367,15 @@ jobs:
           } >> "$GITHUB_OUTPUT"
           echo "update=$update fix-rounds=$rounds"
 
-      # The repo's own CI is the build verdict. Building here as well ran a
-      # second full build of the same commit at the same moment, on the same
-      # runner hosts, and the pair ran out of memory. So when the repo calls
-      # the shared pr-checks, this waits for that run on this exact commit and
-      # reads it. Whether it calls it is read from the repo's own workflow
-      # files, never guessed from a timer.
-      #
-      # A run that died of the runner (exit 137, a killed daemon, a lost
-      # runner, a full disk) says nothing about the update, so it is re-run
-      # ONCE, failed jobs only. A second infra failure is reported as such.
-      - id: ci
+      # Logs do not cross jobs, so a red pr-checks verdict fetches the failed
+      # jobs' logs here, where the agent reads them.
+      - if: needs.wait.outputs.mode == 'ci' && needs.wait.outputs.verdict != 'green' && needs.wait.outputs.run-id != ''
         env:
-          SHA:         ${{ github.event.pull_request.head.sha }}
-          CI_WORKFLOW: ${{ inputs.ci-workflow }}
-          TIMEOUT:     ${{ inputs.ci-timeout-minutes }}
+          RUN_ID: ${{ needs.wait.outputs.run-id }}
         run: |
           set -euo pipefail
-          LOGS="$RUNNER_TEMP/deps-logs"
-          mkdir -p "$LOGS"
-          out() { echo "$1" >> "$GITHUB_OUTPUT"; }
-          if [ -z "$CI_WORKFLOW" ] || ! grep -rqF "$CI_WORKFLOW@" .github/workflows 2>/dev/null; then
-            out mode=own
-            echo "no workflow here calls ${CI_WORKFLOW:-a CI workflow}, so this job builds the PR itself"
-            exit 0
-          fi
-          out mode=ci
-
-          # The newest run on this commit whose workflow calls CI_WORKFLOW. A
-          # skipped run (a draft, a filtered event) is not one. Listed only
-          # until it is found; after that the run itself is polled.
-          find_run() {
-            gh api "/repos/$REPO/actions/runs?head_sha=$SHA&per_page=100" \
-              | jq -r --arg w "$CI_WORKFLOW" '
-                  [.workflow_runs[]
-                   | select(any(.referenced_workflows[]?; .path | startswith($w)))
-                   | select(.conclusion != "skipped")]
-                  | sort_by(.id) | last | .id // empty'
-          }
-          # `|`, not a tab: read collapses adjacent tabs, and an in-progress
-          # run has an empty conclusion between two.
-          poll_run() {
-            IFS='|' read -r status conclusion attempt url < <(gh api "/repos/$REPO/actions/runs/$id" \
-              --jq '[.status, (.conclusion // ""), .run_attempt, .html_url] | map(tostring) | join("|")')
-          }
-          # Returns 1 on timeout. After a re-run the API can still show the
-          # finished first attempt for a moment, so it waits for the attempt
-          # number to move as well.
-          wait_ci() {
-            local deadline=$(( $(date +%s) + TIMEOUT * 60 ))
-            while [ "$(date +%s)" -lt "$deadline" ]; do
-              [ -n "$id" ] || id=$(find_run || true)
-              if [ -n "$id" ]; then
-                poll_run || true
-                [ "$status" = completed ] && [ "$attempt" -ge "$min_attempt" ] && return 0
-              fi
-              sleep 30
-            done
-            return 1
-          }
-          fetch_log() { gh run view "$id" --repo "$REPO" --log-failed > "$LOGS/ci.log" 2>&1 || true; }
-          infra() {
-            grep -qE 'exit code 137|signal SIGKILL|daemon disappeared unexpectedly|received a shutdown signal|lost communication with the server|No space left on device|ENOSPC|JavaScript heap out of memory' "$LOGS/ci.log"
-          }
-
-          id="" status="" conclusion="" attempt=0 url="" min_attempt=1
-          wait_ci || conclusion=timeout
-          if [ "$conclusion" != success ] && [ "$conclusion" != timeout ] && [ "$attempt" = 1 ] \
-             && { fetch_log; infra; }; then
-            echo "::notice title=Re-running CI::The pr-checks run failed on the runner, not the code. Re-running its failed jobs once."
-            gh run rerun "$id" --repo "$REPO" --failed
-            min_attempt=2
-            wait_ci || conclusion=timeout
-          fi
-
-          failed=""
-          if [ "$conclusion" != success ] && [ -n "$id" ]; then
-            fetch_log
-            failed=$(gh api "/repos/$REPO/actions/runs/$id/jobs" \
-                     --jq '[.jobs[] | select(.conclusion == "failure") | .name] | join(", ")' || true)
-            if infra; then out infra=true; fi
-          fi
-          out "conclusion=$conclusion"
-          out "failed=$failed"
-          out "url=$url"
-          echo "pr-checks: $conclusion (attempt $attempt) $url ${failed:+failed: $failed}"
+          mkdir -p "$RUNNER_TEMP/deps-logs"
+          gh run view "$RUN_ID" --repo "$REPO" --log-failed > "$RUNNER_TEMP/deps-logs/ci.log" 2>&1 || true
 
       # Only when there is no pr-checks run to read. Every command runs in its
       # OWN subshell: one shell for all of them let a caller's `cd app && ...`
@@ -318,7 +384,7 @@ jobs:
       # log, not from a step name. `build-env` is exported for the build step
       # only, exactly as pr-checks does.
       - id: steps
-        if: steps.ci.outputs.mode == 'own'
+        if: needs.wait.outputs.mode == 'own'
         continue-on-error: true
         env:
           ENV_FILE:  ${{ steps.setup.outputs.env-file }}
@@ -361,29 +427,41 @@ jobs:
 
       # One verdict string, whichever source produced it:
       #   green | red:<steps or jobs> | red:infra (the runner failed twice)
+      # The wait job decided it from the pr-checks run. Only a repo with no
+      # pr-checks is decided here, from its own build.
       - id: result
         env:
-          MODE:       ${{ steps.ci.outputs.mode }}
-          CONCLUSION: ${{ steps.ci.outputs.conclusion }}
-          CI_FAILED:  ${{ steps.ci.outputs.failed }}
-          INFRA:      ${{ steps.ci.outputs.infra }}
-          OWN_FAILED: ${{ steps.steps.outputs.failed }}
+          MODE:        ${{ needs.wait.outputs.mode }}
+          WAIT_RESULT: ${{ needs.wait.outputs.verdict }}
+          OWN_FAILED:  ${{ steps.steps.outputs.failed }}
         run: |
           set -euo pipefail
           if [ "$MODE" = own ]; then
             v=green; [ -n "${OWN_FAILED:-}" ] && v="red:$OWN_FAILED"
-          elif [ "$CONCLUSION" = success ]; then
-            v=green
-          elif [ "${INFRA:-}" = true ]; then
-            v=red:infra
           else
-            v="red:${CI_FAILED:-$CONCLUSION}"
+            v="$WAIT_RESULT"
           fi
           echo "verdict=$v" >> "$GITHUB_OUTPUT"
           echo "verdict: $v"
           if [ "$v" != green ]; then
             echo "::warning title=Dependency build failed::$v. The agent reads the logs and either fixes the cause or explains it on the PR."
           fi
+
+      # Does the agent have anything new to judge? Renovate re-pushes a branch
+      # for a rebase of the same update, and for lock file maintenance, and the
+      # agent read the same changelogs each time. Green builds skip it when the
+      # manifest diff matches the verdict already on the PR; lock file
+      # maintenance has no changelog to read. A red build never skips. The rules
+      # are in actions/deps-intent.
+      - id: intent
+        uses: dodi-smart/.github/actions/deps-intent@v1
+        with:
+          base-ref:   ${{ github.event.pull_request.base.ref }}
+          number:     ${{ github.event.pull_request.number }}
+          verdict:    ${{ steps.result.outputs.verdict }}
+          update:     ${{ steps.facts.outputs.update }}
+          fix-rounds: ${{ steps.facts.outputs.fix-rounds }}
+          labels:     ${{ toJson(github.event.pull_request.labels.*.name) }}
 
       # Opus when there is something to fix or a major to read; Sonnet when the
       # build is green on a minor or patch, where the work is reading notes.
@@ -395,6 +473,7 @@ jobs:
       # "Workflow initiated by non-human actor", and every run here is
       # bot-initiated. Named explicitly rather than '*', from the gate's list.
       - id: agent
+        if: steps.intent.outputs.path == 'agent'
         uses: dodi-smart/.github/actions/run-agent@v1
         with:
           oauth-token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
@@ -413,7 +492,7 @@ jobs:
             - Build result: `${{ steps.result.outputs.verdict }}`.
               `green`, `red:<failed jobs or steps>`, or `red:infra` when the
               runner itself failed twice (out of memory, killed daemon).
-            - Source: ${{ steps.ci.outputs.mode == 'ci' && format('the repo''s own PR checks run, {0}. The failed jobs'' logs are in `{1}/deps-logs/ci.log`.', steps.ci.outputs.url, runner.temp) || format('this job''s own build. Each step''s output is in `{0}/deps-logs/<step>.log`.', runner.temp) }}
+            - Source: ${{ needs.wait.outputs.mode == 'ci' && format('the repo''s own PR checks run, {0}. The failed jobs'' logs are in `{1}/deps-logs/ci.log`.', needs.wait.outputs.url, runner.temp) || format('this job''s own build. Each step''s output is in `{0}/deps-logs/<step>.log`.', runner.temp) }}
             - Update kind: `${{ steps.facts.outputs.update }}`.
             - Fix rounds already pushed: ${{ steps.facts.outputs.fix-rounds }} of 2.
             - Fix commits already on this branch:
@@ -488,7 +567,7 @@ jobs:
 
       # Minted after the agent, so no dependency script ever ran beside it.
       - id: app-token
-        if: ${{ !cancelled() && env.HAS_APP == 'true' && steps.agent.outcome != 'skipped' }}
+        if: ${{ !cancelled() && env.HAS_APP == 'true' && (steps.agent.outcome != 'skipped' || steps.intent.outputs.path == 'lockfile') }}
         uses: actions/create-github-app-token@v3
         with:
           client-id:    ${{ secrets.GH_APP_CLIENT_ID }}
@@ -551,12 +630,22 @@ jobs:
       # the agent wrote, and a branch that carries fix commits is `fixed`, never
       # `verified`, so a later automerge rule can tell the two apart.
       #
+      # Lock file maintenance has no agent report: a green build is `verified`
+      # with a fixed one-line comment, and anything else is `needs-manual`.
+      # When the agent was skipped as unchanged, this step does not run at all,
+      # so the label and comment from the last judged run stand.
+      #
+      # Every comment carries the intent hash, a hidden line the next run reads
+      # to tell a rebase of the same update from a new one.
+      #
       # Skipped when this run pushed: the push starts a new run on the new head,
       # and that run's verdict is the one that counts.
       - id: publish
-        if: ${{ !cancelled() && steps.agent.outcome != 'skipped' && steps.push.outputs.pushed != 'true' }}
+        if: ${{ !cancelled() && (steps.agent.outcome != 'skipped' || steps.intent.outputs.path == 'lockfile') && steps.push.outputs.pushed != 'true' }}
         env:
           VERDICT:  ${{ steps.result.outputs.verdict }}
+          KIND:     ${{ steps.intent.outputs.path }}
+          INTENT:   ${{ steps.intent.outputs.intent }}
           ROUNDS:   ${{ steps.facts.outputs.fix-rounds }}
           REFUSED:  ${{ steps.push.outputs.refused }}
           JSON:     ${{ runner.temp }}/deps-verdict.json
@@ -565,30 +654,41 @@ jobs:
           APP_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
           set -euo pipefail
-          agent=$(jq -r '.verdict // empty' "$JSON" 2>/dev/null || true)
-          reason=$(jq -r '.reason // empty' "$JSON" 2>/dev/null || true)
           missing=false
-          case "$agent" in verified|fixed|needs-manual) ;; *) missing=true ;; esac
-          [ -s "$MD" ] || missing=true
-
-          # The job's facts decide; the agent's word only counts when they agree.
-          if   [ "$VERDICT" != green ] || [ "$missing" = true ]; then label=needs-manual
-          elif [ "$agent" = needs-manual ]; then label=needs-manual
-          elif [ "$ROUNDS" -gt 0 ];         then label=fixed          # green, with fix commits on the branch
-          elif [ "$agent" = fixed ];        then label=needs-manual   # a fix that never reached the branch
-          else                                   label=verified
-          fi
-
-          {
-            if [ "$missing" = true ]; then
-              # shellcheck disable=SC2016  # the backticks are markdown
-              printf '**deps:%s** The verification agent wrote no report. Build: `%s`. See the run log.\n' "$label" "$VERDICT"
+          if [ "$KIND" = lockfile ]; then
+            if [ "$VERDICT" = green ]; then
+              label=verified
+              echo "**deps:verified** Lock file maintenance; the repo's checks passed." > "$COMMENT"
             else
-              printf '**deps:%s** %s\n\n' "$label" "$reason"
-              cat "$MD"
-              [ -z "${REFUSED:-}" ] || printf '\nA fix was prepared but not pushed: %s.\n' "$REFUSED"
+              label=needs-manual
+              echo "**deps:needs-manual** Lock file maintenance; the repo's checks did not pass." > "$COMMENT"
             fi
-          } > "$COMMENT"
+          else
+            agent=$(jq -r '.verdict // empty' "$JSON" 2>/dev/null || true)
+            reason=$(jq -r '.reason // empty' "$JSON" 2>/dev/null || true)
+            case "$agent" in verified|fixed|needs-manual) ;; *) missing=true ;; esac
+            [ -s "$MD" ] || missing=true
+
+            # The job's facts decide; the agent's word only counts when they agree.
+            if   [ "$VERDICT" != green ] || [ "$missing" = true ]; then label=needs-manual
+            elif [ "$agent" = needs-manual ]; then label=needs-manual
+            elif [ "$ROUNDS" -gt 0 ];         then label=fixed          # green, with fix commits on the branch
+            elif [ "$agent" = fixed ];        then label=needs-manual   # a fix that never reached the branch
+            else                                   label=verified
+            fi
+
+            {
+              if [ "$missing" = true ]; then
+                # shellcheck disable=SC2016  # the backticks are markdown
+                printf '**deps:%s** The verification agent wrote no report. Build: `%s`. See the run log.\n' "$label" "$VERDICT"
+              else
+                printf '**deps:%s** %s\n\n' "$label" "$reason"
+                cat "$MD"
+                [ -z "${REFUSED:-}" ] || printf '\nA fix was prepared but not pushed: %s.\n' "$REFUSED"
+              fi
+            } > "$COMMENT"
+          fi
+          [ -z "$INTENT" ] || printf '\n<!-- deps-intent: %s -->\n' "$INTENT" >> "$COMMENT"
 
           # Labels with the App's token when there is one, so a repo that has
           # never seen `deps:fixed` gets it created on first use.

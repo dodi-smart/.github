@@ -1,0 +1,57 @@
+# Decide whether deps-verify's agent has anything new to judge on this push.
+# Thin wrapper; the rules and the reasoning are in intent.sh.
+name: Dependency intent
+description: Hash a dependency PR's manifest diff and decide whether the agent review can be skipped.
+
+inputs:
+  base-ref:
+    description: 'Base branch of the pull request. The checkout must hold origin/<base-ref> and its history.'
+    required: true
+  number:
+    description: 'Pull request number'
+    required: true
+  verdict:
+    description: 'green, or red:<what failed>'
+    required: true
+  update:
+    description: 'major | lockfile | other'
+    required: true
+  fix-rounds:
+    description: 'Fix commits already on the branch'
+    default: '0'
+  labels:
+    description: "JSON array of the pull request's label names"
+    required: true
+  repository:
+    description: 'owner/repo'
+    default: ${{ github.repository }}
+  token:
+    description: 'Token that reads pull request comments and the repository.'
+    default: ${{ github.token }}
+
+outputs:
+  intent:
+    description: 'Hash of the manifest diff, empty when there is none. Publish records it in the comment.'
+    value: ${{ steps.intent.outputs.intent }}
+  path:
+    description: 'agent | unchanged | lockfile'
+    value: ${{ steps.intent.outputs.path }}
+  reason:
+    description: 'Why that path, for the log'
+    value: ${{ steps.intent.outputs.reason }}
+
+runs:
+  using: composite
+  steps:
+    - id: intent
+      shell: bash
+      env:
+        BASE_REF: ${{ inputs.base-ref }}
+        NUMBER:   ${{ inputs.number }}
+        VERDICT:  ${{ inputs.verdict }}
+        UPDATE:   ${{ inputs.update }}
+        ROUNDS:   ${{ inputs.fix-rounds }}
+        LABELS:   ${{ inputs.labels }}
+        REPO:     ${{ inputs.repository }}
+        GH_TOKEN: ${{ inputs.token }}
+      run: ${{ github.action_path }}/intent.sh run

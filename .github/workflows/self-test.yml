@@ -254,16 +254,19 @@ jobs:
           python3 -c "
           import sys, yaml
 
+          # Each workflow picks one pool, named runner. deps-verify picks two, because
+          # its wait job runs on light and its verify job takes heavy only to
+          # build: light and heavy, each read by runs-on.
           agent_workflows = [
-              ('issue-triage.yml',   'triage'),
-              ('issue-implement.yml','implement'),
-              ('claude-assist.yml',  'assist'),
-              ('pr-review.yml',      'review'),
-              ('deps-verify.yml',    'verify'),
+              ('issue-triage.yml',   'triage',    ['runner']),
+              ('issue-implement.yml','implement', ['runner']),
+              ('claude-assist.yml',  'assist',    ['runner']),
+              ('pr-review.yml',      'review',    ['runner']),
+              ('deps-verify.yml',    'verify',    ['light', 'heavy']),
           ]
 
           bad = []
-          for f, agent_job in agent_workflows:
+          for f, agent_job, pools in agent_workflows:
               path = '.github/workflows/' + f
               jobs = yaml.safe_load(open(path))['jobs']
 
@@ -278,16 +281,18 @@ jobs:
 
               steps = gate.get('steps') or []
               pick = [s for s in steps if 'pick-runner@' in str(s.get('uses', ''))]
-              if len(pick) != 1:
-                  bad.append(f + ': gate job must have exactly one pick-runner step, found ' + str(len(pick)))
+              if len(pick) != len(pools):
+                  bad.append(f + ': gate job must have exactly %d pick-runner step(s), found %d' % (len(pools), len(pick)))
                   continue
 
-              cond = str(pick[0].get('if', ''))
-              if 'proceed' not in cond:
-                  bad.append(f + ': the pick step is not guarded on a proceed output (if: %r)' % cond)
+              for step in pick:
+                  cond = str(step.get('if', ''))
+                  if 'proceed' not in cond:
+                      bad.append(f + ': a pick step is not guarded on a proceed output (if: %r)' % cond)
 
-              if 'runner' not in (gate.get('outputs') or {}):
-                  bad.append(f + ': gate job has no runner output for the agent job to read')
+              for pool in pools:
+                  if pool not in (gate.get('outputs') or {}):
+                      bad.append(f + ': gate job has no ' + pool + ' output for the agent job to read')
 
               job = jobs.get(agent_job)
               if job is None:
@@ -295,13 +300,74 @@ jobs:
                   continue
               if 'pick-runner' in (job.get('needs') or []):
                   bad.append(f + ': ' + agent_job + ' job still needs pick-runner')
-              if 'needs.gate.outputs.runner' not in str(job.get('runs-on', '')):
-                  bad.append(f + ': ' + agent_job + ' job does not read runs-on from needs.gate.outputs.runner')
+              for pool in pools:
+                  if 'needs.gate.outputs.' + pool not in str(job.get('runs-on', '')):
+                      bad.append(f + ': ' + agent_job + ' job does not read runs-on from needs.gate.outputs.' + pool)
 
           if bad:
               sys.exit('::error::' + '; '.join(bad) + '. Folding the picker into the gate job is what makes a '
                         'proceeding agent run cost one hosted start instead of two.')
           print('every agent workflow picks its runner inside the gate job, guarded on proceed')
+          "
+
+      # A skip that should not have happened is the costly mistake here, above
+      # all a `verified` label on a red build.
+      - name: deps-verify decides when the agent is skipped
+        run: ./actions/deps-intent/test.sh
+
+      # A green Renovate PR must not hold a heavy runner while it waits. The wait
+      # job runs on light and decides the verdict; verify takes heavy only when
+      # the verdict is not green. The agent runs only when deps-intent says so,
+      # and every step after it must still work when it did not run.
+      - name: deps-verify waits on light and takes heavy only to build
+        run: |
+          set -euo pipefail
+          python3 -c "
+          import sys, yaml
+          doc = yaml.safe_load(open('.github/workflows/deps-verify.yml'))
+          jobs = doc['jobs']
+          bad = []
+          wait, verify = jobs.get('wait'), jobs.get('verify')
+          if not wait or not verify:
+              sys.exit('::error::deps-verify needs a wait job and a verify job')
+          if 'needs.gate.outputs.light' not in str(wait.get('runs-on')) or 'heavy' in str(wait.get('runs-on')):
+              bad.append('wait must run on the light pool only')
+          if 'wait' not in (verify.get('needs') or []):
+              bad.append('verify must need wait')
+          ro = str(verify.get('runs-on'))
+          if 'needs.wait.outputs.verdict' not in ro or 'green' not in ro or 'needs.gate.outputs.light' not in ro or 'needs.gate.outputs.heavy' not in ro:
+              bad.append('verify runs-on must choose light for a green verdict and heavy otherwise')
+          steps = wait['steps']
+          checkout = [s for s in steps if 'actions/checkout' in str(s.get('uses', ''))]
+          if len(checkout) != 1 or 'sparse-checkout' not in checkout[0].get('with', {}) or checkout[0]['with'].get('persist-credentials') is not False:
+              bad.append('wait must sparse-checkout the workflows without persisting credentials')
+          if any('run-agent@' in str(s.get('uses', '')) or 'setup-stack@' in str(s.get('uses', '')) for s in steps):
+              bad.append('wait must not run the agent or install a toolchain')
+          if (wait.get('permissions') or {}).get('actions') != 'write':
+              bad.append('wait needs actions: write to re-run pr-checks once')
+          for out in ('mode', 'verdict', 'conclusion', 'failed', 'url', 'run-id', 'infra'):
+              if out not in (wait.get('outputs') or {}):
+                  bad.append('wait lost output ' + out)
+          vs = verify['steps']
+          ids = [s.get('id') for s in vs]
+          # The agent, and everything that acts on its work, follows the decision.
+          agent = [s for s in vs if s.get('id') == 'agent'][0]
+          if 'steps.intent.outputs.path' not in str(agent.get('if', '')) or 'agent' not in str(agent.get('if', '')):
+              bad.append('the agent step must run only when deps-intent says agent')
+          if not (ids.index('result') < ids.index('intent') < ids.index('agent')):
+              bad.append('intent must decide after the verdict and before the agent')
+          pub = [s for s in vs if s.get('id') == 'publish'][0]
+          if 'lockfile' not in str(pub.get('if', '')) or 'unchanged' in str(pub.get('if', '')):
+              bad.append('publish must run for an agent report or lock file maintenance, never for an unchanged skip')
+          if 'deps-intent: %s' not in pub['run']:
+              bad.append('publish no longer writes the intent marker into its comment')
+          if '= green ]' not in pub['run']:
+              bad.append('publish must label lock file maintenance from the verdict, never unconditionally')
+          if 'deps-intent@' not in str([s.get('uses') for s in vs]):
+              bad.append('verify no longer calls deps-intent')
+          if bad:
+              sys.exit('::error::' + '; '.join(bad))
+          print('deps-verify waits on light and takes heavy only when there is something to build')
           "
 
       # deps-verify may push fix commits, so where the push happens is the

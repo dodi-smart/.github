@@ -43,9 +43,10 @@ on:
         default: ""
       migrations-paths:
         description: >-
-          Newline-separated paths whose change triggers the `types` job's
-          heavy steps on a pull request. `workflow_dispatch` ignores this and
-          always runs them.
+          Newline-separated paths whose change triggers the heavy steps of the
+          `types` and `pgtap` jobs on a pull request (`pgtap` also runs on a
+          change under `supabase/tests`). Any event that is not a pull request
+          ignores this and always runs them.
         type: string
         default: |
           supabase/migrations
@@ -82,75 +83,45 @@ jobs:
     timeout-minutes: ${{ inputs.timeout-minutes }}
     steps:
       - uses: actions/checkout@v7
-        with:
-          fetch-depth: 0
 
-      # `workflow_dispatch` has no base branch to diff against, so run
-      # everything: someone pressing the button wants the checks, not a filter.
-      # Any other event without a usable base ref (a push, say) runs everything
-      # too, since only a pull request has a merge base to diff.
+      # Only a pull request has a diff to read. Any other event (a dispatch, a
+      # push) matches everything, since someone pressing the button wants the
+      # checks, not a filter. So does a diff the API could not return.
       - name: Check for migration or seed changes
         id: changes
-        run: |
-          set -euo pipefail
-          if [ "${{ github.event_name }}" != "pull_request" ]; then
-            echo "changed=true" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          git fetch origin "${{ github.base_ref }}"
-          mapfile -t paths < <(printf '%s\n' "${{ inputs.migrations-paths }}" | sed '/^[[:space:]]*$/d')
-          if [ "${#paths[@]}" -eq 0 ]; then
-            echo "changed=true" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          if git diff --name-only "origin/${{ github.base_ref }}"...HEAD -- "${paths[@]}" | grep -q .; then
-            echo "changed=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "changed=false" >> "$GITHUB_OUTPUT"
-          fi
+        uses: dodi-smart/.github/actions/changed-files@v1
+        with:
+          patterns: ${{ inputs.migrations-paths }}
 
       - name: Skip (no migration or seed changes)
-        if: steps.changes.outputs.changed == 'false'
+        if: steps.changes.outputs.matched != 'true'
         run: echo "No migration or seed changes detected, skipping database checks."
 
       - name: Setup Supabase CLI
-        if: steps.changes.outputs.changed == 'true'
+        if: steps.changes.outputs.matched == 'true'
         uses: supabase/setup-cli@v3.0.1
         with:
           version: ${{ inputs.cli-version }}
 
-      # On failure, dump every container's state and logs: `db start` reports
-      # only "connection refused", which says the postgres container died but
-      # not why. The real error is in that container's log on the runner,
-      # unreachable except through this step's own output.
       - name: Start Supabase (local)
-        if: steps.changes.outputs.changed == 'true'
-        run: |
-          if ! supabase db start --debug; then
-            echo "::group::docker ps -a"
-            docker ps -a || true
-            echo "::endgroup::"
-            for c in $(docker ps -aq); do
-              echo "::group::logs $(docker inspect --format '{{.Name}} ({{.Config.Image}}) exit={{.State.ExitCode}} oom={{.State.OOMKilled}}' "$c" 2>/dev/null || echo "$c")"
-              docker logs --tail 100 "$c" 2>&1 || true
-              echo "::endgroup::"
-            done
-            exit 1
-          fi
+        if: steps.changes.outputs.matched == 'true'
+        uses: dodi-smart/.github/actions/supabase-start@v1
 
       # `db start` applies the seed once, so a fresh reset can never catch an
       # insert that is not re-runnable. A staging `db push --include-seed`
       # applies the same file again on every merge, where the second
       # application is the one that fails. Reproduce that here.
       - name: Verify the seed is re-runnable
-        if: steps.changes.outputs.changed == 'true' && inputs.seed-check
+        if: steps.changes.outputs.matched == 'true' && inputs.seed-check
         run: |
           psql "postgresql://postgres:postgres@127.0.0.1:54322/postgres" \
             -v ON_ERROR_STOP=1 -f supabase/seed.sql
           echo "Seed re-applied cleanly."
 
       - name: Verify types (local)
-        if: steps.changes.outputs.changed == 'true'
+        if: steps.changes.outputs.matched == 'true'
+        env:
+          TYPES_PATH: ${{ inputs.types-path }}
         run: |
           # `supabase gen types --local` spins a pinned postgres-meta container;
           # pulling it can hit public-registry rate limits (toomanyrequests) on
@@ -174,9 +145,9 @@ jobs:
             echo "::error::supabase gen types failed after 5 attempts (see logs above)."
             exit 1
           fi
-          if ! diff -q types.gen.ts "${{ inputs.types-path }}" > /dev/null 2>&1; then
-            echo "::error::TypeScript types are out of date for ${{ inputs.types-path }}. Run: supabase gen types typescript --local > ${{ inputs.types-path }}"
-            diff types.gen.ts "${{ inputs.types-path }}" || true
+          if ! diff -q types.gen.ts "$TYPES_PATH" > /dev/null 2>&1; then
+            echo "::error::TypeScript types are out of date for $TYPES_PATH. Run: supabase gen types typescript --local > $TYPES_PATH"
+            diff types.gen.ts "$TYPES_PATH" || true
             exit 1
           fi
           echo "TypeScript types are up-to-date"
@@ -209,29 +180,35 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - uses: supabase/setup-cli@v3.0.1
+      # Reports success, not skipped, when nothing relevant changed, the way the
+      # `types` job does, so a caller can require it on every pull request.
+      - name: Check for migration, seed or test changes
+        id: changes
+        uses: dodi-smart/.github/actions/changed-files@v1
+        with:
+          # The same paths as the `types` job, plus the tests themselves. A blank
+          # `migrations-paths` means no filter, so the tests path is left out then:
+          # it would turn "always run" into "run when a test changed".
+          patterns: ${{ inputs.migrations-paths != '' && format('{0}{1}supabase/tests', inputs.migrations-paths, fromJSON('"\n"')) || '' }}
+
+      - name: Skip (no migration, seed or test changes)
+        if: steps.changes.outputs.matched != 'true'
+        run: echo "No migration, seed or test changes detected, skipping database tests."
+
+      - name: Setup Supabase CLI
+        if: steps.changes.outputs.matched == 'true'
+        uses: supabase/setup-cli@v3.0.1
         with:
           version: ${{ inputs.cli-version }}
 
-      # Same failure dump as the types job: `db start` only ever says
-      # "connection refused", and the cause is in the container log.
       - name: Start Supabase (local)
-        run: |
-          if ! supabase db start --debug; then
-            echo "::group::docker ps -a"
-            docker ps -a || true
-            echo "::endgroup::"
-            for c in $(docker ps -aq); do
-              echo "::group::logs $(docker inspect --format '{{.Name}} ({{.Config.Image}}) exit={{.State.ExitCode}} oom={{.State.OOMKilled}}' "$c" 2>/dev/null || echo "$c")"
-              docker logs --tail 100 "$c" 2>&1 || true
-              echo "::endgroup::"
-            done
-            exit 1
-          fi
+        if: steps.changes.outputs.matched == 'true'
+        uses: dodi-smart/.github/actions/supabase-start@v1
 
       # `supabase test db` runs pg_prove over supabase/tests/*.sql against the
       # local database. Every file is expected to be self-contained (begin ...
       # rollback), so order does not matter and the seed `db start` applied is
       # left untouched.
       - name: Run pgTAP suite
+        if: steps.changes.outputs.matched == 'true'
         run: supabase test db --debug

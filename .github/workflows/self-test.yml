@@ -59,6 +59,16 @@ jobs:
       - name: Sticky comment picks the right comment
         run: ./actions/sticky-comment/test.sh
 
+      # A skip built on changed-files is a positive claim, so every doubt has to
+      # come out as `matched=true`, the 3000-file cap included.
+      - name: Changed files count every doubt as a match
+        run: ./actions/changed-files/test.sh
+
+      # The wait must never pass on the job's own Deployment, and must count the
+      # commit before a `[skip ci]` release commit, the one the host builds.
+      - name: Deployment wait proves the host's deployment
+        run: ./actions/wait-for-deployment/test.sh
+
       # `sticky-comment` is read only in tag mode, which a non-empty `prompt`
       # switches off. The pair costs a full agent run and posts nothing.
       # run-agent refuses it at runtime; this catches it at review time.
@@ -523,6 +533,34 @@ jobs:
           print('no build directory is cached')
           "
 
+      # Two governed rules about the Supabase workflows. A value from `inputs` or
+      # `github` reaches a script through `env:`, never inside the script body,
+      # where it is a template injection. And the image cache key is exact: a
+      # `restore-keys` line would load images the CLI no longer asks for.
+      - name: Supabase workflows keep scripts clean and the image cache exact
+        run: |
+          set -euo pipefail
+          python3 - <<'SUPABASE'
+          import sys, yaml
+          bad = []
+          for f in ['.github/workflows/supabase-checks.yml', '.github/workflows/supabase-deploy.yml']:
+              doc = yaml.safe_load(open(f))
+              for name, job in doc['jobs'].items():
+                  for step in job.get('steps') or []:
+                      if '$' + '{{' in str(step.get('run', '')):
+                          bad.append('%s: %s interpolates an expression into a run script' % (f, step.get('name') or step.get('id')))
+          start = yaml.safe_load(open('actions/supabase-start/action.yml'))['runs']['steps']
+          caches = [s for s in start if str(s.get('uses', '')).startswith('actions/cache@')]
+          if len(caches) != 1:
+              bad.append('actions/supabase-start must hold exactly one actions/cache step')
+          elif 'restore-keys' in (caches[0].get('with') or {}):
+              bad.append('actions/supabase-start uses restore-keys; the key must be exact')
+          if bad:
+              print('::error::' + '; '.join(bad) + '. See AGENTS.md.')
+              sys.exit(1)
+          print('supabase workflows: scripts clean, cache key exact')
+          SUPABASE
+
       # v1 moves the moment semantic-release succeeds, so the only thing between
       # a broken merge and every caller is this `needs`. Without it the two
       # workflows race, and v1 has already moved when Self test reports.
@@ -686,6 +724,17 @@ jobs:
       # What a consumer gets from the installer, checked by resolving.
       - name: Shared config links into a consumer
         run: ./actions/semantic-release-config/test.sh
+
+      # env and build-env parsing, and bun version resolution.
+      - name: setup-stack parses env files and resolves bun
+        run: ./actions/setup-stack/test.sh
+
+      # A branch ref moves under every caller, and Renovate never proposes a change.
+      - name: No action is pinned to a branch
+        run: |
+          if grep -nE '^\s*-?\s*uses:\s*\S+@(stable|main|master)\s*(#.*)?$' .github/workflows/*.yml actions/*/action.yml; then
+            echo "::error::pin a tag or a full SHA, never a branch"; exit 1
+          fi
 
       - name: Shell scripts pass shellcheck
         run: |

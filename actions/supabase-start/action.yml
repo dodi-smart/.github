@@ -1,0 +1,78 @@
+# Start the local Supabase database, with the stack's Docker images cached.
+#
+# `supabase db start` spends about 65 of its 85 seconds pulling images, and two
+# jobs of one workflow pull the same ones. Loading a saved tar costs about half
+# of that, and takes the registry's rate limits out of the path.
+#
+# Run it after `supabase/setup-cli`: the key names the CLI, which is what picks
+# the image tags.
+#
+# The key is exact, with no `restore-keys`. A near miss would load images the CLI
+# no longer asks for, and a cache that quietly serves stale images is worse than
+# a cold pull. What picks the tags: the CLI version, `supabase/config.toml` (the
+# postgres major version, and which services are on), and the pins `supabase
+# link` writes to `supabase/.temp/*-version`.
+#
+# Only the images of the containers `db start` launched are saved. Anything a
+# later step pulls, such as the type generator's image, is pulled as before.
+name: Supabase start
+description: Start the local Supabase database, restoring the stack's Docker images from the cache and saving them on a miss.
+
+runs:
+  using: composite
+  steps:
+    - id: key
+      shell: bash
+      run: |
+        set -euo pipefail
+        cli="$(supabase --version)"
+        pins="$({ cat supabase/config.toml supabase/.temp/*-version 2>/dev/null || true; } | sha256sum | cut -c1-16)"
+        echo "key=supabase-images-v1-${RUNNER_OS}-${RUNNER_ARCH}-${cli}-${pins}" >> "$GITHUB_OUTPUT"
+
+    - id: cache
+      uses: actions/cache@v6
+      with:
+        path: ${{ runner.temp }}/supabase-images.tar
+        key: ${{ steps.key.outputs.key }}
+
+    - name: Load cached images
+      if: steps.cache.outputs.cache-hit == 'true'
+      shell: bash
+      env:
+        TAR: ${{ runner.temp }}/supabase-images.tar
+      run: docker load --input "$TAR" || echo "::warning::could not load the cached images; \`db start\` will pull them"
+
+    # On failure, dump every container's state and logs: `db start` reports only
+    # "connection refused", which says the postgres container died but not why.
+    # The real error is in that container's log on the runner, unreachable except
+    # through this step's own output.
+    - name: Start Supabase (local)
+      shell: bash
+      run: |
+        if ! supabase db start --debug; then
+          echo "::group::docker ps -a"
+          docker ps -a || true
+          echo "::endgroup::"
+          for c in $(docker ps -aq); do
+            echo "::group::logs $(docker inspect --format '{{.Name}} ({{.Config.Image}}) exit={{.State.ExitCode}} oom={{.State.OOMKilled}}' "$c" 2>/dev/null || echo "$c")"
+            docker logs --tail 100 "$c" 2>&1 || true
+            echo "::endgroup::"
+          done
+          exit 1
+        fi
+
+    # The cache action saves this file when the job ends, and only on a miss.
+    - name: Save images for the cache
+      if: steps.cache.outputs.cache-hit != 'true'
+      shell: bash
+      env:
+        TAR: ${{ runner.temp }}/supabase-images.tar
+      run: |
+        set -euo pipefail
+        images="$(docker ps --format '{{.Image}}' | grep -E '(public\.ecr\.aws|ghcr\.io)/supabase/' | sort -u || true)"
+        if [ -z "$images" ]; then
+          echo "::notice::no Supabase images found to cache"
+          exit 0
+        fi
+        printf '%s\n' "$images" | xargs docker save --output "$TAR"
+        du -h "$TAR"

@@ -163,7 +163,10 @@ regression once did.
 | `health-url` | `""` | Base URL to probe after deploy. Empty skips the health check entirely |
 | `health-routes` | `"/"` | Space-separated routes appended to `health-url` |
 | `health-attempts` | `6` | Retries before the health check fails the job |
-| `timeout-minutes` | `15` | Job timeout |
+| `health-wait-environment` | `""` | Wait for a successful GitHub Deployment of the deployed commit in this environment before probing. See below |
+| `health-sha-route` | `""` | Route on `health-url` whose body carries the deployed commit's sha. The other proof, for a host that posts no Deployments |
+| `health-wait-timeout-minutes` | `10` | How long the whole wait may take before the job fails |
+| `timeout-minutes` | `15` | Job timeout. Raise it to cover `health-wait-timeout-minutes` plus the deploy itself |
 
 #### Secrets
 
@@ -179,6 +182,33 @@ that leaves every route erroring must not go green. A warning-only check is
 strictly worse than no check, because it reads as a passing signal that
 nobody then goes back to question.
 
+#### What the health check proves
+
+On its own, only that `health-url` answers. A frontend host builds the same push
+in parallel with this job and moves its stable URL when its own build ends, so a
+check that runs right after `db push` usually reaches the deployment that was
+already live. With neither wait input set, the job prints a notice saying so.
+
+Set one, and the check waits for this commit first:
+
+- `health-wait-environment` polls the repository's GitHub Deployments for the
+  deployed commit in that environment, and continues on a `success` status. A
+  `failure` or `error` status, or `health-wait-timeout-minutes` passing, fails
+  the job. Hosts post these as their build progresses. The deployment this job's
+  own `environment:` creates is ignored, since it succeeds when the job does.
+  The token needs `deployments: read`; a caller that narrows `permissions:` must
+  keep it.
+- A release commit carries `[skip ci]`, which hosts honour, so the host builds
+  the commit before it. When the deployed commit's message asks CI to skip it,
+  the deployment of its parent counts too.
+- `health-sha-route` is the fallback for a host without Deployments. The caller
+  exposes a route that returns the commit sha, and the wait passes when the body
+  contains the first seven characters of the deployed commit or of its parent
+  under the same rule.
+- The routes are then probed at `health-url`.
+
+The log shows the deployment id and commit before the routes are probed.
+
 ### Composite actions
 
 | Action | Purpose |
@@ -189,7 +219,29 @@ nobody then goes back to question.
 | `actions/sticky-comment` | One keyed comment per pull request, rewritten in place on every later run |
 | `actions/deps-intent` | Hashes a dependency PR's manifest diff and decides whether `deps-verify.yml`'s agent has anything new to judge |
 | `actions/semantic-release-config` | Links the shared semantic-release config into a consumer's `node_modules` from a private prefix, never from a registry and never into the checkout it came with |
+| `actions/changed-files` | A pull request's changed files through the API, with no checkout, and whether any match a set of globs |
+| `actions/wait-for-deployment` | Waits for the frontend host's successful GitHub Deployment of the checked-out commit, or for a route to report its sha. What `supabase-deploy.yml`'s health check calls |
+| `actions/supabase-start` | Starts the local Supabase database with the stack's Docker images restored from the cache, saved on a miss. What both jobs of `supabase-checks.yml` call |
 | `actions/pick-runner` | Resolves a runner weight to a selector, validated against the live fleet. What `pick-runner.yml` calls, and what a job that already runs hosted (like `pr-checks.yml`'s `pick`) calls directly to pick more than once without a second hosted job. |
+
+`actions/changed-files` needs no checkout. It takes `patterns` (newline-separated
+paths or globs, `fnmatch`-style, so `*` crosses `/`; a pattern also matches everything under it),
+and outputs `files` (one path per line, a rename under both names) and `matched`.
+Skip work only when `matched` is `false`. It is `true` whenever the answer
+cannot be known. That covers an event that is not a pull request, no
+`patterns`, an empty or unreadable list, and a list at the API's 3000-file cap,
+which is cut off. The token needs `pull-requests: read`.
+
+```yaml
+- id: changes
+  uses: dodi-smart/.github/actions/changed-files@v1
+  with:
+    patterns: |
+      db/*
+      **.sql
+- if: steps.changes.outputs.matched == 'true'
+  run: ./heavy-check.sh
+```
 
 **`agent-gate` inputs and outputs a caller may use beyond the basics.**
 
@@ -347,8 +399,9 @@ daemon. One job keeps one checkout and one warm `GRADLE_USER_HOME`. The split
 stays the right default for a cheap, independent lint.
 
 `env` (newline `KEY=VALUE`) reaches every command step, which is where build
-tuning like `GRADLE_OPTS` belongs. `build-env` still applies to the build step
-alone.
+tuning like `GRADLE_OPTS` belongs. `build-env` applies to the build step
+alone, and is parsed exactly like `env`: blank lines and `# comment` lines are
+skipped, and the first `=` splits the name from the value.
 
 ```yaml
 with:
@@ -407,6 +460,39 @@ split mode, where `checks / checks` and `checks / all` do not -- exactly one
 of those two is always skipped depending on `single-job`, so neither can be
 named in a ruleset that has to work for every caller.
 
+### setup-stack inputs and outputs
+
+Inputs beyond `stack` and the command overrides:
+
+| Input | Default | Meaning |
+|---|---|---|
+| `env` | empty | Newline `KEY=VALUE` for every command step. Written to the file named by the `env-file` output, because `$GITHUB_ENV` refuses `NODE_OPTIONS`. |
+| `build-env` | empty | The same format and the same parser, for the build command only. Written to the `build-env-file` output. |
+| `bun-version` | `auto` | See below. |
+| `rust-toolchain` | `stable` | Passed to the pinned rust toolchain action: `stable`, `nightly`, `1.89.0`, or any rustup specifier. |
+
+Outputs: `env-file` and `build-env-file` (both always written, empty when
+nothing was given, so source them unconditionally), plus the resolved `install`,
+`lint`, `typecheck`, `test`, `build` and `design-lint` commands.
+
+```sh
+. "$ENV_FILE"          # every command step
+. "$BUILD_ENV_FILE"    # the build step only
+```
+
+**Bun follows the repo.** `bun-version: auto` (or empty) installs the version the
+repo pins, so CI runs what developers run and a frozen install does not fail on a
+lockfile format the newest bun changed. It checks, from the checkout root and in
+this order: `package.json` `packageManager` (`bun@x.y.z`, any `+sha` suffix
+dropped), `.bun-version`, `.tool-versions` (`bun x.y.z`), `mise.toml` and
+`.mise.toml` (`bun = "x.y.z"` under `[tools]`). The step log says what it chose
+and from where. When none names bun it installs `latest` and prints a notice.
+Any explicit version, `latest` included, is used as given. The repo must be
+checked out before `setup-stack` runs.
+
+**Rust is pinned.** The toolchain action is pinned to a commit of its `master`
+branch (it publishes no version tags), and Renovate can still move that pin.
+
 ### Caches
 
 `setup-stack` resolves the mode from `isolate`, `cache` and the runner:
@@ -444,12 +530,23 @@ gate stay with you, same as `pr-checks.yml`.
 |---|---|---|
 | `cli-version` | *(required)* | Supabase CLI version, pinned exact with a `renovate: datasource=npm depName=supabase` marker tracking the same `supabase` devDependency the repo installs from. Generated types must come from that same CLI or the diff below fails on formatting, not schema. |
 | `types-path` | `""` | Path of the committed generated types. Empty disables the `types` job (reported skipped, not failed). |
-| `migrations-paths` | `supabase/migrations`, `supabase/seed.sql` | Newline-separated paths whose change triggers the `types` job's heavy steps on a pull request. `workflow_dispatch` always runs them. |
+| `migrations-paths` | `supabase/migrations`, `supabase/seed.sql` | Newline-separated paths (a directory covers what is under it) or globs whose change triggers the heavy steps of the `types` and `pgtap` jobs on a pull request (`pgtap` also on a change under `supabase/tests`). Any event that is not a pull request always runs them. |
 | `seed-check` | `false` | Re-apply `supabase/seed.sql` after `db start` to prove it is re-runnable. |
 | `deno-dir` | `""` | Directory of Deno-only source, e.g. `supabase/functions`. Empty disables the `deno` job. |
 | `pgtap` | `false` | Run `supabase test db` in its own job. |
 | `deno-version` | `v2.x` | Passed straight to `denoland/setup-deno`. |
 | `timeout-minutes` | `30` | Per job. |
+
+The `types` and `pgtap` jobs read the pull request's file list through the API
+instead of cloning the history, and always report success, never skipped, when
+nothing relevant changed. Reading it needs `pull-requests: read` on the token; a
+caller that narrows `permissions:` must keep it, and without it the jobs run
+everything rather than skip. The local stack's Docker images are cached between
+runs under an exact key: CLI version, runner OS and architecture, and a hash of
+`supabase/config.toml` and any `supabase/.temp/*-version`. A pull request's first
+run pulls them, since a cache saved on a pull request is visible to that pull
+request alone. Run these checks on pushes to the default branch as well, and every
+pull request reads what those runs saved.
 
 ```yaml
 jobs:
@@ -759,7 +856,8 @@ Which runner it takes:
   `deps:verified` and a one-line comment, with no agent. A red one goes to the
   agent as before.
 
-`env` and `build-env` mean what they mean in `pr-checks`. They matter when the
+`env` and `build-env` mean what they mean in `pr-checks`: same format, same
+parser, and `build-env` reaches the build command only. They matter when the
 agent reproduces a failure to fix it, and when the job builds on its own. Copy
 the caller's `pr-checks` block across:
 

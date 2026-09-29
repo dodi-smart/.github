@@ -71,7 +71,7 @@ why, not history.
 | `.github/workflows/release.yml` | The semantic-release tooling is installed with `npm install --no-save`, never `-D` | `-D` wrote the tooling into the caller's `package.json` and created a `package-lock.json`, and the release commit committed both. In a bun repo Renovate then updated the npm lockfile instead of `bun.lock`, and every dependency PR failed its frozen install. |
 | `.github/workflows/release.yml` | The `backmerge` job auto-resolves `package.json`, `package-lock.json`, `bun.lock`, `pnpm-lock.yaml`, `yarn.lock` and `CHANGELOG.md` toward the release branch, plus whatever `backmerge-resolve-paths` names, and fails on any other conflict | The shared git plugin's default assets cover every lockfile it might commit, so a real backmerge in a bun or pnpm repo conflicts on more than `package.json`. `backmerge-resolve-paths` covers a caller's own manifest, e.g. one kept in a subdirectory. Widening the built-in list further would resolve a real conflict silently; add a caller path instead. |
 | `.github/workflows/release.yml` | The release commit, the tag and the backmerge are pushed with the org App's token whenever `GH_APP_CLIENT_ID` is set, never only with `GITHUB_TOKEN` | The org rulesets that protect `develop` and `main` name the App as their bypass actor. `GITHUB_TOKEN` is not one and cannot be made one, so a push with it is rejected on every protected branch; every develop release in the fleet failed that way for two days in September 2026. The fallback to `GITHUB_TOKEN` exists only for a repo outside the rulesets. |
-| `.github/workflows/publish-release.yml` | `v1` moves only after `Self test` passes on the exact commit being released: the `release` job `needs` a `self-test` job that calls `self-test.yml`, which has no push trigger | semantic-release force-moves `v1` the moment it succeeds, and a PR's `Self test` covers the PR head, not the merge result. Run in parallel, a merge that is broken only in combination reached every caller before the test reported. `Self test` asserts the `needs` edge. Its concurrency group cancels only pull request runs, so a newer push cannot cancel the run a release waits on. |
+| `.github/workflows/publish-release.yml` | `v1` moves only after `Self test` passes on the exact commit being released: the `release` job `needs` a `self-test` job that calls `self-test.yml`, which has no push trigger | semantic-release force-moves `v1` the moment it succeeds, and a PR's `Self test` covers the PR head, not the merge result. Run in parallel, a merge that is broken only in combination reached every caller before the test reported. `Self test` asserts the `needs` edge. Only a pull request run shares a concurrency group, so nothing cancels the run a release waits on. |
 | all workflows | Callers pin a released tag | `v1` moves only after a change runs green on a real repo. Changing or removing an input is breaking. Add an alias and warn, as `deps-verify` does for `setup:`, or cut `v2`. |
 | `README.md` | The onboarding badge says `v1`, and it moves only when the tag it names does | The badge in a consuming repo's README asserts that repo calls these workflows at `@v1`. It is verified against live state by the onboarding tooling, which fails a repo displaying it while its workflows are disabled or its properties unset. Changing the badge's version here without cutting that version is how every onboarded repo starts advertising something untrue at once. |
 | `README.md` | The badge names no repo but this one | It is rendered inside repos this org does not control the visibility of, and it is the one artefact from here that a reader outside the org may see in context. Keep its text to what these workflows are, never who uses them. |
@@ -178,16 +178,15 @@ The workflows in this repo call each other, and their composite actions, at
 `v1` is moved by semantic-release, not by hand. `release.config.mjs` runs a
 `successCmd` that force-moves the major tag onto each release, so the version
 comes from the commit messages and the tag follows it. Write conventional commits
-or nothing is released. `Publish release` runs `Self test` first, as a called
-workflow, and the release job needs it, so a red Self test on the merge commit
-leaves `v1` where it was.
+or nothing is released. A red `Self test` on the merge commit leaves `v1` where
+it was (see the `publish-release.yml` row).
 
 Three consequences, and the first one is the one people get wrong:
 
 - **Merging to `main` is a rollout, not a staging step.** The tag moves in the
-  same run, once `Self test` has passed on the merge commit, so every caller is on the new code before anyone looks at it. That
-  includes the picker and composite actions these workflows call at `@v1`
-  internally. Verify in the pull request. After the merge it is already live.
+  same run, once `Self test` passes on the merge commit, so every caller is on
+  the new code before anyone looks at it. That includes the picker and
+  composite actions these workflows call at `@v1` internally. Verify in the pull request. After the merge it is already live.
 - **Rolling back is a tag move.** `git tag -f v1 <previous tag> && git push -f
   origin v1`. There is no other undo, because the callers hold no version of
   their own.
@@ -207,9 +206,7 @@ if the rule is removed.
 
 ## This repo's own CI is hosted, and has to be
 
-`Self test` and `Publish release` both run on `ubuntu-latest`. `Publish release`
-calls `Self test` with a relative `./` reference, which is safe only because this
-repo is both caller and callee. That is not a
+`Self test` and `Publish release` both run on `ubuntu-latest`. That is not a
 preference. The org runner group sets `allows_public_repositories: false` and
 this repo is public, so a self-hosted job here is never picked up. It queues
 until it times out, which reads like a hang rather than a refusal. Do not "fix"

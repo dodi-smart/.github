@@ -5,23 +5,24 @@
 # is itself a container on the host's daemon, so the workspace it mounts into the
 # action does not exist on the host and the action sees no config and no commits.
 #
-# The messages come from the API, so no history is cloned. The repo's config is
-# copied into the tool prefix, because commitlint resolves `extends` relative to
-# the config file, and the prefix is where the packages are.
+# The messages and the config both come from the API, so nothing is checked
+# out. A sparse checkout would leave the runner's persistent workspace half
+# populated for the next job (see AGENTS.md). The config lands in the tool
+# prefix, because commitlint resolves `extends` relative to the config file,
+# and the prefix is where the packages are.
 #
-# Env: CONFIG (path in the checkout), REPO, NUMBER, GH_TOKEN, PREFIX.
+# Env: CONFIG (path in the repo), REF (commit to read it at), REPO, NUMBER,
+# GH_TOKEN, PREFIX.
 # test.sh sets COMMITLINT and SKIP_INSTALL=true.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
-: "${REPO:?}" "${NUMBER:?}" "${PREFIX:?}"
+: "${REPO:?}" "${NUMBER:?}" "${PREFIX:?}" "${REF:?}"
 config="${CONFIG:-.commitlintrc.json}"
 
 mkdir -p "$PREFIX"
-if [ -f "$config" ]; then
-  cp "$config" "$PREFIX/$(basename "$config")"
-  cfg="$PREFIX/$(basename "$config")"
-else
+cfg="$PREFIX/$(basename "$config")"
+if ! gh api -H "Accept: application/vnd.github.raw" "/repos/$REPO/contents/$config?ref=$REF" > "$cfg" 2>/dev/null; then
   echo "::notice::$config not found, linting against @commitlint/config-conventional"
   cfg="$PREFIX/.commitlintrc.json"
   printf '{"extends":["@commitlint/config-conventional"]}\n' > "$cfg"

@@ -178,6 +178,16 @@ jobs:
           fi
           echo 'no workflow matches its own bot by login substring'
 
+      # A sparse checkout outlives its job in a persistent workspace. AGENTS.md.
+      - name: No workflow or action checks out sparsely
+        run: |
+          set -euo pipefail
+          if grep -rn '^ *sparse-checkout' .github/workflows actions --include='*.yml'; then
+            echo '::error::the checkout above is sparse. Read the files from the contents API instead; see AGENTS.md.'
+            exit 1
+          fi
+          echo 'no sparse checkout'
+
       # The dependency-bot list lived in four places in two shapes, and adding a
       # bot meant four edits, one of them easy to miss. The gate owns it now.
       # A login literal creeping back into a workflow is how the copies return.

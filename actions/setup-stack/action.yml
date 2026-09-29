@@ -143,6 +143,19 @@ outputs:
 runs:
   using: composite
   steps:
+    # A non-cone sparse checkout in an earlier job leaves core.sparseCheckout=true
+    # in .git/config of the persistent workspace, and actions/checkout's own
+    # `sparse-checkout disable` does not clear it on git 2.43: every later
+    # checkout there stays sparse. Undo it, so the job sees the whole tree.
+    - if: runner.environment == 'self-hosted'
+      shell: bash
+      run: |
+        if [ "$(git config --local --get core.sparseCheckout 2>/dev/null)" = true ]; then
+          echo "::notice::healing a sparse workspace left by an earlier job"
+          git config --local --unset core.sparseCheckout
+          git sparse-checkout disable
+        fi
+
     - id: resolve
       shell: bash
       env:

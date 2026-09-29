@@ -212,15 +212,11 @@ jobs:
       contents: read
       pull-requests: read
     steps:
-      - uses: actions/checkout@v7
-        with:
-          persist-credentials: false
-          sparse-checkout: ${{ inputs.commitlint-config }}
-          sparse-checkout-cone-mode: false
       - uses: dodi-smart/.github/actions/commitlint@v1
         with:
           config: ${{ inputs.commitlint-config }}
           number: ${{ github.event.pull_request.number }}
+          ref:    ${{ github.event.pull_request.head.sha }}
 
   # Full history, because guards walk the pull request's commits.
   zavet:

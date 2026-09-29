@@ -5,8 +5,11 @@ description: Lint a pull request's commit messages with a pinned commitlint CLI,
 
 inputs:
   config:
-    description: 'Path of the commitlint config in the checkout. Missing means config-conventional.'
+    description: 'Path of the commitlint config in the repo. Missing means config-conventional.'
     default: '.commitlintrc.json'
+  ref:
+    description: 'Commit to read the config at, normally the pull request head'
+    required: true
   number:
     description: 'Pull request number'
     required: true
@@ -23,6 +26,7 @@ runs:
       env:
         CONFIG:      ${{ inputs.config }}
         NUMBER:      ${{ inputs.number }}
+        REF:         ${{ inputs.ref }}
         REPO:        ${{ github.repository }}
         GH_TOKEN:    ${{ github.token }}
         PREFIX:      ${{ runner.temp }}/commitlint

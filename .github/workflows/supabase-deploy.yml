@@ -155,6 +155,7 @@ jobs:
           ref: ${{ inputs.ref }}
           # Two commits, so the wait can name the one before a `[skip ci]` release.
           fetch-depth: 2
+          persist-credentials: false
 
       - name: Setup Supabase CLI
         uses: supabase/setup-cli@v3.0.1

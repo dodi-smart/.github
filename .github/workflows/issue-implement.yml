@@ -170,7 +170,8 @@ jobs:
       issues: write            # to report back and clear the request label
       id-token: write
     steps:
-      - uses: actions/checkout@v7
+      # Credentials persist on purpose: the agent pushes its branch from this checkout.
+      - uses: actions/checkout@v7 # zizmor: ignore[artipacked]
         with:
           fetch-depth: 0
           ref: ${{ inputs.base-branch }}

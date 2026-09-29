@@ -83,6 +83,7 @@ jobs:
     timeout-minutes: ${{ inputs.timeout-minutes }}
     steps:
       - uses: actions/checkout@v7
+        with: { persist-credentials: false }
 
       # Only a pull request has a diff to read. Any other event (a dispatch, a
       # push) matches everything, since someone pressing the button wants the
@@ -159,6 +160,7 @@ jobs:
     timeout-minutes: ${{ inputs.timeout-minutes }}
     steps:
       - uses: actions/checkout@v7
+        with: { persist-credentials: false }
 
       - uses: denoland/setup-deno@v2
         with:
@@ -179,6 +181,7 @@ jobs:
     timeout-minutes: ${{ inputs.timeout-minutes }}
     steps:
       - uses: actions/checkout@v7
+        with: { persist-credentials: false }
 
       # Reports success, not skipped, when nothing relevant changed, the way the
       # `types` job does, so a caller can require it on every pull request.

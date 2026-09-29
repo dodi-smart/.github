@@ -27,9 +27,7 @@ concurrency:
   cancel-in-progress: false
 
 permissions:
-  contents: write        # push the changelog commit and the tags
-  issues: write          # semantic-release comments on released issues
-  pull-requests: write
+  contents: read
 
 jobs:
   # A same-repo call is fine here, unlike in the consumer-facing workflows: this
@@ -45,10 +43,15 @@ jobs:
     needs: [self-test]
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    permissions:
+      contents: write        # push the changelog commit and the tags
+      issues: write          # semantic-release comments on released issues
+      pull-requests: write
     steps:
       # Full history, or the commit analyser cannot see what changed since the
       # last tag and every run looks like the first one.
-      - uses: actions/checkout@v7
+      # semantic-release pushes the changelog commit and the tags with these credentials.
+      - uses: actions/checkout@v7 # zizmor: ignore[artipacked]
         with:
           fetch-depth: 0
           persist-credentials: true

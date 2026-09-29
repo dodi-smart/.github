@@ -44,11 +44,14 @@ on:
 
 jobs:
   pick-runner:
+    permissions: {}   # the picker reads no GITHUB_TOKEN
     uses: dodi-smart/.github/.github/workflows/pick-runner.yml@v1
     with:
       weight: ${{ inputs.runner-weight }}
       labels: ${{ inputs.runner-labels }}
-    secrets: inherit
+    secrets:
+      GH_APP_CLIENT_ID:   ${{ secrets.GH_APP_CLIENT_ID }}
+      GH_APP_PRIVATE_KEY: ${{ secrets.GH_APP_PRIVATE_KEY }}
 
   check:
     needs: [pick-runner]
@@ -59,7 +62,7 @@ jobs:
       pull-requests: write
     steps:
       - uses: actions/checkout@v7
-        with: { fetch-depth: 0 }
+        with: { fetch-depth: 0, persist-credentials: false }
 
       # The steps live in a composite action so the `zavet` job in pr-checks
       # runs the same code. The severity rules and the reasons behind them are

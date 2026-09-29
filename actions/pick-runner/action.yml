@@ -150,13 +150,15 @@ runs:
           echo "::warning title=Runner selector cannot be validated::GH_APP_CLIENT_ID is not set on this repository, so the org runner list cannot be read. The job will queue on the selector, and it will queue forever if no runner matches it. Add GH_APP_CLIENT_ID and GH_APP_PRIVATE_KEY to fix."
         fi
 
+    # The org runner list is an org-level endpoint, so this token cannot be
+    # limited to one repository. It only ever reads that list.
     - id: app-token
       if: steps.have-app.outputs.yes == 'true'
-      uses: actions/create-github-app-token@v3
+      uses: actions/create-github-app-token@v3 # zizmor: ignore[github-app]
       with:
         client-id:   ${{ inputs.gh-app-client-id }}
         private-key: ${{ inputs.gh-app-private-key }}
-        owner:       ${{ github.repository_owner }}
+        owner:       ${{ github.repository_owner }} # zizmor: ignore[github-app]
 
     # Reads the fleet once. Only a listing that was really read is cached, so a
     # failed read is retried by the next call rather than remembered.

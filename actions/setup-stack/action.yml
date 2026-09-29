@@ -152,7 +152,8 @@ runs:
         RUNNER_ENVIRONMENT: ${{ runner.environment }}
         RUNNER_ARCH: ${{ runner.arch }}
         RUNNER_OS: ${{ runner.os }}
-      run: |
+      # The values written to GITHUB_ENV are cache paths under RUNNER_TEMP, never input.
+      run: | # zizmor: ignore[github-env]
         set -euo pipefail
         case "$STACK" in
           bun|node|gradle|android|flutter|rust|xcode|none) : ;;

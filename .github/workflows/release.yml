@@ -123,16 +123,20 @@ jobs:
             echo "::warning title=Releasing with GITHUB_TOKEN::GH_APP_CLIENT_ID is not set on this repository, so the release commit is pushed as github-actions[bot]. A branch protected by the org rulesets rejects that push (GH013). Add GH_APP_CLIENT_ID and GH_APP_PRIVATE_KEY, or pass secrets: inherit, to fix."
           fi
 
+      # Not narrowed with permission-* inputs: the push has to satisfy the org
+      # rulesets the App bypasses, and it is already limited to this one repository.
       - id: app-token
         if: steps.have-app.outputs.yes == 'true'
-        uses: actions/create-github-app-token@v3
+        uses: actions/create-github-app-token@v3 # zizmor: ignore[github-app]
         with:
           client-id:    ${{ secrets.GH_APP_CLIENT_ID }}
           private-key:  ${{ secrets.GH_APP_PRIVATE_KEY }}
           owner:        ${{ github.repository_owner }}
           repositories: ${{ github.event.repository.name }}
 
-      - uses: actions/checkout@v7
+      # The release commit, the tags and the backmerge push with this checkout's
+      # credentials, so they persist.
+      - uses: actions/checkout@v7 # zizmor: ignore[artipacked]
         with:
           fetch-depth: 0
           token: ${{ steps.app-token.outputs.token || secrets.GITHUB_TOKEN || github.token }}

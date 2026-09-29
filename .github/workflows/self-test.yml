@@ -147,6 +147,39 @@ jobs:
           fi
           echo 'no workflow matches its own bot by login substring'
 
+      # The dependency-bot list lived in four places in two shapes, and adding a
+      # bot meant four edits, one of them easy to miss. The gate owns it now.
+      # A login literal creeping back into a workflow is how the copies return.
+      - name: The gate is the only place that lists dependency bots
+        run: |
+          set -euo pipefail
+          python3 -c "
+          import sys, re, glob, yaml
+          bad = []
+          for f in sorted(glob.glob('.github/workflows/*.yml')):
+              if f.endswith('self-test.yml'):
+                  continue
+              if re.search(r'renovate\[bot\]|dependabot\[bot\]|app/renovate', open(f).read()):
+                  bad.append(f + ' names a dependency-bot login')
+          wf = lambda n: yaml.safe_load(open('.github/workflows/' + n))['jobs']
+          zsteps = wf('zavet-check.yml')['check']['steps']
+          author = [s for s in zsteps if s.get('id') == 'author']
+          if not author or 'agent-gate@' not in str(author[0].get('uses', '')):
+              bad.append('zavet-check no longer reads the author from agent-gate')
+          if any(s.get('id') == 'mode' for s in zsteps):
+              bad.append('zavet-check has its own mode step again')
+          triage = [s for s in wf('issue-triage.yml')['gate']['steps'] if s.get('id') == 'gate'][0]
+          events = str((triage.get('with') or {}).get('events', '')).split()
+          if not events or any(e.startswith('pull_request') for e in events):
+              bad.append('issue-triage must pass an events allow-list with no pull_request event, got ' + repr(events))
+          verify = [s for s in wf('deps-verify.yml')['verify']['steps'] if 'run-agent@' in str(s.get('uses', ''))][0]
+          if 'needs.gate.outputs.dependency-bots' not in str(verify['with'].get('allowed-bots', '')):
+              bad.append('deps-verify allowed-bots no longer reads the gate output')
+          if bad:
+              sys.exit('::error::' + '; '.join(bad) + '. Keep the list in actions/agent-gate/gate.sh and read author-kind or dependency-bots.')
+          print('dependency bots are listed once, in the gate')
+          "
+
       # `track_progress` forces tag mode, and tag mode renders only three issue
       # actions. run-agent filters the rest out so a reopened issue runs instead
       # of failing in Create prompt. Wiring the raw input back would restore

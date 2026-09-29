@@ -70,7 +70,7 @@ exactly like a busy fleet.
 | `release.yml` | push to a release branch | semantic-release, single or multi-module |
 | `supabase-deploy.yml` | called after `release.yml` | Pushes a Supabase project's schema and functions for the tag a release just cut |
 | `react-doctor.yml` | pull request, React repos | Static analysis of React/TS source. Advisory by default. |
-| `zavet-check.yml` | pull request | Knowledge-layer checks, for repos that have one. Report-only on dependency bot PRs |
+| `zavet-check.yml` | pull request | Knowledge-layer checks, for repos that have one. Report-only on dependency and automation bot PRs |
 | `supabase-checks.yml` | pull request, Supabase repos | Deno edge-function check, generated-types check, pgTAP tests. Hosted only. |
 | `pick-runner.yml` | called by the others | Chooses a runner and validates the choice |
 
@@ -189,6 +189,30 @@ nobody then goes back to question.
 | `actions/sticky-comment` | One keyed comment per pull request, rewritten in place on every later run |
 | `actions/semantic-release-config` | Links the shared semantic-release config into a consumer's `node_modules` from a private prefix, never from a registry and never into the checkout it came with |
 | `actions/pick-runner` | Resolves a runner weight to a selector, validated against the live fleet. What `pick-runner.yml` calls, and what a job that already runs hosted (like `pr-checks.yml`'s `pick`) calls directly to pick more than once without a second hosted job. |
+
+**`agent-gate` inputs and outputs a caller may use beyond the basics.**
+
+| Name | Meaning |
+|---|---|
+| input `bots` | `reject` (default): stop on any non-human author. `only`: proceed for dependency bots only. `allow`: ignore the author. |
+| input `events` | Space-separated `github.event_name` values the workflow handles, checked right after `agent:no-touch`. Any other event stops the run. Empty (default) allows every event. `issue-triage.yml` passes `issues issue_comment workflow_dispatch`, so a person's PR review never reaches it. |
+| output `author-kind` | `dependency` (Renovate, Dependabot), `agent` (`claude[bot]`), `automation` (any other `[bot]` or `app/` login) or `human`. Written before every rule, `agent:no-touch` included, so it is set on a stopped run too. A workflow that needs only the classification can call the gate for it and ignore `proceed`. |
+| output `dependency-bots` | The comma-separated dependency-bot logins, for `claude-code-action`'s `allowed_bots`. `deps-verify.yml` reads it. |
+
+The dependency-bot list lives in `actions/agent-gate/gate.sh` and nowhere else.
+
+**`sticky-comment` delete mode.** `delete: true` finds the comment for `key`
+(bot-authored only, like an update) and deletes it, or does nothing when there
+is none. It needs no `body-file`. The `action` output is `deleted` or `none`.
+`zavet-check.yml` uses it to retract its comment once a pull request is clean.
+
+**`zavet-check.yml` and automation PRs.** A pull request from a dependency bot or
+from an automation such as a scheduled sync (`github-actions[bot]`) is
+report-only: the checks run and the comment says what failed, but the job stays
+green. A pull request from `claude[bot]` or a person still fails closed. An
+automation that opens PRs with `GITHUB_TOKEN` triggers no pull request workflows
+at all, so nothing here would run on its PR. Open them with the org App token
+(`actions/create-github-app-token`) instead.
 
 ## What you stop maintaining
 

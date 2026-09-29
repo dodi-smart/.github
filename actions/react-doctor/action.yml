@@ -1,0 +1,32 @@
+# Checkout plus the React Doctor step, so react-doctor.yml and the
+# `react-doctor` job in pr-checks.yml run exactly the same code.
+#
+# The caller grants `contents: read`, `pull-requests: write` (the action posts
+# its own sticky comment) and `statuses: write` (a commit status with the score).
+#
+# The checkout takes full history: `scope: changed` needs it to reach the merge
+# base, and without it the action reports every issue in the changed files.
+# `clean` stays at its default. A workspace holding the previous pull request's
+# files is how a scan reports on a file this one deleted.
+name: React Doctor
+description: Check out with full history and run React Doctor on a pull request.
+
+inputs:
+  directory: { description: 'Project directory to scan', default: '.' }
+  scope:     { description: 'changed | files | lines | full', default: 'changed' }
+  blocking:  { description: 'Severity that fails the run: none | warning | error', default: 'none' }
+  version:   { description: "react-doctor npm spec; empty keeps the vendor's latest", default: '' }
+
+runs:
+  using: composite
+  steps:
+    - uses: actions/checkout@v7
+      with:
+        fetch-depth: 0
+        persist-credentials: false
+    - uses: millionco/react-doctor@v2
+      with:
+        directory: ${{ inputs.directory }}
+        scope:     ${{ inputs.scope }}
+        blocking:  ${{ inputs.blocking }}
+        version:   ${{ inputs.version }}

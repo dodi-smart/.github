@@ -185,7 +185,7 @@ jobs:
               if re.search(r'renovate\[bot\]|dependabot\[bot\]|app/renovate', open(f).read()):
                   bad.append(f + ' names a dependency-bot login')
           wf = lambda n: yaml.safe_load(open('.github/workflows/' + n))['jobs']
-          zsteps = wf('zavet-check.yml')['check']['steps']
+          zsteps = yaml.safe_load(open('actions/zavet-check/action.yml'))['runs']['steps']
           author = [s for s in zsteps if s.get('id') == 'author']
           if not author or 'agent-gate@' not in str(author[0].get('uses', '')):
               bad.append('zavet-check no longer reads the author from agent-gate')
@@ -272,6 +272,37 @@ jobs:
               sys.exit('::error::the pr-checks job must run unconditionally (if: always()), or it silently '
                         'skips instead of reporting the jobs it summarizes.')
           print('pr-checks.yml has one picker job (%s) and an always-on pr-checks summary job' % pickers[0])
+          "
+
+      # zavet and react-doctor must never join the required context, and each
+      # standalone workflow and its pr-checks job must run one shared action.
+      - name: pr-checks keeps zavet and react-doctor out of the summary
+        run: |
+          set -euo pipefail
+          python3 -c "
+          import sys, yaml
+          load = lambda p: yaml.safe_load(open(p))['jobs']
+          jobs = load('.github/workflows/pr-checks.yml')
+          uses = lambda job: str([s.get('uses', '') for s in job['steps']])
+          errors = []
+          summary = jobs['pr-checks']
+          loop = ' '.join(str(s.get('run', '')) for s in summary['steps'])
+          for j in ('zavet', 'react-doctor'):
+              if j in summary['needs'] or ('\"' + j + ':') in loop:
+                  errors.append('the pr-checks summary must not need or loop over ' + j + '.')
+          for job, action, wf, wfjob in (
+              ('zavet', 'actions/zavet-check@', 'zavet-check.yml', 'check'),
+              ('react-doctor', 'actions/react-doctor@', 'react-doctor.yml', 'doctor')):
+              if action not in uses(jobs[job]):
+                  errors.append('pr-checks ' + job + ' must use ' + action)
+              if action not in uses(load('.github/workflows/' + wf)[wfjob]):
+                  errors.append(wf + ' must use ' + action)
+          pickers = [n for n, j in jobs.items() if 'pick-runner' in uses(j)]
+          if len(pickers) != 1:
+              errors.append('exactly one pick-runner job is allowed, found ' + repr(pickers))
+          if errors:
+              sys.exit('::error::' + ' '.join(errors))
+          print('zavet and react-doctor stay out of the summary and share their actions')
           "
 
       # `build` runs beside `checks`, and the summary must still require

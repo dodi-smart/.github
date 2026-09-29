@@ -87,6 +87,10 @@ jobs:
           commands:      'triage plan'
           bots:          'allow'
           skip-draft:    'false'
+          # A caller listens to more events than triage can act on, because its
+          # assistant needs the review events. A person's PR review has no
+          # issue to triage, so it stops here rather than reaching the agent.
+          events:        'issues issue_comment workflow_dispatch'
 
       # Bots open issues at machine volume, and none of them is work to plan.
       # The Renovate Dependency Dashboard used to be triaged once on open, but
@@ -98,7 +102,7 @@ jobs:
         env:
           PROCEED:     ${{ steps.gate.outputs.proceed }}
           MODE:        ${{ steps.gate.outputs.mode }}
-          AUTHOR:      ${{ github.event.issue.user.login }}
+          KIND:        ${{ steps.gate.outputs.author-kind }}
           EVENT_NAME:  ${{ github.event_name }}
           SENDER_TYPE: ${{ github.event.sender.type }}
           ISSUE_INPUT: ${{ inputs.issue-number }}
@@ -115,7 +119,7 @@ jobs:
             proceed=false
             echo "bot-sent event ($EVENT_NAME), stopping before the agent"
           fi
-          if [ "$proceed" = "true" ] && printf '%s' "$AUTHOR" | grep -qiE 'renovate|dependabot|\[bot\]$'; then
+          if [ "$proceed" = "true" ] && [ "$KIND" != "human" ]; then
             proceed=false
             echo "bot-authored issue, stopping"
           fi

@@ -491,7 +491,9 @@ of your code. `AGENTS.md` has the reasoning.
 `coverage-min-overall` and `coverage-min-changed` are percentages that fail the
 `coverage` job, and so `pr-checks`, when a figure is below them. `0`, the
 default, means no floor. `vitest` takes its floors from the vitest config
-instead.
+instead. With `kover`, only `coverage-min-overall` fails the job;
+`coverage-min-changed` is marked in the comment but not enforced, because
+`kover-report` cannot tell "no changed file in the report" from 0%.
 
 `lcov` takes anything that emits LCOV. Overall coverage is lines hit over lines
 found across the whole file. Changed-file coverage covers only the files the

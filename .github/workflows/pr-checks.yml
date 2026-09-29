@@ -579,6 +579,7 @@ jobs:
           min-overall: ${{ inputs.coverage-min-overall }}
           min-changed: ${{ inputs.coverage-min-changed }}
       - if: inputs.coverage == 'kover'
+        id: kover
         uses: mi-kas/kover-report@v2
         with:
           path: coverage/*
@@ -587,6 +588,28 @@ jobs:
           update-comment: true
           min-coverage-overall: ${{ inputs.coverage-min-overall }}
           min-coverage-changed-files: ${{ inputs.coverage-min-changed }}
+      # kover-report only marks a breached minimum in its comment and never
+      # fails, so a report at 0% passed with a floor of 40. The overall floor
+      # is enforced here from its output, as actions/lcov-report does itself.
+      # The changed-files floor stays comment-only: kover-report reports 0,
+      # not empty, when no changed file is in the report, so enforcing it
+      # would fail every pull request that touches no covered source.
+      - if: inputs.coverage == 'kover'
+        name: Enforce the overall coverage floor
+        env:
+          OVERALL:     ${{ steps.kover.outputs.coverage-overall }}
+          MIN_OVERALL: ${{ inputs.coverage-min-overall }}
+        run: |
+          set -euo pipefail
+          if [ -z "$OVERALL" ]; then
+            echo "::error::coverage: kover-report produced no overall figure"
+            exit 1
+          fi
+          if awk -v v="$OVERALL" -v m="$MIN_OVERALL" 'BEGIN { exit !(m > 0 && v + 0 < m + 0) }'; then
+            echo "::error::coverage: overall ${OVERALL}% is below the ${MIN_OVERALL}% floor"
+            exit 1
+          fi
+          echo "coverage: overall ${OVERALL}% (floor ${MIN_OVERALL}%)"
 
   # ---------------------------------------------------------------------------
   # One stable context, on every push, in both modes.

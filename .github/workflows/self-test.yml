@@ -701,6 +701,13 @@ jobs:
       - name: setup-stack parses env files and resolves bun
         run: ./actions/setup-stack/test.sh
 
+      # ~/.konan is a toolchain cache: an exact key, never restore-keys.
+      - name: The Kotlin/Native cache uses an exact key
+        run: |
+          if grep -A4 'path: ~/.konan' actions/setup-stack/action.yml | grep -q restore-keys; then
+            echo "::error::the ~/.konan cache uses restore-keys. Exact key only."; exit 1
+          fi
+
       # A branch ref moves under every caller, and Renovate never proposes a change.
       - name: No action is pinned to a branch
         run: |

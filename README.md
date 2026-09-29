@@ -512,13 +512,21 @@ branch (it publishes no version tags), and Renovate can still move that pin.
 - **Verification jobs isolate.** `deps-verify` pins caches to `RUNNER_TEMP` with
   GitHub cache off, because a verification job that can see yesterday's tree is
   not verifying.
-- **Self-hosted uses home dirs**, so the per-runner named volumes are actually
-  read. GitHub cache stays off there.
+- **Self-hosted Linux uses home dirs**, so the per-runner named volumes are
+  actually read. GitHub cache stays off there.
+- **Self-hosted macOS caches like hosted.** Those runners are image-based VMs
+  that start every job with an empty home, so `cache: auto` is true there and
+  nothing else would persist.
 - **`~/.pub-cache` is job-scoped in every mode.** A home dir is only worth using
   if a volume backs it, and the image mounts none for pub.
 - **Hosted uses one mechanism per stack**, `setup-gradle` / `rust-cache` /
   `flutter-action`. Never a package store, and never `restore-keys` on one, which
   is how a partial tarball comes back on every retry.
+- **Gradle repos with a cache on** get `setup-gradle`, including `stack: xcode`
+  when the repo has a root `gradlew`. A repo whose `gradle/libs.versions.toml`
+  names the multiplatform plugin and a `kotlin` version also caches `~/.konan`,
+  Kotlin/Native's toolchain, keyed on OS, arch and that version. Both need the repo checked out
+  before `setup-stack`.
 
 **Never cache a project build directory.** Not `build/`, not `*/build`, not
 `.gradle`. `*/build/intermediates` holds absolute paths and the workspace root is

@@ -48,6 +48,14 @@ on:
       # `--max-warnings`.
       design-lint: { type: string, default: "" }
 
+      # Runs `hk check --all` from the caller's own hk.pkl, with the tools its
+      # mise.toml pins, after install and before lint. Sits beside `lint` and
+      # replaces nothing. Findings show in the job log and summary, and the SARIF
+      # is kept as the `hk-sarif` artifact. Nothing is uploaded to code scanning:
+      # that needs `security-events: write`, which every caller would have to
+      # grant. A repo that wants it uploads the artifact from its own workflow.
+      hk: { type: boolean, default: false }
+
       light-weight: { type: string, default: "light" }
       heavy-weight: { type: string, default: "heavy" }
 
@@ -296,11 +304,53 @@ jobs:
           bun-version:     ${{ inputs.bun-version }}
           flutter-version: ${{ inputs.flutter-version }}
           rust-toolchain:  ${{ inputs.rust-toolchain }}
+      # Opt-in `hk`: install first, then hk, then the rest of the phases. With
+      # `hk: false` the single `Run phases` step below runs as it always did.
+      - name: Run phases (install)
+        if: ${{ inputs.hk }}
+        uses: dodi-smart/.github/actions/run-phases@v1
+        with:
+          env-file: ${{ steps.setup.outputs.env-file }}
+          install:  ${{ steps.setup.outputs.install }}
+      - if: ${{ inputs.hk }}
+        uses: jdx/mise-action@v5
+      # The whole tree, never `--pr`: type-aware and cross-file rules need it.
+      - name: hk check --all
+        if: ${{ inputs.hk }}
+        run: |
+          set +e
+          hk check --all --sarif hk.sarif 2>&1 | tee hk.log
+          status=${PIPESTATUS[0]}
+          {
+            echo '### hk check --all'
+            echo '```'
+            head -c 50000 hk.log | sed 's/\x1b\[[0-9;]*[A-Za-z]//g'
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit "$status"
+      # The SARIF needs no token to keep. A repo that wants code scanning
+      # uploads this artifact from its own workflow.
+      - if: ${{ always() && inputs.hk }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: hk-sarif
+          path: hk.sarif
+          if-no-files-found: ignore
+          retention-days: 1
       - name: Run phases
+        if: ${{ !inputs.hk }}
         uses: dodi-smart/.github/actions/run-phases@v1
         with:
           env-file:    ${{ steps.setup.outputs.env-file }}
           install:     ${{ steps.setup.outputs.install }}
+          lint:        ${{ steps.setup.outputs.lint }}
+          design-lint: ${{ steps.setup.outputs.design-lint }}
+          typecheck:   ${{ steps.setup.outputs.typecheck }}
+      - name: Run phases (after hk)
+        if: ${{ inputs.hk }}
+        uses: dodi-smart/.github/actions/run-phases@v1
+        with:
+          env-file:    ${{ steps.setup.outputs.env-file }}
           lint:        ${{ steps.setup.outputs.lint }}
           design-lint: ${{ steps.setup.outputs.design-lint }}
           typecheck:   ${{ steps.setup.outputs.typecheck }}
@@ -422,12 +472,57 @@ jobs:
           bun-version:     ${{ inputs.bun-version }}
           flutter-version: ${{ inputs.flutter-version }}
           rust-toolchain:  ${{ inputs.rust-toolchain }}
+      # Opt-in `hk`: install first, then hk, then the rest of the phases. With
+      # `hk: false` the single `Run phases` step below runs as it always did.
+      - name: Run phases (install)
+        if: ${{ inputs.hk }}
+        uses: dodi-smart/.github/actions/run-phases@v1
+        with:
+          env-file: ${{ steps.setup.outputs.env-file }}
+          install:  ${{ steps.setup.outputs.install }}
+      - if: ${{ inputs.hk }}
+        uses: jdx/mise-action@v5
+      # The whole tree, never `--pr`: type-aware and cross-file rules need it.
+      - name: hk check --all
+        if: ${{ inputs.hk }}
+        run: |
+          set +e
+          hk check --all --sarif hk.sarif 2>&1 | tee hk.log
+          status=${PIPESTATUS[0]}
+          {
+            echo '### hk check --all'
+            echo '```'
+            head -c 50000 hk.log | sed 's/\x1b\[[0-9;]*[A-Za-z]//g'
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit "$status"
+      # The SARIF needs no token to keep. A repo that wants code scanning
+      # uploads this artifact from its own workflow.
+      - if: ${{ always() && inputs.hk }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: hk-sarif
+          path: hk.sarif
+          if-no-files-found: ignore
+          retention-days: 1
       - name: Run phases
+        if: ${{ !inputs.hk }}
         uses: dodi-smart/.github/actions/run-phases@v1
         with:
           env-file:       ${{ steps.setup.outputs.env-file }}
           build-env-file: ${{ steps.setup.outputs.build-env-file }}
           install:        ${{ steps.setup.outputs.install }}
+          lint:           ${{ steps.setup.outputs.lint }}
+          design-lint:    ${{ steps.setup.outputs.design-lint }}
+          typecheck:      ${{ steps.setup.outputs.typecheck }}
+          test:           ${{ steps.setup.outputs.test }}
+          build:          ${{ steps.setup.outputs.build }}
+      - name: Run phases (after hk)
+        if: ${{ inputs.hk }}
+        uses: dodi-smart/.github/actions/run-phases@v1
+        with:
+          env-file:       ${{ steps.setup.outputs.env-file }}
+          build-env-file: ${{ steps.setup.outputs.build-env-file }}
           lint:           ${{ steps.setup.outputs.lint }}
           design-lint:    ${{ steps.setup.outputs.design-lint }}
           typecheck:      ${{ steps.setup.outputs.typecheck }}

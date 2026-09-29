@@ -1,3 +1,17 @@
+## [1.11.0](https://github.com/dodi-smart/.github/compare/v1.10.0...v1.11.0) (2026-09-29)
+
+### ✨ Features
+
+* add changed-files action ([37bb2ca](https://github.com/dodi-smart/.github/commit/37bb2ca70af77bac608483fa3e12e1c574970329))
+
+### 🐛 Bug Fixes
+
+* **supabase-deploy:** wait for the deployment of this commit before probing health routes ([0b49341](https://github.com/dodi-smart/.github/commit/0b4934105c4cf6f857aafcf01b78bd78fe40c302))
+
+### ⚡ Performance Improvements
+
+* **supabase-checks:** cache the local stack's images and read changed files through the API ([6aa7708](https://github.com/dodi-smart/.github/commit/6aa7708d3dfbcc0144fb5782dfc3ce834464e057))
+
 ## [1.10.0](https://github.com/dodi-smart/.github/compare/v1.9.0...v1.10.0) (2026-09-29)
 
 ### ✨ Features

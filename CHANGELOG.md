@@ -1,3 +1,9 @@
+## [1.15.2](https://github.com/dodi-smart/.github/compare/v1.15.1...v1.15.2) (2026-09-29)
+
+### 🐛 Bug Fixes
+
+* **checkout:** stop sparse checkouts on persistent workspaces and heal the ones left behind ([#94](https://github.com/dodi-smart/.github/issues/94)) ([8f726fe](https://github.com/dodi-smart/.github/commit/8f726fe74411ffc62fcae8e4d92eb367320bbdf8))
+
 ## [1.15.1](https://github.com/dodi-smart/.github/compare/v1.15.0...v1.15.1) (2026-09-29)
 
 ### 🐛 Bug Fixes

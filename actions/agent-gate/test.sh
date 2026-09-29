@@ -22,7 +22,7 @@ case_() {
   export GITHUB_OUTPUT="$TMP/out"; : > "$GITHUB_OUTPUT"
   LABELS="$3" EVENT="$4" ACTION="$5" LABEL="$6" REQUEST="$7" AUTHOR="$8" DRAFT="$9" \
   COMMENT="${10}" COMMANDS="${11}" BOTS="${12}" SKIPDRAFT="${13}" FILES="${14}" \
-  MENTION="${15:-}" EXCLUDE="${16:-}" \
+  MENTION="${15:-}" EXCLUDE="${16:-}" EVENTS="${17:-}" \
     bash "$HERE/gate.sh" >"$TMP/log" 2>&1
   local got reason mark
   got=$(grep '^proceed=' "$GITHUB_OUTPUT" | tail -1 | cut -d= -f2)
@@ -74,6 +74,65 @@ assist false "@claude plan    (triage owns it)" 'hey @claude plan it out'
 assist false "@claude implement (implement owns it)" '@claude implement the plan'
 assist false "comment with no mention"          'just a normal comment'
 case_ false "no-touch + @claude free-form"      '["agent:no-touch"]' issue_comment created '' '' alice false '@claude help' '' allow false '' '@claude' 'triage plan implement'
+
+echo "== events allow-list (issue-triage shape) =="
+# Same arguments as a triage caller: bots allowed, no draft rule, three events.
+triage_ev() { case_ "$1" "$2" "${3:-[]}" "$4" "$5" '' agent:triage alice false '@claude triage' 'triage plan' allow false '' '' '' 'issues issue_comment workflow_dispatch'; }
+triage_ev false "human PR review"                   '[]' pull_request_review submitted
+triage_ev false "human PR review comment"           '[]' pull_request_review_comment created
+triage_ev true  "issue opened"                      '[]' issues opened
+triage_ev true  "comment @claude triage"            '[]' issue_comment created
+triage_ev true  "workflow_dispatch"                 '[]' workflow_dispatch ''
+triage_ev false "no-touch beats an allowed event"   '["agent:no-touch"]' issues opened
+triage_ev false "no-touch + review event"           '["agent:no-touch"]' pull_request_review submitted
+case_ true  "empty events allows any event"     '[]' pull_request_review submitted '' agent:triage alice false '' '' allow false ''
+
+# author-kind is written before every rule, so it is set on a stopped run too.
+# $1 want, $2 author, $3 labels, $4 bots
+kind_() {
+  export GITHUB_OUTPUT="$TMP/out"; : > "$GITHUB_OUTPUT"
+  LABELS="$3" EVENT=pull_request ACTION=opened LABEL='' REQUEST='' AUTHOR="$2" DRAFT=false \
+  COMMENT='' COMMANDS='' BOTS="$4" SKIPDRAFT=false FILES='' \
+    bash "$HERE/gate.sh" >"$TMP/log" 2>&1
+  local got mark
+  got=$(grep '^author-kind=' "$GITHUB_OUTPUT" | tail -1 | cut -d= -f2)
+  if [ "$got" = "$1" ]; then mark="ok  "; pass=$((pass+1))
+  else mark="FAIL"; fail=$((fail+1)); fi
+  printf '  %s %-46s kind=%s\n' "$mark" "$2 ($4${3:+, stopped})" "$got"
+}
+echo "== author-kind =="
+for b in allow reject only; do
+  kind_ dependency 'renovate[bot]'        '[]' "$b"
+  kind_ dependency 'app/renovate'         '[]' "$b"
+  kind_ dependency 'dependabot[bot]'      '[]' "$b"
+  kind_ agent      'claude[bot]'          '[]' "$b"
+  kind_ automation 'github-actions[bot]'  '[]' "$b"
+  kind_ automation 'some-org-app[bot]'    '[]' "$b"
+  kind_ automation 'app/some-org-app'     '[]' "$b"
+  kind_ human      'alice'                '[]' "$b"
+  kind_ human      'renovate-fan'         '[]' "$b"
+  kind_ human      ''                     '[]' "$b"
+done
+kind_ dependency 'renovate[bot]'  '["agent:no-touch"]' allow
+kind_ agent      'claude[bot]'    '["agent:no-touch"]' allow
+kind_ human      'alice'          '["agent:no-touch"]' allow
+# `reject` keeps meaning any non-human, `only` any dependency bot.
+case_ false "reject: github-actions[bot]"       '[]' pull_request opened '' agent:review 'github-actions[bot]' false '' '' reject true ''
+case_ false "reject: app/some-org-app"          '[]' pull_request opened '' agent:review 'app/some-org-app' false '' '' reject true ''
+case_ false "only: github-actions[bot]"         '[]' pull_request opened '' agent:review 'github-actions[bot]' false '' '' only true ''
+case_ true  "reject: human"                     '[]' pull_request opened '' agent:review alice false '' '' reject true ''
+
+# The list callers hand to claude-code-action names every dependency login.
+export GITHUB_OUTPUT="$TMP/out"; : > "$GITHUB_OUTPUT"
+LABELS='[]' EVENT=pull_request ACTION=opened LABEL='' REQUEST='' AUTHOR=alice DRAFT=false \
+  COMMENT='' COMMANDS='' BOTS=allow SKIPDRAFT=false FILES='' bash "$HERE/gate.sh" >/dev/null 2>&1
+list=$(grep '^dependency-bots=' "$GITHUB_OUTPUT" | cut -d= -f2-)
+for login in 'renovate[bot]' 'dependabot[bot]' 'app/renovate'; do
+  case ",$list," in
+    *",$login,"*) pass=$((pass+1)); printf '  ok   dependency-bots names %s\n' "$login" ;;
+    *) fail=$((fail+1)); printf '  FAIL dependency-bots lacks %s (%s)\n' "$login" "$list" ;;
+  esac
+done
 
 echo
 echo "pass=$pass fail=$fail"

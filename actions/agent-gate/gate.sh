@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # The gate, as a standalone script so it can be tested without a runner.
 #
-# Reads its inputs from the environment and writes proceed/reason/mode to
-# $GITHUB_OUTPUT. action.yml is a thin wrapper around this file; test.sh runs it
-# directly. Keeping the logic out of YAML is what makes the kill switch
+# Reads its inputs from the environment and writes proceed/reason/mode, plus
+# author-kind and dependency-bots, to $GITHUB_OUTPUT. action.yml is a thin
+# wrapper around this file; test.sh runs it directly. Keeping the logic out of YAML is what makes the kill switch
 # something we can actually assert on (see test.sh).
 set -euo pipefail
 
@@ -26,6 +26,34 @@ go() {
   exit 0
 }
 
+# The one place that says who is a bot. Every workflow reads `author-kind`
+# instead of keeping its own list, so a new dependency bot is one edit here.
+# Written before every rule below, the kill switch included, so it is set on a
+# stopped run too. That lets a caller use the gate for classification alone.
+# It only labels the author; it decides nothing.
+#   dependency  Renovate or Dependabot, in the `[bot]` and gh CLI `app/` forms
+#   agent       claude[bot], the org's own agent
+#   automation  any other bot, such as github-actions[bot] or an org app
+#   human       everything else
+DEPENDENCY_BOTS='renovate[bot],dependabot[bot],app/renovate,app/dependabot'
+login="$(printf '%s' "${AUTHOR:-}" | tr '[:upper:]' '[:lower:]')"
+if [ -z "$login" ]; then
+  kind=human
+else
+  case ",$DEPENDENCY_BOTS," in
+    *",$login,"*) kind=dependency ;;
+    *) case "$login" in
+         'claude[bot]'|app/claude) kind=agent ;;
+         *'[bot]'|app/*)           kind=automation ;;
+         *)                        kind=human ;;
+       esac ;;
+  esac
+fi
+{
+  echo "author-kind=$kind"
+  echo "dependency-bots=$DEPENDENCY_BOTS"
+} >> "$GITHUB_OUTPUT"
+
 # ------------------------------------------------------------------
 # RULE 0, the kill switch. First, always, with no exemption. Not for
 # workflow_dispatch, not for an explicit command, not for a
@@ -34,6 +62,18 @@ go() {
 # ------------------------------------------------------------------
 if printf '%s' "$LABELS" | grep -q '"agent:no-touch"'; then
   stop "agent:no-touch"
+fi
+
+# RULE 0b, the event allow-list. Empty means any event. A workflow whose
+# caller listens to more events than it can act on names the ones it can, so a
+# person's PR review never reaches an issue agent. It sits after the kill
+# switch and can only stop a run, never start one.
+if [ -n "${EVENTS:-}" ]; then
+  # shellcheck disable=SC2153  # EVENT and EVENTS are two inputs, not a typo
+  case " $EVENTS " in
+    *" $EVENT "*) : ;;
+    *) stop "event $EVENT is not one this workflow handles ($EVENTS)" ;;
+  esac
 fi
 
 # RULE 1, drafts. Nothing is ready to be judged yet.
@@ -48,17 +88,9 @@ fi
 # match sent one of those through deps-verify, where a "verify this
 # dependency PR" prompt with no lockfile diff produced no verdict file
 # and failed the job.
-is_bot=false
-if printf '%s' "$AUTHOR" | grep -qiE 'renovate|dependabot|\[bot\]$'; then
-  is_bot=true
-fi
-is_dep_bot=false
-if printf '%s' "$AUTHOR" | grep -qiE 'renovate|dependabot'; then
-  is_dep_bot=true
-fi
 case "$BOTS" in
-  reject) [ "$is_bot" = "true" ] && stop "bot author: $AUTHOR" ;;
-  only)   [ "$is_dep_bot" = "true" ] || stop "not a dependency-bot PR (author: $AUTHOR)" ;;
+  reject) [ "$kind" = "human" ] || stop "bot author: $AUTHOR" ;;
+  only)   [ "$kind" = "dependency" ] || stop "not a dependency-bot PR (author: $AUTHOR)" ;;
   allow)  : ;;
   *)      echo "::error::unknown bots value '$BOTS' (expected reject|only|allow)"; exit 1 ;;
 esac

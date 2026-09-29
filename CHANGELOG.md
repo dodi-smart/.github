@@ -1,3 +1,9 @@
+## [1.12.3](https://github.com/dodi-smart/.github/compare/v1.12.2...v1.12.3) (2026-09-29)
+
+### ⚡ Performance Improvements
+
+* **deps-verify:** wait for pr-checks on the light pool and skip the agent when nothing new is judged ([be8621a](https://github.com/dodi-smart/.github/commit/be8621ae669dd42c1a2fd8a14a3370317be99a33))
+
 ## [1.12.2](https://github.com/dodi-smart/.github/compare/v1.12.1...v1.12.2) (2026-09-29)
 
 ### ⚡ Performance Improvements

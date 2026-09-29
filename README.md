@@ -1062,8 +1062,18 @@ everything else, so nothing in the log will hint at it.
 `Self test` runs on every pull request touching `actions/`, `.github/workflows/`
 or the Renovate preset. It asserts the kill switch across every workflow shape,
 checks the runner presets against the table above, parses every YAML file,
-shellchecks the scripts, validates the Renovate preset, and runs actionlint and
-zizmor (workflow security, medium and above, config in `zizmor.yml`).
+validates the Renovate preset, and runs `hk check --all`. That runs shellcheck,
+actionlint, zizmor (workflow security, config in `zizmor.yml`), typos and the
+whitespace and merge-marker checks defined in `hk.pkl`.
+
+Run the same checks locally, and get them as git hooks (including a
+conventional-commit check on the message):
+
+```sh
+mise install
+hk install --mise
+hk check --all
+```
 
 Read `AGENTS.md` before changing anything. If you add a workflow, add its rule to
 the table there with the one line that says why, and extend

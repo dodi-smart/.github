@@ -1,3 +1,9 @@
+## [1.13.2](https://github.com/dodi-smart/.github/compare/v1.13.1...v1.13.2) (2026-09-29)
+
+### 🐛 Bug Fixes
+
+* **agent-gate:** read live labels so a re-run cannot miss a late agent:no-touch ([a7cd305](https://github.com/dodi-smart/.github/commit/a7cd305a7a12f326d8c722120da88bca9c1b9d79))
+
 ## [1.13.1](https://github.com/dodi-smart/.github/compare/v1.13.0...v1.13.1) (2026-09-29)
 
 ### 🐛 Bug Fixes

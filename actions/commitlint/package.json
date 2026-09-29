@@ -1,0 +1,9 @@
+{
+  "name": "commitlint-tooling",
+  "private": true,
+  "description": "The commitlint CLI and the config every repo here extends, pinned so a lint run installs the same tree every time.",
+  "dependencies": {
+    "@commitlint/cli": "21.2.3",
+    "@commitlint/config-conventional": "21.2.3"
+  }
+}

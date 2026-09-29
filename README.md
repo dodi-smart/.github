@@ -598,10 +598,12 @@ a required check by accident. A repo that wants zavet required names
 pull request touching no matching file shows a skipped job, and a required
 context that is never created would wait forever.
 
-`commitlint` uses `wagoid/commitlint-github-action` as before. It reads the
-pull request's commits through the API and bundles `config-conventional` and the
-other configs it supports, so the checkout is one commit deep. A config that
-extends a package outside that bundle never worked and still does not.
+`commitlint` runs the commitlint CLI (`actions/commitlint`, pinned by lockfile)
+on the light runner. It reads the pull request's commit messages through the
+API and checks out only the config file. `config-conventional` is always there,
+and any other package a JSON config extends is installed beside it. It is not a
+Docker action: on the self-hosted fleet a container action cannot see the
+workspace.
 
 ### setup-stack inputs and outputs
 

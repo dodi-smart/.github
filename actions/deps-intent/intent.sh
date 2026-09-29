@@ -90,8 +90,17 @@ case "${1:-run}" in
           decide; printf 'judge=%s\nreason=%s\n' "$judge" "$reason"; exit 0 ;;
 esac
 
-: "${REPO:?}" "${BASE_REF:?}" "${HEAD_SHA:?}" "${NUMBER:?}" "${LABELS:?}"
+: "${REPO:?}" "${BASE_REF:?}" "${HEAD_SHA:?}" "${NUMBER:?}"
 VERDICT="${VERDICT:-}"
+# The PR's labels as they are now. The event payload is a snapshot from the
+# push, and a re-run replays it, so a verdict label set since then would be
+# invisible and nothing could ever skip. The payload is the fallback, loudly,
+# since a stale one only ever sends the run to the agent.
+if ! live="$(gh api "/repos/$REPO/issues/$NUMBER/labels?per_page=100" --jq '[.[].name]')"; then
+  echo "::warning title=Labels read from the event::The PR's labels could not be read live, so an unchanged update may be judged again."
+  live="${LABELS:-[]}"
+fi
+LABELS="$live"
 
 UPDATE=other
 printf '%s' "${TITLE:-}" | grep -qi 'lock file maintenance' && UPDATE=lockfile

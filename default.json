@@ -54,6 +54,12 @@
   // Weekly batch. Security PRs ignore the schedule.
   "schedule": ["before 6am on monday"],
 
+  // The schedule only gates new branches. These keep open ones still outside
+  // the window too, and rebase them only on a conflict. See AGENTS.md.
+  "updateNotScheduled": false,
+  "rebaseWhen": "conflicted",
+  "prConcurrentLimit": 8,
+
   // NOTE: vulnerabilityAlerts is on by default via config:recommended and works
   // on the Mend hosted community app, but only fires if GitHub "Dependabot
   // alerts" are enabled for the repo. osvVulnerabilityAlerts is deliberately NOT
@@ -70,7 +76,9 @@
       "matchManagers": ["github-actions"],
       "matchUpdateTypes": ["minor", "patch"],
       "groupName": "github actions",
-      "automerge": true
+      "automerge": true,
+      // A merged Action bump moves the tag every consumer runs. See AGENTS.md.
+      "minimumReleaseAge": "3 days"
     },
 
     // Majors are labelled for visibility, never auto-merged (automerge defaults

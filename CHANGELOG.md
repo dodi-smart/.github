@@ -1,3 +1,9 @@
+## [1.12.2](https://github.com/dodi-smart/.github/compare/v1.12.1...v1.12.2) (2026-09-29)
+
+### ⚡ Performance Improvements
+
+* **setup-stack:** cache Gradle and Kotlin/Native on self-hosted macOS ([dca11d6](https://github.com/dodi-smart/.github/commit/dca11d60724ff5a275ac40d6c1e7d1571577dc9f))
+
 ## [1.12.1](https://github.com/dodi-smart/.github/compare/v1.12.0...v1.12.1) (2026-09-29)
 
 ### ⚡ Performance Improvements

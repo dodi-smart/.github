@@ -15,25 +15,27 @@
 # is none, so a report that has gone clean can retract itself.
 #
 # Reads its inputs from the environment and writes action/id/url to
-# $GITHUB_OUTPUT. action.yml is a thin wrapper; test.sh runs `--pick` directly.
+# $GITHUB_OUTPUT. action.yml is a thin wrapper; test.sh runs `--pick` and `--body`
+# directly. `--body` is how deps-verify reads back a value it stored in a comment.
 set -euo pipefail
 
 marker() { printf '<!-- dodi-sticky: %s -->' "$1"; }
 
-# Pick the sticky comment's id from a comments payload on stdin, or print
-# nothing when there is none to update. Bot-authored only: the marker is visible
-# in any raw body, so a person quoting one back would otherwise capture the key.
+# Pick the sticky comment for a key from comments payloads on stdin (one JSON
+# array per page) and print its `id` or `body`, or nothing when there is none.
+# Bot-authored only: the marker is visible in any raw body, so a person quoting
+# one back would otherwise capture the key.
 pick() {
-  jq -r --arg m "$(marker "$1")" \
-    'map(select((.body // "") | contains($m))
-         | select(.user.type == "Bot"))
-     | (first | .id) // empty'
+  jq -rs --arg m "$(marker "$1")" --arg f "$2" \
+    '[.[][] | select((.body // "") | contains($m))
+            | select(.user.type == "Bot")]
+     | (first | .[$f]) // empty'
 }
 
-if [ "${1:-}" = "--pick" ]; then
-  pick "${2:?--pick needs a key}"
-  exit 0
-fi
+case "${1:-}" in
+  --pick) pick "${2:?--pick needs a key}" id;   exit 0 ;;
+  --body) pick "${2:?--body needs a key}" body; exit 0 ;;
+esac
 
 : "${KEY:?}" "${REPO:?}" "${NUMBER:?}"
 delete="${DELETE:-false}"
@@ -51,7 +53,7 @@ if [ "$delete" != "true" ]; then
   body="$(printf '%s\n\n%s\n' "$(marker "$KEY")" "$(cat "$BODY_FILE")")"
 fi
 
-existing="$(gh api "/repos/$REPO/issues/$NUMBER/comments?per_page=100" --paginate | pick "$KEY")"
+existing="$(gh api "/repos/$REPO/issues/$NUMBER/comments?per_page=100" --paginate | pick "$KEY" id)"
 
 if [ "$delete" = "true" ]; then
   if [ -n "$existing" ]; then

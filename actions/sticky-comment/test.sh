@@ -43,6 +43,24 @@ check "human quote does not shadow"    review 31 "[$(human 30 "quoting $M"),$(bo
 # The API omits body on a deleted comment; `.body // ""` must not blow up.
 check "missing body field"          review ""  '[{"id":40,"user":{"type":"Bot"}}]'
 
+# `--body` picks the same comment, so a caller that stores a value in it reads
+# back the one that would be edited, never a person's quote of it.
+body() {
+  local name="$1" want="$2" json="$3" got
+  got="$(printf '%s' "$json" | "$HERE/sticky.sh" --body review)"
+  if [ "$got" = "$want" ]; then
+    printf '  ok   %-46s\n' "$name"; pass=$((pass + 1))
+  else
+    printf '  FAIL %-46s -> %s (wanted %s)\n' "$name" "${got:-<none>}" "${want:-<none>}"
+    fail=$((fail + 1))
+  fi
+}
+body "no comments"                     ""            '[]'
+body "the bot's body"                  "$M hi"       "[$(bot 11 "$M hi")]"
+body "a multi-line body stays whole"   "$(printf '%s\nb' "$M")" "[$(bot 11 "$M\\nb")]"
+body "a human quote is not the body"   "$M real"     "[$(human 30 "$M quote"),$(bot 31 "$M real")]"
+body "found on a later page"           "$M two"      "[$(human 1 x)] [$(bot 2 "$M two")]"
+
 # Whole-script runs against a fake `gh`, so argument handling and delete mode
 # are checked without the API. The fake serves $COMMENTS for a read and logs
 # every DELETE it is asked to make.

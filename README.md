@@ -229,6 +229,7 @@ The log shows the deployment id and commit before the routes are probed.
 | `actions/run-agent` | Invokes the agent with the org's tool allowlist and reporting defaults |
 | `actions/setup-stack` | Installs a toolchain, resolves cache isolation, supplies conventional commands |
 | `actions/sticky-comment` | One keyed comment per pull request, rewritten in place on every later run |
+| `actions/deps-intent` | Decides from a dependency PR's diff whether `deps-verify.yml` has anything new to judge. Internal to that workflow |
 | `actions/release-tooling` | Installs semantic-release and its default plugins from a pinned lockfile into a private prefix, cached on the lockfile hash, and puts `semantic-release` on `PATH` |
 | `actions/semantic-release-config` | Links the shared semantic-release config into a consumer's `node_modules` from a private prefix, never from a registry and never into the checkout it came with |
 | `actions/changed-files` | A pull request's changed files through the API, with no checkout, and whether any match a set of globs |
@@ -856,17 +857,16 @@ Which runner it takes:
   infra verdict, or a repo with no `pr-checks` that builds here. With an `apple`
   or `hosted` `runner-weight`, or explicit `runner-labels`, there is no lighter
   pool, so both jobs use that selector.
-- **A rebase of an unchanged update is not judged twice.** The job hashes the
-  manifest diff against the base branch (package manifests, Gradle build files
-  and version catalog, `Cargo.toml`, `pubspec.yaml`, `Package.swift`, `go.mod`;
-  never lockfiles) and records the hash in its comment. When the build is green,
-  the PR already carries `deps:verified` (or `deps:fixed` with its fix commits
-  still on the branch) and the hash is the same, the agent is skipped and the
-  label and comment stay. A changed manifest diff, a missing record, or any red
-  build goes to the agent.
-- **Lock file maintenance is judged by the build.** A green build gets
-  `deps:verified` and a one-line comment, with no agent. A red one goes to the
-  agent as before.
+- **A rebase of an unchanged update runs nothing.** `wait` hashes the changed lines
+  of every file except lockfiles and records the hash in the comment. When the
+  build is green, the PR already carries `deps:verified` (or `deps:fixed` with its
+  fix commits still on the branch) and the hash is the same, `verify` does not
+  start, and the label and comment stay. A changed diff, a missing record, or any
+  red build goes to the agent, as does a repo that builds here, since there is no
+  verdict to trust yet.
+- **Lock file maintenance is judged by the build.** A green build with only
+  lockfiles changed gets `deps:verified` and a one-line comment, with no agent.
+  A red one goes to the agent as before.
 
 `env` and `build-env` mean what they mean in `pr-checks`: same format, same
 parser, and `build-env` reaches the build command only. They matter when the

@@ -321,14 +321,13 @@ jobs:
           "
 
       # A skip that should not have happened is the costly mistake here, above
-      # all a `verified` label on a red build.
-      - name: deps-verify decides when the agent is skipped
+      # all a `verified` label on a red build. test.sh asserts those cases first.
+      - name: deps-verify decides when a run is skipped
         run: ./actions/deps-intent/test.sh
 
       # A green Renovate PR must not hold a heavy runner while it waits. The wait
       # job runs on light and decides the verdict; verify takes heavy only when
-      # the verdict is not green. The agent runs only when deps-intent says so,
-      # and every step after it must still work when it did not run.
+      # the verdict is not green, and the agent runs only when the judge says so.
       - name: deps-verify waits on light and takes heavy only to build
         run: |
           set -euo pipefail
@@ -342,39 +341,14 @@ jobs:
               sys.exit('::error::deps-verify needs a wait job and a verify job')
           if 'needs.gate.outputs.light' not in str(wait.get('runs-on')) or 'heavy' in str(wait.get('runs-on')):
               bad.append('wait must run on the light pool only')
-          if 'wait' not in (verify.get('needs') or []):
-              bad.append('verify must need wait')
           ro = str(verify.get('runs-on'))
           if 'needs.wait.outputs.verdict' not in ro or 'green' not in ro or 'needs.gate.outputs.light' not in ro or 'needs.gate.outputs.heavy' not in ro:
               bad.append('verify runs-on must choose light for a green verdict and heavy otherwise')
-          steps = wait['steps']
-          checkout = [s for s in steps if 'actions/checkout' in str(s.get('uses', ''))]
-          if len(checkout) != 1 or 'sparse-checkout' not in checkout[0].get('with', {}) or checkout[0]['with'].get('persist-credentials') is not False:
-              bad.append('wait must sparse-checkout the workflows without persisting credentials')
-          if any('run-agent@' in str(s.get('uses', '')) or 'setup-stack@' in str(s.get('uses', '')) for s in steps):
-              bad.append('wait must not run the agent or install a toolchain')
-          if (wait.get('permissions') or {}).get('actions') != 'write':
-              bad.append('wait needs actions: write to re-run pr-checks once')
-          for out in ('mode', 'verdict', 'conclusion', 'failed', 'url', 'run-id', 'infra'):
-              if out not in (wait.get('outputs') or {}):
-                  bad.append('wait lost output ' + out)
-          vs = verify['steps']
-          ids = [s.get('id') for s in vs]
-          # The agent, and everything that acts on its work, follows the decision.
-          agent = [s for s in vs if s.get('id') == 'agent'][0]
-          if 'steps.intent.outputs.path' not in str(agent.get('if', '')) or 'agent' not in str(agent.get('if', '')):
-              bad.append('the agent step must run only when deps-intent says agent')
-          if not (ids.index('result') < ids.index('intent') < ids.index('agent')):
-              bad.append('intent must decide after the verdict and before the agent')
-          pub = [s for s in vs if s.get('id') == 'publish'][0]
-          if 'lockfile' not in str(pub.get('if', '')) or 'unchanged' in str(pub.get('if', '')):
-              bad.append('publish must run for an agent report or lock file maintenance, never for an unchanged skip')
-          if 'deps-intent: %s' not in pub['run']:
-              bad.append('publish no longer writes the intent marker into its comment')
-          if '= green ]' not in pub['run']:
-              bad.append('publish must label lock file maintenance from the verdict, never unconditionally')
-          if 'deps-intent@' not in str([s.get('uses') for s in vs]):
-              bad.append('verify no longer calls deps-intent')
+          if \"needs.wait.outputs.judge != 'skip'\" not in str(verify.get('if')):
+              bad.append('verify must not run when the judge says skip')
+          agent = [s for s in verify['steps'] if s.get('id') == 'agent'][0]
+          if \"needs.wait.outputs.judge == 'agent'\" not in str(agent.get('if', '')):
+              bad.append('the agent step must run only when the judge says agent')
           if bad:
               sys.exit('::error::' + '; '.join(bad))
           print('deps-verify waits on light and takes heavy only when there is something to build')

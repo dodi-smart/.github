@@ -143,34 +143,26 @@ jobs:
           gh-app-client-id:   ${{ secrets.GH_APP_CLIENT_ID }}
           gh-app-private-key: ${{ secrets.GH_APP_PRIVATE_KEY }}
 
-  # Waits for the caller's pr-checks run on a LIGHT runner and decides the build
-  # verdict. On most Renovate PRs pr-checks is green and the agent only reads
-  # release notes, so a heavy slot held here for the whole wait would sit idle,
-  # and it would take a slot from the very pr-checks builds being waited on.
-  # `verify` takes the heavy pool only when there is something to build or fix.
-  #
-  # Whether the repo calls pr-checks is read from its own workflow files, never
-  # guessed from a timer. Building here as well ran a second full build of the
-  # same commit at the same moment, on the same runner hosts, and the pair ran
-  # out of memory. A run that died of the runner (exit 137, a killed daemon, a
-  # lost runner, a full disk) says nothing about the update, so it is re-run
-  # ONCE, failed jobs only. A second infra failure is reported as such.
+  # Waits for the caller's pr-checks run on a LIGHT runner, decides the build
+  # verdict, and decides whether `verify` runs at all (actions/deps-intent). A
+  # run that died of the runner is re-run ONCE, failed jobs only.
   wait:
     needs: [gate]
     if: needs.gate.outputs.proceed == 'true'
     runs-on: ${{ fromJson(needs.gate.outputs.light) }}
     timeout-minutes: 120
     permissions:
-      contents: read
-      actions: write   # read the pr-checks run, and re-run it once after an infra failure
+      contents: read        # the compare API
+      pull-requests: read   # the verdict comment
+      actions: write        # read the pr-checks run, and re-run it once after an infra failure
     outputs:
-      mode:       ${{ steps.ci.outputs.mode }}        # own | ci
-      verdict:    ${{ steps.ci.outputs.verdict }}     # ci mode only; own mode is decided by the build
-      conclusion: ${{ steps.ci.outputs.conclusion }}
-      failed:     ${{ steps.ci.outputs.failed }}
-      url:        ${{ steps.ci.outputs.url }}
-      run-id:     ${{ steps.ci.outputs.run-id }}
-      infra:      ${{ steps.ci.outputs.infra }}
+      mode:    ${{ steps.ci.outputs.mode }}        # own | ci
+      verdict: ${{ steps.ci.outputs.verdict }}     # ci mode only; own mode is decided by the build
+      url:     ${{ steps.ci.outputs.url }}
+      run-id:  ${{ steps.ci.outputs.run-id }}
+      judge:   ${{ steps.judge.outputs.judge }}    # skip | lockfile | agent
+      intent:  ${{ steps.judge.outputs.intent }}
+      update:  ${{ steps.judge.outputs.update }}   # major | lockfile | other
     env:
       GH_TOKEN: ${{ github.token }}
       REPO:     ${{ github.repository }}
@@ -247,38 +239,46 @@ jobs:
             wait_ci || conclusion=timeout
           fi
 
-          failed="" is_infra=""
-          if [ "$conclusion" != success ] && [ -n "$id" ]; then
-            fetch_log
-            failed=$(gh api "/repos/$REPO/actions/runs/$id/jobs" \
-                     --jq '[.jobs[] | select(.conclusion == "failure") | .name] | join(", ")' || true)
-            if infra; then is_infra=true; out infra=true; fi
-          fi
-          out "conclusion=$conclusion"
-          out "failed=$failed"
-          out "url=$url"
-          echo "pr-checks: $conclusion (attempt $attempt) $url ${failed:+failed: $failed}"
-
           # One verdict string: green | red:<failed jobs> | red:infra (the runner
           # failed twice). Decided here so `verify` can pick its runner from it.
-          if [ "$conclusion" = success ]; then v=green
-          elif [ "$is_infra" = true ]; then v=red:infra
-          else v="red:${failed:-$conclusion}"
+          v=green
+          if [ "$conclusion" != success ]; then
+            v="red:$conclusion"
+            if [ -n "$id" ]; then
+              fetch_log
+              if infra; then
+                v=red:infra
+              else
+                failed=$(gh api "/repos/$REPO/actions/runs/$id/jobs" \
+                         --jq '[.jobs[] | select(.conclusion == "failure") | .name] | join(", ")' || true)
+                v="red:${failed:-$conclusion}"
+              fi
+            fi
           fi
           out "verdict=$v"
+          out "url=$url"
           out "run-id=$id"
+          echo "pr-checks: $conclusion (attempt $attempt) $url"
           echo "verdict: $v"
 
-  # ONE job past the wait: the build (here, when the repo has no pr-checks), then
-  # the agent, then a deterministic push and publish. The order inside the job is
-  # the rule: nothing below the verdict steps can run before there is a verdict.
-  #
-  # The runner follows the verdict. A green pr-checks run leaves only reading to
-  # do, so it stays on the light pool; a red one, an infra failure, or a repo
-  # that builds here needs the heavy pool to reproduce and fix.
+      # Ends the run here when nothing new is left to judge. With no verdict yet
+      # (a repo that builds in `verify`) the answer is always the agent.
+      - id: judge
+        uses: dodi-smart/.github/actions/deps-intent@v1
+        with:
+          base-ref: ${{ github.event.pull_request.base.ref }}
+          head-sha: ${{ github.event.pull_request.head.sha }}
+          number:   ${{ github.event.pull_request.number }}
+          title:    ${{ github.event.pull_request.title }}
+          labels:   ${{ toJson(github.event.pull_request.labels.*.name) }}
+          verdict:  ${{ steps.ci.outputs.verdict }}
+
+  # The build (here, when the repo has no pr-checks), the agent, then a
+  # deterministic push and publish. A green verdict stays on the light pool;
+  # anything that needs a build or a fix takes the heavy one.
   verify:
     needs: [gate, wait]
-    if: needs.gate.outputs.proceed == 'true'
+    if: needs.gate.outputs.proceed == 'true' && needs.wait.outputs.judge != 'skip'
     runs-on: ${{ fromJson(needs.wait.outputs.verdict == 'green' && needs.gate.outputs.light || needs.gate.outputs.heavy) }}
     timeout-minutes: 120
     permissions:
@@ -334,7 +334,6 @@ jobs:
           rust-toolchain:  ${{ inputs.rust-toolchain }}
 
       # Facts the agent and the publish step both need, computed once.
-      #   update:     major | lockfile | other, from Renovate's own labels/title
       #   fix-rounds: fix commits this job pushed to the branch. The push step
       #               writes each round as ONE commit with a Deps-Verify-Round
       #               trailer, so the count never depends on a subject the
@@ -342,30 +341,23 @@ jobs:
       #   base-sha:   the head before the agent, so its commits can be isolated
       # It also sets the commit identity, before the agent can commit anything.
       - id: facts
-        env:
-          TITLE:  ${{ github.event.pull_request.title }}
-          LABELS: ${{ toJson(github.event.pull_request.labels.*.name) }}
         run: |
           set -euo pipefail
           git config user.name  "$FIX_NAME"
           git config user.email "$FIX_EMAIL"
-          update=other
-          printf '%s' "$TITLE" | grep -qi 'lock file maintenance' && update=lockfile
-          printf '%s' "$LABELS" | jq -e 'index("deps:major")' >/dev/null && update=major
           # Only commits this PR adds: a fix merged with an earlier PR is in the
           # base branch's history and is not a round spent on this one.
           fixes=$(git log --format='%h %s%x09%(trailers:key=Deps-Verify-Round,valueonly,separator=)' \
                     "origin/$BASE_REF..HEAD" | awk -F'\t' '$2 != "" { print $1 }')
           rounds=$(printf '%s' "$fixes" | grep -c . || true)
           {
-            echo "update=$update"
             echo "fix-rounds=$rounds"
             echo "base-sha=$(git rev-parse HEAD)"
             echo "fixes<<EOF_FIXES"
             printf '%s\n' "${fixes:-none}"
             echo "EOF_FIXES"
           } >> "$GITHUB_OUTPUT"
-          echo "update=$update fix-rounds=$rounds"
+          echo "fix-rounds=$rounds"
 
       # Logs do not cross jobs, so a red pr-checks verdict fetches the failed
       # jobs' logs here, where the agent reads them.
@@ -444,22 +436,6 @@ jobs:
             echo "::warning title=Dependency build failed::$v. The agent reads the logs and either fixes the cause or explains it on the PR."
           fi
 
-      # Does the agent have anything new to judge? Renovate re-pushes a branch
-      # for a rebase of the same update, and for lock file maintenance, and the
-      # agent read the same changelogs each time. Green builds skip it when the
-      # manifest diff matches the verdict already on the PR; lock file
-      # maintenance has no changelog to read. A red build never skips. The rules
-      # are in actions/deps-intent.
-      - id: intent
-        uses: dodi-smart/.github/actions/deps-intent@v1
-        with:
-          base-ref:   ${{ github.event.pull_request.base.ref }}
-          number:     ${{ github.event.pull_request.number }}
-          verdict:    ${{ steps.result.outputs.verdict }}
-          update:     ${{ steps.facts.outputs.update }}
-          fix-rounds: ${{ steps.facts.outputs.fix-rounds }}
-          labels:     ${{ toJson(github.event.pull_request.labels.*.name) }}
-
       # Opus when there is something to fix or a major to read; Sonnet when the
       # build is green on a minor or patch, where the work is reading notes.
       #
@@ -470,11 +446,11 @@ jobs:
       # "Workflow initiated by non-human actor", and every run here is
       # bot-initiated. Named explicitly rather than '*', from the gate's list.
       - id: agent
-        if: steps.intent.outputs.path == 'agent'
+        if: needs.wait.outputs.judge == 'agent'
         uses: dodi-smart/.github/actions/run-agent@v1
         with:
           oauth-token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          model: ${{ (steps.result.outputs.verdict != 'green' || steps.facts.outputs.update == 'major') && 'claude-opus-5' || 'claude-sonnet-5' }}
+          model: ${{ (steps.result.outputs.verdict != 'green' || needs.wait.outputs.update == 'major') && 'claude-opus-5' || 'claude-sonnet-5' }}
           max-turns: ${{ steps.result.outputs.verdict != 'green' && '60' || '25' }}
           allowed-bots: ${{ needs.gate.outputs.dependency-bots }}
           allowed-tools: 'Bash "Bash(gh:*)" Read Write Edit Grep Glob WebFetch'
@@ -490,7 +466,7 @@ jobs:
               `green`, `red:<failed jobs or steps>`, or `red:infra` when the
               runner itself failed twice (out of memory, killed daemon).
             - Source: ${{ needs.wait.outputs.mode == 'ci' && format('the repo''s own PR checks run, {0}. The failed jobs'' logs are in `{1}/deps-logs/ci.log`.', needs.wait.outputs.url, runner.temp) || format('this job''s own build. Each step''s output is in `{0}/deps-logs/<step>.log`.', runner.temp) }}
-            - Update kind: `${{ steps.facts.outputs.update }}`.
+            - Update kind: `${{ needs.wait.outputs.update }}`.
             - Fix rounds already pushed: ${{ steps.facts.outputs.fix-rounds }} of 2.
             - Fix commits already on this branch:
               ${{ steps.facts.outputs.fixes }}
@@ -562,9 +538,19 @@ jobs:
             sets the label from them, and fails if either is missing.
             Do not comment on, label, merge or approve the pull request yourself.
 
+      # Lock file maintenance has no agent report. A green build is `verified`
+      # with this fixed verdict, written where the agent's would be, so publish
+      # has one path.
+      - if: needs.wait.outputs.judge == 'lockfile'
+        run: |
+          set -euo pipefail
+          reason="Lock file maintenance; the repo's checks passed."
+          jq -nc --arg r "$reason" '{verdict: "verified", reason: $r}' > "$RUNNER_TEMP/deps-verdict.json"
+          echo "No dependency versions changed, only lock files." > "$RUNNER_TEMP/deps-verdict.md"
+
       # Minted after the agent, so no dependency script ever ran beside it.
       - id: app-token
-        if: ${{ !cancelled() && env.HAS_APP == 'true' && (steps.agent.outcome != 'skipped' || steps.intent.outputs.path == 'lockfile') }}
+        if: ${{ !cancelled() && env.HAS_APP == 'true' }}
         uses: actions/create-github-app-token@v3
         with:
           client-id:    ${{ secrets.GH_APP_CLIENT_ID }}
@@ -581,7 +567,7 @@ jobs:
       # A push with GITHUB_TOKEN would not start the checks on the new commit
       # and is rejected by the rulesets, so no App means no push.
       - id: push
-        if: ${{ !cancelled() && steps.agent.outcome != 'skipped' }}
+        if: ${{ !cancelled() && needs.wait.outputs.judge == 'agent' }}
         env:
           BASE_SHA: ${{ steps.facts.outputs.base-sha }}
           ROUNDS:   ${{ steps.facts.outputs.fix-rounds }}
@@ -621,16 +607,11 @@ jobs:
           echo "pushed=true" >> "$GITHUB_OUTPUT"
           echo "::notice title=Fix pushed::Round $(( ROUNDS + 1 )). The push starts a fresh verification of the new head, which publishes the verdict."
 
-      # The label and the comment are set HERE, from the agent's files, never by
+      # The label and the comment are set HERE, from the verdict files, never by
       # the agent. One label, the others removed, so a PR never carries two
       # verdicts. A build that is red and was not fixed is needs-manual whatever
       # the agent wrote, and a branch that carries fix commits is `fixed`, never
       # `verified`, so a later automerge rule can tell the two apart.
-      #
-      # Lock file maintenance has no agent report: a green build is `verified`
-      # with a fixed one-line comment, and anything else is `needs-manual`.
-      # When the agent was skipped as unchanged, this step does not run at all,
-      # so the label and comment from the last judged run stand.
       #
       # Every comment carries the intent hash, a hidden line the next run reads
       # to tell a rebase of the same update from a new one.
@@ -638,11 +619,10 @@ jobs:
       # Skipped when this run pushed: the push starts a new run on the new head,
       # and that run's verdict is the one that counts.
       - id: publish
-        if: ${{ !cancelled() && (steps.agent.outcome != 'skipped' || steps.intent.outputs.path == 'lockfile') && steps.push.outputs.pushed != 'true' }}
+        if: ${{ !cancelled() && steps.push.outputs.pushed != 'true' }}
         env:
           VERDICT:  ${{ steps.result.outputs.verdict }}
-          KIND:     ${{ steps.intent.outputs.path }}
-          INTENT:   ${{ steps.intent.outputs.intent }}
+          INTENT:   ${{ needs.wait.outputs.intent }}
           ROUNDS:   ${{ steps.facts.outputs.fix-rounds }}
           REFUSED:  ${{ steps.push.outputs.refused }}
           JSON:     ${{ runner.temp }}/deps-verdict.json
@@ -652,39 +632,29 @@ jobs:
         run: |
           set -euo pipefail
           missing=false
-          if [ "$KIND" = lockfile ]; then
-            if [ "$VERDICT" = green ]; then
-              label=verified
-              echo "**deps:verified** Lock file maintenance; the repo's checks passed." > "$COMMENT"
-            else
-              label=needs-manual
-              echo "**deps:needs-manual** Lock file maintenance; the repo's checks did not pass." > "$COMMENT"
-            fi
-          else
-            agent=$(jq -r '.verdict // empty' "$JSON" 2>/dev/null || true)
-            reason=$(jq -r '.reason // empty' "$JSON" 2>/dev/null || true)
-            case "$agent" in verified|fixed|needs-manual) ;; *) missing=true ;; esac
-            [ -s "$MD" ] || missing=true
+          agent=$(jq -r '.verdict // empty' "$JSON" 2>/dev/null || true)
+          reason=$(jq -r '.reason // empty' "$JSON" 2>/dev/null || true)
+          case "$agent" in verified|fixed|needs-manual) ;; *) missing=true ;; esac
+          [ -s "$MD" ] || missing=true
 
-            # The job's facts decide; the agent's word only counts when they agree.
-            if   [ "$VERDICT" != green ] || [ "$missing" = true ]; then label=needs-manual
-            elif [ "$agent" = needs-manual ]; then label=needs-manual
-            elif [ "$ROUNDS" -gt 0 ];         then label=fixed          # green, with fix commits on the branch
-            elif [ "$agent" = fixed ];        then label=needs-manual   # a fix that never reached the branch
-            else                                   label=verified
-            fi
-
-            {
-              if [ "$missing" = true ]; then
-                # shellcheck disable=SC2016  # the backticks are markdown
-                printf '**deps:%s** The verification agent wrote no report. Build: `%s`. See the run log.\n' "$label" "$VERDICT"
-              else
-                printf '**deps:%s** %s\n\n' "$label" "$reason"
-                cat "$MD"
-                [ -z "${REFUSED:-}" ] || printf '\nA fix was prepared but not pushed: %s.\n' "$REFUSED"
-              fi
-            } > "$COMMENT"
+          # The job's facts decide; the agent's word only counts when they agree.
+          if   [ "$VERDICT" != green ] || [ "$missing" = true ]; then label=needs-manual
+          elif [ "$agent" = needs-manual ]; then label=needs-manual
+          elif [ "$ROUNDS" -gt 0 ];         then label=fixed          # green, with fix commits on the branch
+          elif [ "$agent" = fixed ];        then label=needs-manual   # a fix that never reached the branch
+          else                                   label=verified
           fi
+
+          {
+            if [ "$missing" = true ]; then
+              # shellcheck disable=SC2016  # the backticks are markdown
+              printf '**deps:%s** The verification agent wrote no report. Build: `%s`. See the run log.\n' "$label" "$VERDICT"
+            else
+              printf '**deps:%s** %s\n\n' "$label" "$reason"
+              cat "$MD"
+              [ -z "${REFUSED:-}" ] || printf '\nA fix was prepared but not pushed: %s.\n' "$REFUSED"
+            fi
+          } > "$COMMENT"
           [ -z "$INTENT" ] || printf '\n<!-- deps-intent: %s -->\n' "$INTENT" >> "$COMMENT"
 
           # Labels with the App's token when there is one, so a repo that has

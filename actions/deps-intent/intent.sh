@@ -92,6 +92,10 @@ esac
 
 : "${REPO:?}" "${BASE_REF:?}" "${HEAD_SHA:?}" "${NUMBER:?}" "${LABELS:?}"
 VERDICT="${VERDICT:-}"
+# The PR's labels as they are now. The event payload is a snapshot from the
+# push, and a re-run replays it, so a verdict label set since then would be
+# invisible and nothing could ever skip. Falls back to the payload.
+LABELS="$(gh api "/repos/$REPO/issues/$NUMBER/labels?per_page=100" --jq '[.[].name]' 2>/dev/null || printf '%s' "$LABELS")"
 
 UPDATE=other
 printf '%s' "${TITLE:-}" | grep -qi 'lock file maintenance' && UPDATE=lockfile

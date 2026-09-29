@@ -147,13 +147,33 @@ runs:
     # in .git/config of the persistent workspace, and actions/checkout's own
     # `sparse-checkout disable` does not clear it on git 2.43: every later
     # checkout there stays sparse. Undo it, so the job sees the whole tree.
+    #
+    # That workspace is also a blob-less partial clone, so widening the tree
+    # lazily fetches the missing blobs, and checkouts no longer persist their
+    # credentials: on a private repo the fetch died with "could not read
+    # Username". The job token is handed to this one git command through
+    # GIT_CONFIG_* env, never written to .git/config or put on the command line,
+    # where another job on the same machine could read it.
     - if: runner.environment == 'self-hosted'
       shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+        SERVER_URL: ${{ github.server_url }}
       run: |
+        set -euo pipefail
         if [ "$(git config --local --get core.sparseCheckout 2>/dev/null)" = true ]; then
           echo "::notice::healing a sparse workspace left by an earlier job"
           git config --local --unset core.sparseCheckout
-          git sparse-checkout disable
+          # `tr`, not `base64 -w0`: BSD base64 on a macOS runner has no -w.
+          basic="$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 | tr -d '\n')"
+          echo "::add-mask::$basic"
+          if ! GIT_CONFIG_COUNT=1 \
+               GIT_CONFIG_KEY_0="http.$SERVER_URL/.extraheader" \
+               GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $basic" \
+               git sparse-checkout disable; then
+            echo "::error::could not widen the sparse workspace an earlier job left on this runner. Clear the runner's workspace for this repo and re-run."
+            exit 1
+          fi
         fi
 
     - id: resolve

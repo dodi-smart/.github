@@ -2,6 +2,10 @@
 #
 # Everything here is deterministic and hosted-only. This repo is public, and a
 # public repo never touches a self-hosted runner.
+#
+# There is no push trigger. A merge to main runs this through Publish release,
+# which calls it before moving `v1`, so the run that gates the release is the
+# only one and it tests the exact commit being released.
 name: Self test
 
 # No `paths:` filter on purpose. The run takes about 15 seconds, and two of the
@@ -11,13 +15,20 @@ name: Self test
 # pull request produces no check run at all and could never merge.
 on:
   pull_request:
-  push:
-    branches: [main]
+  workflow_call:
   workflow_dispatch:
 
+# Only a pull request run may be cancelled by a newer one. When Publish release
+# calls this, a cancelled run would fail the release's `needs` and skip it, and
+# a newer push would then release without ever having seen this commit pass.
+# `github.event_name` is the caller's event there ("push"), so a release run is
+# never cancelled. Publish release's own group already queues one release at a
+# time, so this group never sees two of them. Do not give this the same group
+# name as Publish release: a called workflow that shares its caller's group
+# deadlocks against it.
 concurrency:
   group: self-test-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
@@ -388,6 +399,38 @@ jobs:
                     + '. Reuse of compiled output is the build tool job, by content hash. See AGENTS.md.')
               sys.exit(1)
           print('no build directory is cached')
+          "
+
+      # v1 moves the moment semantic-release succeeds, so the only thing between
+      # a broken merge and every caller is this `needs`. Without it the two
+      # workflows race, and v1 has already moved when Self test reports.
+      - name: Publish release waits for Self test
+        run: |
+          set -euo pipefail
+          python3 -c "
+          import sys, yaml
+          doc = yaml.safe_load(open('.github/workflows/publish-release.yml'))
+          jobs = doc['jobs']
+          gate = [n for n, j in jobs.items() if j.get('uses') == './.github/workflows/self-test.yml']
+          if not gate:
+              print('::error::publish-release.yml no longer calls self-test.yml, so v1 can move before Self test passes')
+              sys.exit(1)
+          needs = jobs['release'].get('needs') or []
+          if isinstance(needs, str):
+              needs = [needs]
+          if not set(gate) <= set(needs):
+              print('::error::the release job does not need ' + ', '.join(gate) + ', so v1 can move before Self test passes')
+              sys.exit(1)
+          # PyYAML reads a bare on: key as boolean True.
+          st = yaml.safe_load(open('.github/workflows/self-test.yml'))
+          on = st.get('on') or st.get(True) or {}
+          if 'workflow_call' not in on:
+              print('::error::self-test.yml has no workflow_call trigger, so publish-release cannot call it')
+              sys.exit(1)
+          if 'push' in on:
+              print('::error::self-test.yml triggers on push again, which duplicates the run publish-release already makes')
+              sys.exit(1)
+          print('release needs ' + ', '.join(gate))
           "
 
       - name: Every workflow and action is parseable YAML

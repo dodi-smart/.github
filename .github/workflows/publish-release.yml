@@ -7,6 +7,12 @@
 # tag. A relative `./` reference does not help either, because inside a reusable
 # workflow it resolves against the CALLING repo.
 #
+# `v1` moves only after Self test passes on the exact commit being released.
+# semantic-release moves the tag the moment it succeeds, and a merge that is
+# broken only in combination would otherwise reach every caller before Self test
+# had reported. The `self-test` job below is that gate. Self test has no push
+# trigger of its own, so this is also its only run on a merge to main.
+#
 # Hosted on purpose. This repo is public, the org runner group refuses public
 # repos, and a self-hosted job here would queue rather than fail.
 name: Publish release
@@ -26,7 +32,17 @@ permissions:
   pull-requests: write
 
 jobs:
+  # A same-repo call is fine here, unlike in the consumer-facing workflows: this
+  # file is never called from another repo, so `./` resolves against this one.
+  # A called workflow cannot hold more than its caller grants, so this job grants
+  # exactly what Self test declares.
+  self-test:
+    permissions:
+      contents: read
+    uses: ./.github/workflows/self-test.yml
+
   release:
+    needs: [self-test]
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:

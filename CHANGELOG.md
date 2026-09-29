@@ -1,3 +1,9 @@
+## [1.10.0](https://github.com/dodi-smart/.github/compare/v1.9.0...v1.10.0) (2026-09-29)
+
+### ✨ Features
+
+* **pick-runner:** decide the fallback from one cached listing, and never send heavy to the light pool ([2b5e54f](https://github.com/dodi-smart/.github/commit/2b5e54f3636a62de948be749776f05cf7b23d0d1))
+
 ## [1.9.0](https://github.com/dodi-smart/.github/compare/v1.8.2...v1.9.0) (2026-09-29)
 
 ### ✨ Features

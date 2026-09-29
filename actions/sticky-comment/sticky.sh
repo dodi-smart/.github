@@ -11,6 +11,9 @@
 # position: `gh pr comment --edit-last` edits the last comment by the token,
 # which is the wrong one as soon as anything else comments in between.
 #
+# With DELETE=true it removes that comment instead, or does nothing when there
+# is none, so a report that has gone clean can retract itself.
+#
 # Reads its inputs from the environment and writes action/id/url to
 # $GITHUB_OUTPUT. action.yml is a thin wrapper; test.sh runs `--pick` directly.
 set -euo pipefail
@@ -32,20 +35,35 @@ if [ "${1:-}" = "--pick" ]; then
   exit 0
 fi
 
-: "${KEY:?}" "${BODY_FILE:?}" "${REPO:?}" "${NUMBER:?}"
+: "${KEY:?}" "${REPO:?}" "${NUMBER:?}"
+delete="${DELETE:-false}"
 
-if [ ! -f "$BODY_FILE" ]; then
-  echo "::error::sticky-comment: $BODY_FILE does not exist. The step that was meant to write it did not."
-  exit 1
+if [ "$delete" != "true" ]; then
+  : "${BODY_FILE:?}"
+  if [ ! -f "$BODY_FILE" ]; then
+    echo "::error::sticky-comment: $BODY_FILE does not exist. The step that was meant to write it did not."
+    exit 1
+  fi
+  if [ ! -s "$BODY_FILE" ]; then
+    echo "::error::sticky-comment: $BODY_FILE is empty. Refusing to post a blank comment."
+    exit 1
+  fi
+  body="$(printf '%s\n\n%s\n' "$(marker "$KEY")" "$(cat "$BODY_FILE")")"
 fi
-if [ ! -s "$BODY_FILE" ]; then
-  echo "::error::sticky-comment: $BODY_FILE is empty. Refusing to post a blank comment."
-  exit 1
-fi
-
-body="$(printf '%s\n\n%s\n' "$(marker "$KEY")" "$(cat "$BODY_FILE")")"
 
 existing="$(gh api "/repos/$REPO/issues/$NUMBER/comments?per_page=100" --paginate | pick "$KEY")"
+
+if [ "$delete" = "true" ]; then
+  if [ -n "$existing" ]; then
+    gh api -X DELETE "/repos/$REPO/issues/comments/$existing" >/dev/null
+    verb=deleted
+  else
+    verb=none
+  fi
+  echo "action=$verb" >> "$GITHUB_OUTPUT"
+  echo "sticky comment '$KEY' $verb"
+  exit 0
+fi
 
 if [ -n "$existing" ]; then
   verb=updated

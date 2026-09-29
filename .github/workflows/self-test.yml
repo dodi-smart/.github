@@ -45,6 +45,11 @@ jobs:
       - name: Shared semantic-release config tests
         run: npm test
 
+      # `heavy` landing on the light pool ran jobs out of memory (exit 137).
+      # The fallback table is behaviour, so it is asserted, not reviewed.
+      - name: Pick-runner fallback policy
+        run: ./actions/pick-runner/test.sh
+
       # The kill switch is a claim about behaviour. Assert it.
       - name: Agent gate behaviour
         run: ./actions/agent-gate/test.sh
@@ -53,6 +58,16 @@ jobs:
       # picking wrong means a later run overwrites something it did not write.
       - name: Sticky comment picks the right comment
         run: ./actions/sticky-comment/test.sh
+
+      # A skip built on changed-files is a positive claim, so every doubt has to
+      # come out as `matched=true`, the 3000-file cap included.
+      - name: Changed files count every doubt as a match
+        run: ./actions/changed-files/test.sh
+
+      # The wait must never pass on the job's own Deployment, and must count the
+      # commit before a `[skip ci]` release commit, the one the host builds.
+      - name: Deployment wait proves the host's deployment
+        run: ./actions/wait-for-deployment/test.sh
 
       # `sticky-comment` is read only in tag mode, which a non-empty `prompt`
       # switches off. The pair costs a full agent run and posts nothing.
@@ -149,6 +164,39 @@ jobs:
             exit 1
           fi
           echo 'no workflow matches its own bot by login substring'
+
+      # The dependency-bot list lived in four places in two shapes, and adding a
+      # bot meant four edits, one of them easy to miss. The gate owns it now.
+      # A login literal creeping back into a workflow is how the copies return.
+      - name: The gate is the only place that lists dependency bots
+        run: |
+          set -euo pipefail
+          python3 -c "
+          import sys, re, glob, yaml
+          bad = []
+          for f in sorted(glob.glob('.github/workflows/*.yml')):
+              if f.endswith('self-test.yml'):
+                  continue
+              if re.search(r'renovate\[bot\]|dependabot\[bot\]|app/renovate', open(f).read()):
+                  bad.append(f + ' names a dependency-bot login')
+          wf = lambda n: yaml.safe_load(open('.github/workflows/' + n))['jobs']
+          zsteps = wf('zavet-check.yml')['check']['steps']
+          author = [s for s in zsteps if s.get('id') == 'author']
+          if not author or 'agent-gate@' not in str(author[0].get('uses', '')):
+              bad.append('zavet-check no longer reads the author from agent-gate')
+          if any(s.get('id') == 'mode' for s in zsteps):
+              bad.append('zavet-check has its own mode step again')
+          triage = [s for s in wf('issue-triage.yml')['gate']['steps'] if s.get('id') == 'gate'][0]
+          events = str((triage.get('with') or {}).get('events', '')).split()
+          if not events or any(e.startswith('pull_request') for e in events):
+              bad.append('issue-triage must pass an events allow-list with no pull_request event, got ' + repr(events))
+          verify = [s for s in wf('deps-verify.yml')['verify']['steps'] if 'run-agent@' in str(s.get('uses', ''))][0]
+          if 'needs.gate.outputs.dependency-bots' not in str(verify['with'].get('allowed-bots', '')):
+              bad.append('deps-verify allowed-bots no longer reads the gate output')
+          if bad:
+              sys.exit('::error::' + '; '.join(bad) + '. Keep the list in actions/agent-gate/gate.sh and read author-kind or dependency-bots.')
+          print('dependency bots are listed once, in the gate')
+          "
 
       # `track_progress` forces tag mode, and tag mode renders only three issue
       # actions. run-agent filters the rest out so a reopened issue runs instead
@@ -317,8 +365,8 @@ jobs:
           inputs = set((call.get('inputs') or {}).keys())
           outputs = set((call.get('outputs') or {}).keys())
 
-          need_in = {'weight', 'labels', 'fallback', 'hosted-runner', 'guard-public'}
-          need_out = {'runner', 'selector'}
+          need_in = {'weight', 'labels', 'fallback', 'fallback-when', 'hosted-runner', 'guard-public'}
+          need_out = {'runner', 'selector', 'fell-back'}
 
           missing_in = need_in - inputs
           missing_out = need_out - outputs
@@ -337,7 +385,7 @@ jobs:
           python3 - <<'PRESETS'
           import re, sys
 
-          picker = open('actions/pick-runner/action.yml').read()
+          picker = open('actions/pick-runner/pick.sh').read()
           readme = open('README.md').read()
 
           got = dict(re.findall(r'^\s+(light|heavy|apple|hosted)\)\s+sel="([^"]*)"',
@@ -361,6 +409,32 @@ jobs:
               sys.exit(1)
 
           print('preset table agrees: %r' % got)
+
+          # The third cell says what a weight falls back to. It must agree with
+          # the defaults in pick.sh, above all that neither heavy nor apple names
+          # the light pool: a heavy job there runs out of memory.
+          fb = {}
+          for name, cell in re.findall(r'^\|\s*.(light|heavy|apple|hosted).\s*\|[^|]*\|([^|]*)\|',
+                                       readme, re.M):
+              fb[name] = cell
+          if len(fb) != 4:
+              sys.exit('::error::parsed %d README fallback cells, expected 4' % len(fb))
+
+          bad = []
+          for w in ('heavy', 'apple'):
+              m = re.search(r'^\s+%s\)\s+fb_def="([^"]*)";\s+when_def="([^"]*)"' % w, picker, re.M)
+              if not m:
+                  sys.exit('::error::pick.sh has no fb_def/when_def for %s' % w)
+              if 'self-hosted,Linux,light' in m.group(1) or 'light' in fb[w]:
+                  bad.append('%s falls back to the light pool' % w)
+              if w == 'heavy' and m.group(2) not in fb[w]:
+                  bad.append('%s: pick.sh fallback-when is %r, README says %r' % (w, m.group(2), fb[w].strip()))
+          m = re.search(r'local fb_def="([^"]*)" when_def="([^"]*)"', picker)
+          if not m or m.group(2) not in fb['light']:
+              bad.append('light: pick.sh fallback-when does not appear in the README fallback cell')
+          if bad:
+              sys.exit('::error::' + '; '.join(bad))
+          print('fallback column agrees with pick.sh')
           PRESETS
 
       # Caching a project build directory is a governed rule, not a preference.
@@ -392,6 +466,34 @@ jobs:
               sys.exit(1)
           print('no build directory is cached')
           "
+
+      # Two governed rules about the Supabase workflows. A value from `inputs` or
+      # `github` reaches a script through `env:`, never inside the script body,
+      # where it is a template injection. And the image cache key is exact: a
+      # `restore-keys` line would load images the CLI no longer asks for.
+      - name: Supabase workflows keep scripts clean and the image cache exact
+        run: |
+          set -euo pipefail
+          python3 - <<'SUPABASE'
+          import sys, yaml
+          bad = []
+          for f in ['.github/workflows/supabase-checks.yml', '.github/workflows/supabase-deploy.yml']:
+              doc = yaml.safe_load(open(f))
+              for name, job in doc['jobs'].items():
+                  for step in job.get('steps') or []:
+                      if '$' + '{{' in str(step.get('run', '')):
+                          bad.append('%s: %s interpolates an expression into a run script' % (f, step.get('name') or step.get('id')))
+          start = yaml.safe_load(open('actions/supabase-start/action.yml'))['runs']['steps']
+          caches = [s for s in start if str(s.get('uses', '')).startswith('actions/cache@')]
+          if len(caches) != 1:
+              bad.append('actions/supabase-start must hold exactly one actions/cache step')
+          elif 'restore-keys' in (caches[0].get('with') or {}):
+              bad.append('actions/supabase-start uses restore-keys; the key must be exact')
+          if bad:
+              print('::error::' + '; '.join(bad) + '. See AGENTS.md.')
+              sys.exit(1)
+          print('supabase workflows: scripts clean, cache key exact')
+          SUPABASE
 
       # v1 moves the moment semantic-release succeeds, so the only thing between
       # a broken merge and every caller is this `needs`. Without it the two
@@ -594,6 +696,17 @@ jobs:
                   sys.exit('::error::release-tooling caches with restore-keys. Only an exact key, or a poisoned entry is reimported.')
           print('release.yml installs its tooling in a private prefix')
           "
+
+      # env and build-env parsing, and bun version resolution.
+      - name: setup-stack parses env files and resolves bun
+        run: ./actions/setup-stack/test.sh
+
+      # A branch ref moves under every caller, and Renovate never proposes a change.
+      - name: No action is pinned to a branch
+        run: |
+          if grep -nE '^\s*-?\s*uses:\s*\S+@(stable|main|master)\s*(#.*)?$' .github/workflows/*.yml actions/*/action.yml; then
+            echo "::error::pin a tag or a full SHA, never a branch"; exit 1
+          fi
 
       - name: Shell scripts pass shellcheck
         run: |

@@ -56,10 +56,9 @@ on:
 
       java-version:    { type: string, default: "21" }
       node-version:    { type: string, default: "24" }
-      bun-version:     { type: string, default: "latest" }
+      bun-version:     { type: string, default: "auto" }
       flutter-version: { type: string, default: "" }
-      # Ignored: setup-stack pins the rust channel in the action ref. Declared
-      # so a caller already passing it does not break.
+      # Passed to the pinned rust-toolchain action: stable, nightly, or a version.
       rust-toolchain:  { type: string, default: "stable" }
     secrets:
       CLAUDE_CODE_OAUTH_TOKEN: { required: true }
@@ -80,6 +79,7 @@ jobs:
     timeout-minutes: 10   # the picker calls the org API and may retry
     outputs:
       proceed: ${{ steps.gate.outputs.proceed }}
+      dependency-bots: ${{ steps.gate.outputs.dependency-bots }}
       stack:   ${{ steps.stack.outputs.stack }}
       runner:  ${{ steps.pick.outputs.runner }}
     steps:
@@ -180,6 +180,7 @@ jobs:
           isolate:         true
           cache:           false
           env:             ${{ inputs.env }}
+          build-env:       ${{ inputs.build-env }}
           install:         ${{ inputs.install }}
           build:           ${{ inputs.build }}
           typecheck:       ${{ inputs.typecheck }}
@@ -320,28 +321,25 @@ jobs:
         if: steps.ci.outputs.mode == 'own'
         continue-on-error: true
         env:
-          ENV_FILE:  ${{ steps.setup.outputs.env-file }}
-          BUILD_ENV: ${{ inputs.build-env }}
-          INSTALL:   ${{ steps.setup.outputs.install }}
-          BUILD:     ${{ steps.setup.outputs.build }}
-          TYPECHECK: ${{ steps.setup.outputs.typecheck }}
-          TEST:      ${{ steps.setup.outputs.test }}
-          SMOKE:     ${{ inputs.smoke }}
+          ENV_FILE:       ${{ steps.setup.outputs.env-file }}
+          BUILD_ENV_FILE: ${{ steps.setup.outputs.build-env-file }}
+          INSTALL:        ${{ steps.setup.outputs.install }}
+          BUILD:          ${{ steps.setup.outputs.build }}
+          TYPECHECK:      ${{ steps.setup.outputs.typecheck }}
+          TEST:           ${{ steps.setup.outputs.test }}
+          SMOKE:          ${{ inputs.smoke }}
         run: |
           set -uo pipefail
           LOGS="$RUNNER_TEMP/deps-logs"
           mkdir -p "$LOGS"
           fail=""
           run() {
-            local name="$1" cmd="$2" extra="${3:-}"
+            local name="$1" cmd="$2" envfile="${3:-$ENV_FILE}"
             [ -z "$cmd" ] && return 0
             echo "::group::$name: $cmd"
             # shellcheck source=/dev/null
             if ( set +u -eo pipefail
-                 . "$ENV_FILE"
-                 if [ -n "$extra" ]; then
-                   while IFS='=' read -r k v; do [ -z "$k" ] && continue; export "$k=$v"; done <<< "$extra"
-                 fi
+                 . "$envfile"
                  eval "$cmd" ) > "$LOGS/$name.log" 2>&1; then
               echo "passed"
             else
@@ -351,7 +349,7 @@ jobs:
             echo "::endgroup::"
           }
           run install   "$INSTALL"
-          run build     "$BUILD" "$BUILD_ENV"
+          run build     "$BUILD" "$BUILD_ENV_FILE"
           run typecheck "$TYPECHECK"
           run test      "$TEST"
           run smoke     "$SMOKE"
@@ -392,14 +390,14 @@ jobs:
       #
       # `allowed-bots` is load-bearing. Without it the action aborts with
       # "Workflow initiated by non-human actor", and every run here is
-      # bot-initiated. Named explicitly rather than '*'.
+      # bot-initiated. Named explicitly rather than '*', from the gate's list.
       - id: agent
         uses: dodi-smart/.github/actions/run-agent@v1
         with:
           oauth-token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           model: ${{ (steps.result.outputs.verdict != 'green' || steps.facts.outputs.update == 'major') && 'claude-opus-5' || 'claude-sonnet-5' }}
           max-turns: ${{ steps.result.outputs.verdict != 'green' && '60' || '25' }}
-          allowed-bots: "renovate[bot],dependabot[bot],app/renovate"
+          allowed-bots: ${{ needs.gate.outputs.dependency-bots }}
           allowed-tools: 'Bash "Bash(gh:*)" Read Write Edit Grep Glob WebFetch'
           prompt: |
             Verify dependency PR #${{ github.event.pull_request.number }} in

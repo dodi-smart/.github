@@ -42,14 +42,27 @@ on:
         type: string
         default: ""
 
-      # Where a self-hosted selector falls back to when its pool cannot be
-      # reached. The light pool, so an unreachable large pool costs capacity
-      # rather than hosted minutes. A self-hosted fallback QUEUES when the fleet
-      # is offline, where a hosted one would run, so set this to `ubuntu-latest`
-      # for a job that must finish even then.
+      # Where a job goes when its pool cannot take it. Empty means the weight's own
+      # default, and an explicit value always wins:
+      #   light   self-hosted,Linux,light (the pool it is already on)
+      #   heavy   `hosted-runner`, never the light pool, where a heavy job runs out
+      #           of memory (exit 137)
+      #   apple   none: the light pool cannot run Xcode, so the job queues
+      #   labels  self-hosted,Linux,light, as before
+      # A self-hosted fallback QUEUES when the fleet is offline, where a hosted one
+      # would run, so set this to `ubuntu-latest` for a job that must finish even then.
       fallback:
         type: string
-        default: "self-hosted,Linux,light"
+        default: ""
+
+      # When to use the fallback. `busy` goes when no matching runner is online AND
+      # idle. `offline` goes only when none is online, so a busy pool queues the job.
+      # Empty means the weight's default: `busy` for light and labels, `offline` for
+      # heavy and apple. Long jobs want `offline`, because hosted costs more than the
+      # queue.
+      fallback-when:
+        type: string
+        default: ""
 
       # The runner used whenever self-hosted is off the table: `weight: hosted`,
       # and the public-repo and fork-PR path. That path never reads `fallback`,
@@ -71,6 +84,9 @@ on:
       selector:
         description: "The resolved selector, for logging"
         value: ${{ jobs.pick.outputs.selector }}
+      fell-back:
+        description: "true when the runner is the fallback, so a caller can widen max-parallel on hosted"
+        value: ${{ jobs.pick.outputs.fell-back }}
 
     secrets:
       GH_APP_CLIENT_ID:   { required: false }
@@ -84,6 +100,7 @@ jobs:
     outputs:
       runner:   ${{ steps.pick.outputs.runner }}
       selector: ${{ steps.pick.outputs.selector }}
+      fell-back: ${{ steps.pick.outputs.fell-back }}
     steps:
       - id: pick
         uses: dodi-smart/.github/actions/pick-runner@v1
@@ -91,6 +108,7 @@ jobs:
           weight:             ${{ inputs.weight }}
           labels:             ${{ inputs.labels }}
           fallback:           ${{ inputs.fallback }}
+          fallback-when:      ${{ inputs.fallback-when }}
           hosted-runner:      ${{ inputs.hosted-runner }}
           guard-public:       ${{ inputs.guard-public }}
           gh-app-client-id:   ${{ secrets.GH_APP_CLIENT_ID }}

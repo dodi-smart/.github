@@ -1,3 +1,42 @@
+## [1.12.0](https://github.com/dodi-smart/.github/compare/v1.11.0...v1.12.0) (2026-09-29)
+
+### ✨ Features
+
+* **setup-stack:** build-env input, bun resolved from the repo, rust toolchain pinned by SHA ([1026a15](https://github.com/dodi-smart/.github/commit/1026a15669ffe0eadaa2480c721c6bec2a1476c6))
+
+## [1.11.0](https://github.com/dodi-smart/.github/compare/v1.10.0...v1.11.0) (2026-09-29)
+
+### ✨ Features
+
+* add changed-files action ([37bb2ca](https://github.com/dodi-smart/.github/commit/37bb2ca70af77bac608483fa3e12e1c574970329))
+
+### 🐛 Bug Fixes
+
+* **supabase-deploy:** wait for the deployment of this commit before probing health routes ([0b49341](https://github.com/dodi-smart/.github/commit/0b4934105c4cf6f857aafcf01b78bd78fe40c302))
+
+### ⚡ Performance Improvements
+
+* **supabase-checks:** cache the local stack's images and read changed files through the API ([6aa7708](https://github.com/dodi-smart/.github/commit/6aa7708d3dfbcc0144fb5782dfc3ce834464e057))
+
+## [1.10.0](https://github.com/dodi-smart/.github/compare/v1.9.0...v1.10.0) (2026-09-29)
+
+### ✨ Features
+
+* **pick-runner:** decide the fallback from one cached listing, and never send heavy to the light pool ([2b5e54f](https://github.com/dodi-smart/.github/commit/2b5e54f3636a62de948be749776f05cf7b23d0d1))
+
+## [1.9.0](https://github.com/dodi-smart/.github/compare/v1.8.2...v1.9.0) (2026-09-29)
+
+### ✨ Features
+
+* **agent-gate:** classify the author once and add an event allow-list ([fb8cfe9](https://github.com/dodi-smart/.github/commit/fb8cfe9158b69acab960622a3d337b5da5b3e1ec))
+* **sticky-comment:** add a delete mode that needs no body file ([255e536](https://github.com/dodi-smart/.github/commit/255e536505575fa15e3b1164c8f5cc530199c4c2))
+
+### 🐛 Bug Fixes
+
+* **deps-verify:** read allowed-bots from the gate's dependency-bots output ([f7a500d](https://github.com/dodi-smart/.github/commit/f7a500dafdf51520a753b4e146f783cda14e6750))
+* **issue-triage:** stop a person's PR review before the triage agent ([650af65](https://github.com/dodi-smart/.github/commit/650af65f5287195387433b4563e671e6a9a01310))
+* **zavet-check:** report-only for automation bots, and comment through sticky-comment ([2b75405](https://github.com/dodi-smart/.github/commit/2b75405250d27844df6d10466a93844fa7674f15))
+
 ## [1.8.2](https://github.com/dodi-smart/.github/compare/v1.8.1...v1.8.2) (2026-09-29)
 
 ### 🐛 Bug Fixes

@@ -84,8 +84,10 @@ on:
         type: string
         default: ""      # newline-separated KEY=VALUE
 
-      # Build step only, and kept because callers already depend on it.
-      # `env` is the general one, so prefer it. Both apply when both are set.
+      # Build step only, parsed exactly like `env` (comments and blank lines
+      # skipped, first `=` splits). Kept because callers already depend on it;
+      # `env` is the general one, so prefer it. Both apply when both are set,
+      # and `build-env` wins on a name in both.
       build-env:
         type: string
         default: ""      # newline-separated KEY=VALUE, placeholders only
@@ -93,10 +95,9 @@ on:
 
       java-version:    { type: string, default: "21" }
       node-version:    { type: string, default: "24" }
-      bun-version:     { type: string, default: "latest" }
+      bun-version:     { type: string, default: "auto" }
       flutter-version: { type: string, default: "" }
-      # Ignored: setup-stack pins the rust channel in the action ref. Declared
-      # so a caller already passing it does not break.
+      # Passed to the pinned rust-toolchain action: stable, nightly, or a version.
       rust-toolchain:  { type: string, default: "stable" }
     secrets:
       GH_APP_CLIENT_ID:   { required: false }
@@ -315,6 +316,7 @@ jobs:
           isolate:         false
           cache:           auto
           env:             ${{ inputs.env }}
+          build-env:       ${{ inputs.build-env }}
           install:         ${{ inputs.install }}
           build:           ${{ inputs.build }}
           java-version:    ${{ inputs.java-version }}
@@ -336,21 +338,13 @@ jobs:
       #
       # Exported into THIS shell, not $GITHUB_ENV, which refuses NODE_OPTIONS
       # outright, and NODE_OPTIONS is the variable a Next.js build needs here.
-      # setup-stack's env file exists for the same reason. `IFS='='` splits on
-      # the FIRST `=` only, so URLs and base64 survive intact.
+      # setup-stack's env files exist for the same reason, and `build-env` goes
+      # through the same parser as `env`, so a `# comment` line is skipped.
       - name: Build
         if: steps.setup.outputs.build != ''
-        env:
-          BUILD_ENV: ${{ inputs.build-env }}
         run: |
           set -euo pipefail
-          . "${{ steps.setup.outputs.env-file }}"
-          if [ -n "${BUILD_ENV:-}" ]; then
-            while IFS='=' read -r k v; do
-              [ -z "$k" ] && continue
-              export "$k=$v"
-            done <<< "$BUILD_ENV"
-          fi
+          . "${{ steps.setup.outputs.build-env-file }}"
           ${{ steps.setup.outputs.build }}
 
   # ---------------------------------------------------------------------------
@@ -376,6 +370,7 @@ jobs:
           isolate:         false
           cache:           auto
           env:             ${{ inputs.env }}
+          build-env:       ${{ inputs.build-env }}
           install:         ${{ inputs.install }}
           lint:            ${{ inputs.lint }}
           typecheck:       ${{ inputs.typecheck }}
@@ -422,17 +417,9 @@ jobs:
       # `build-env` applies exactly as in the split shape; see that step.
       - name: Build
         if: steps.setup.outputs.build != ''
-        env:
-          BUILD_ENV: ${{ inputs.build-env }}
         run: |
           set -euo pipefail
-          . "${{ steps.setup.outputs.env-file }}"
-          if [ -n "${BUILD_ENV:-}" ]; then
-            while IFS='=' read -r k v; do
-              [ -z "$k" ] && continue
-              export "$k=$v"
-            done <<< "$BUILD_ENV"
-          fi
+          . "${{ steps.setup.outputs.build-env-file }}"
           ${{ steps.setup.outputs.build }}
 
       # Same reporters, in the job that produced the report. A coverage file

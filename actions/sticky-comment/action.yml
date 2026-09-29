@@ -12,8 +12,14 @@ inputs:
   body-file:
     description: >-
       File holding the comment body. A missing or empty file is an ERROR, so a
-      report that was never written cannot pass silently.
-    required: true
+      report that was never written cannot pass silently. Not needed when
+      `delete` is true.
+    default: ''
+  delete:
+    description: >-
+      Delete the comment for this key instead of writing it, or do nothing when
+      there is none. For a report that has gone clean.
+    default: 'false'
   number:
     description: 'Pull request or issue number'
     required: true
@@ -26,7 +32,7 @@ inputs:
 
 outputs:
   action:
-    description: '"created" on the first run for this key, "updated" after'
+    description: '"created" on the first run for this key, "updated" after; "deleted" or "none" when `delete` is true'
     value: ${{ steps.sticky.outputs.action }}
   id:
     description: 'Comment id'
@@ -43,6 +49,7 @@ runs:
       env:
         KEY:       ${{ inputs.key }}
         BODY_FILE: ${{ inputs.body-file }}
+        DELETE:    ${{ inputs.delete }}
         NUMBER:    ${{ inputs.number }}
         REPO:      ${{ inputs.repository }}
         GH_TOKEN:  ${{ inputs.token }}

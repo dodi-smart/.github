@@ -70,7 +70,7 @@ exactly like a busy fleet.
 | `release.yml` | push to a release branch | semantic-release, single or multi-module |
 | `supabase-deploy.yml` | called after `release.yml` | Pushes a Supabase project's schema and functions for the tag a release just cut |
 | `react-doctor.yml` | pull request, React repos | Static analysis of React/TS source. Advisory by default. |
-| `zavet-check.yml` | pull request | Knowledge-layer checks, for repos that have one. Report-only on dependency bot PRs |
+| `zavet-check.yml` | pull request | Knowledge-layer checks, for repos that have one. Report-only on dependency and automation bot PRs |
 | `supabase-checks.yml` | pull request, Supabase repos | Deno edge-function check, generated-types check, pgTAP tests. Hosted only. |
 | `pick-runner.yml` | called by the others | Chooses a runner and validates the choice |
 
@@ -175,7 +175,10 @@ regression once did.
 | `health-url` | `""` | Base URL to probe after deploy. Empty skips the health check entirely |
 | `health-routes` | `"/"` | Space-separated routes appended to `health-url` |
 | `health-attempts` | `6` | Retries before the health check fails the job |
-| `timeout-minutes` | `15` | Job timeout |
+| `health-wait-environment` | `""` | Wait for a successful GitHub Deployment of the deployed commit in this environment before probing. See below |
+| `health-sha-route` | `""` | Route on `health-url` whose body carries the deployed commit's sha. The other proof, for a host that posts no Deployments |
+| `health-wait-timeout-minutes` | `10` | How long the whole wait may take before the job fails |
+| `timeout-minutes` | `15` | Job timeout. Raise it to cover `health-wait-timeout-minutes` plus the deploy itself |
 
 #### Secrets
 
@@ -191,6 +194,33 @@ that leaves every route erroring must not go green. A warning-only check is
 strictly worse than no check, because it reads as a passing signal that
 nobody then goes back to question.
 
+#### What the health check proves
+
+On its own, only that `health-url` answers. A frontend host builds the same push
+in parallel with this job and moves its stable URL when its own build ends, so a
+check that runs right after `db push` usually reaches the deployment that was
+already live. With neither wait input set, the job prints a notice saying so.
+
+Set one, and the check waits for this commit first:
+
+- `health-wait-environment` polls the repository's GitHub Deployments for the
+  deployed commit in that environment, and continues on a `success` status. A
+  `failure` or `error` status, or `health-wait-timeout-minutes` passing, fails
+  the job. Hosts post these as their build progresses. The deployment this job's
+  own `environment:` creates is ignored, since it succeeds when the job does.
+  The token needs `deployments: read`; a caller that narrows `permissions:` must
+  keep it.
+- A release commit carries `[skip ci]`, which hosts honour, so the host builds
+  the commit before it. When the deployed commit's message asks CI to skip it,
+  the deployment of its parent counts too.
+- `health-sha-route` is the fallback for a host without Deployments. The caller
+  exposes a route that returns the commit sha, and the wait passes when the body
+  contains the first seven characters of the deployed commit or of its parent
+  under the same rule.
+- The routes are then probed at `health-url`.
+
+The log shows the deployment id and commit before the routes are probed.
+
 ### Composite actions
 
 | Action | Purpose |
@@ -201,7 +231,51 @@ nobody then goes back to question.
 | `actions/sticky-comment` | One keyed comment per pull request, rewritten in place on every later run |
 | `actions/release-tooling` | Installs semantic-release and its default plugins from a pinned lockfile into a private prefix, cached on the lockfile hash, and puts `semantic-release` on `PATH` |
 | `actions/semantic-release-config` | Links the shared semantic-release config into a consumer's `node_modules` from a private prefix, never from a registry and never into the checkout it came with |
+| `actions/changed-files` | A pull request's changed files through the API, with no checkout, and whether any match a set of globs |
+| `actions/wait-for-deployment` | Waits for the frontend host's successful GitHub Deployment of the checked-out commit, or for a route to report its sha. What `supabase-deploy.yml`'s health check calls |
+| `actions/supabase-start` | Starts the local Supabase database with the stack's Docker images restored from the cache, saved on a miss. What both jobs of `supabase-checks.yml` call |
 | `actions/pick-runner` | Resolves a runner weight to a selector, validated against the live fleet. What `pick-runner.yml` calls, and what a job that already runs hosted (like `pr-checks.yml`'s `pick`) calls directly to pick more than once without a second hosted job. |
+
+`actions/changed-files` needs no checkout. It takes `patterns` (newline-separated
+paths or globs, `fnmatch`-style, so `*` crosses `/`; a pattern also matches everything under it),
+and outputs `files` (one path per line, a rename under both names) and `matched`.
+Skip work only when `matched` is `false`. It is `true` whenever the answer
+cannot be known. That covers an event that is not a pull request, no
+`patterns`, an empty or unreadable list, and a list at the API's 3000-file cap,
+which is cut off. The token needs `pull-requests: read`.
+
+```yaml
+- id: changes
+  uses: dodi-smart/.github/actions/changed-files@v1
+  with:
+    patterns: |
+      db/*
+      **.sql
+- if: steps.changes.outputs.matched == 'true'
+  run: ./heavy-check.sh
+```
+
+**`agent-gate` inputs and outputs a caller may use beyond the basics.**
+
+| Name | Meaning |
+|---|---|
+| input `bots` | `reject` (default): stop on any non-human author. `only`: proceed for dependency bots only. `allow`: ignore the author. |
+| input `events` | Space-separated `github.event_name` values the workflow handles, checked right after `agent:no-touch`. Any other event stops the run. Empty (default) allows every event. `issue-triage.yml` passes `issues issue_comment workflow_dispatch`, so a person's PR review never reaches it. |
+| output `author-kind` | `dependency` (Renovate, Dependabot), `agent` (`claude[bot]`), `automation` (any other `[bot]` or `app/` login) or `human`. Written before every rule, `agent:no-touch` included, so it is set on a stopped run too. A workflow that needs only the classification can call the gate for it and ignore `proceed`. |
+| output `dependency-bots` | The comma-separated dependency-bot logins, for `claude-code-action`'s `allowed_bots`. `deps-verify.yml` reads it. |
+
+The dependency-bot list lives in `actions/agent-gate/gate.sh` and nowhere else.
+
+**`sticky-comment` delete mode.** `delete: true` finds the comment for `key`
+(bot-authored only, like an update) and deletes it, or does nothing when there
+is none. It needs no `body-file`. The `action` output is `deleted` or `none`.
+`zavet-check.yml` uses it to retract its comment once a pull request is clean.
+
+**`zavet-check.yml` and automation PRs.** A dependency or automation bot's pull
+request is report-only; `claude[bot]` and people still fail closed. An
+automation that opens PRs with `GITHUB_TOKEN` triggers no pull request workflows
+at all, so nothing here would run on its PR. Open them with the org App token
+(`actions/create-github-app-token`) instead.
 
 ## What you stop maintaining
 
@@ -337,8 +411,9 @@ daemon. One job keeps one checkout and one warm `GRADLE_USER_HOME`. The split
 stays the right default for a cheap, independent lint.
 
 `env` (newline `KEY=VALUE`) reaches every command step, which is where build
-tuning like `GRADLE_OPTS` belongs. `build-env` still applies to the build step
-alone.
+tuning like `GRADLE_OPTS` belongs. `build-env` applies to the build step
+alone, and is parsed exactly like `env`: blank lines and `# comment` lines are
+skipped, and the first `=` splits the name from the value.
 
 ```yaml
 with:
@@ -397,6 +472,39 @@ split mode, where `checks / checks` and `checks / all` do not -- exactly one
 of those two is always skipped depending on `single-job`, so neither can be
 named in a ruleset that has to work for every caller.
 
+### setup-stack inputs and outputs
+
+Inputs beyond `stack` and the command overrides:
+
+| Input | Default | Meaning |
+|---|---|---|
+| `env` | empty | Newline `KEY=VALUE` for every command step. Written to the file named by the `env-file` output, because `$GITHUB_ENV` refuses `NODE_OPTIONS`. |
+| `build-env` | empty | The same format and the same parser, for the build command only. Written to the `build-env-file` output. |
+| `bun-version` | `auto` | See below. |
+| `rust-toolchain` | `stable` | Passed to the pinned rust toolchain action: `stable`, `nightly`, `1.89.0`, or any rustup specifier. |
+
+Outputs: `env-file` and `build-env-file` (both always written, empty when
+nothing was given, so source them unconditionally), plus the resolved `install`,
+`lint`, `typecheck`, `test`, `build` and `design-lint` commands.
+
+```sh
+. "$ENV_FILE"          # every command step
+. "$BUILD_ENV_FILE"    # the build step only
+```
+
+**Bun follows the repo.** `bun-version: auto` (or empty) installs the version the
+repo pins, so CI runs what developers run and a frozen install does not fail on a
+lockfile format the newest bun changed. It checks, from the checkout root and in
+this order: `package.json` `packageManager` (`bun@x.y.z`, any `+sha` suffix
+dropped), `.bun-version`, `.tool-versions` (`bun x.y.z`), `mise.toml` and
+`.mise.toml` (`bun = "x.y.z"` under `[tools]`). The step log says what it chose
+and from where. When none names bun it installs `latest` and prints a notice.
+Any explicit version, `latest` included, is used as given. The repo must be
+checked out before `setup-stack` runs.
+
+**Rust is pinned.** The toolchain action is pinned to a commit of its `master`
+branch (it publishes no version tags), and Renovate can still move that pin.
+
 ### Caches
 
 `setup-stack` resolves the mode from `isolate`, `cache` and the runner:
@@ -434,12 +542,23 @@ gate stay with you, same as `pr-checks.yml`.
 |---|---|---|
 | `cli-version` | *(required)* | Supabase CLI version, pinned exact with a `renovate: datasource=npm depName=supabase` marker tracking the same `supabase` devDependency the repo installs from. Generated types must come from that same CLI or the diff below fails on formatting, not schema. |
 | `types-path` | `""` | Path of the committed generated types. Empty disables the `types` job (reported skipped, not failed). |
-| `migrations-paths` | `supabase/migrations`, `supabase/seed.sql` | Newline-separated paths whose change triggers the `types` job's heavy steps on a pull request. `workflow_dispatch` always runs them. |
+| `migrations-paths` | `supabase/migrations`, `supabase/seed.sql` | Newline-separated paths (a directory covers what is under it) or globs whose change triggers the heavy steps of the `types` and `pgtap` jobs on a pull request (`pgtap` also on a change under `supabase/tests`). Any event that is not a pull request always runs them. |
 | `seed-check` | `false` | Re-apply `supabase/seed.sql` after `db start` to prove it is re-runnable. |
 | `deno-dir` | `""` | Directory of Deno-only source, e.g. `supabase/functions`. Empty disables the `deno` job. |
 | `pgtap` | `false` | Run `supabase test db` in its own job. |
 | `deno-version` | `v2.x` | Passed straight to `denoland/setup-deno`. |
 | `timeout-minutes` | `30` | Per job. |
+
+The `types` and `pgtap` jobs read the pull request's file list through the API
+instead of cloning the history, and always report success, never skipped, when
+nothing relevant changed. Reading it needs `pull-requests: read` on the token; a
+caller that narrows `permissions:` must keep it, and without it the jobs run
+everything rather than skip. The local stack's Docker images are cached between
+runs under an exact key: CLI version, runner OS and architecture, and a hash of
+`supabase/config.toml` and any `supabase/.temp/*-version`. A pull request's first
+run pulls them, since a cache saved on a pull request is visible to that pull
+request alone. Run these checks on pushes to the default branch as well, and every
+pull request reads what those runs saved.
 
 ```yaml
 jobs:
@@ -464,12 +583,12 @@ selecting; call the action directly from inside a job that is already hosted
 `gate` job does, once, after `agent-gate` decides the run should proceed)
 rather than paying for a second hosted job just to reuse the workflow.
 
-| `weight` | Selector | Use |
-|---|---|---|
-| `light` | `self-hosted,Linux,light` | lint, typecheck, checks, releases, reading a diff |
-| `heavy` | `self-hosted,Linux,large` | builds, Docker, full suites |
-| `apple` | `self-hosted,macOS,ARM64` | Apple toolchain, signing |
-| `hosted` | none | forces `hosted-runner`, `ubuntu-latest` by default |
+| `weight` | Selector | Falls back to | Use |
+|---|---|---|---|
+| `light` | `self-hosted,Linux,light` | the same light pool, when no runner is online and idle (`fallback-when: busy`) | lint, typecheck, checks, releases, reading a diff |
+| `heavy` | `self-hosted,Linux,large` | `hosted-runner`, only when no runner is online (`fallback-when: offline`); a busy pool queues | builds, Docker, full suites |
+| `apple` | `self-hosted,macOS,ARM64` | nothing: it queues, and warns when no runner is online | Apple toolchain, signing |
+| `hosted` | none | not applicable | forces `hosted-runner`, `ubuntu-latest` by default |
 
 Selectors name capability labels, never an architecture and never a machine name.
 A runner of any arch that joins a pool is picked up with no change here, and a
@@ -479,10 +598,37 @@ machine name would not survive re-registration.
 work. They stay apart even when one pool could serve both, because re-tiering is
 then two lines here instead of an audit of every caller.
 
-A selector that cannot be reached falls back to `fallback`, the light pool by
-default, so an unreachable large pool costs capacity rather than hosted minutes.
-Set `fallback: ubuntu-latest` for a job that must finish even with the whole
-fleet offline, because a self-hosted fallback queues instead.
+### Falling back
+
+The picker reads the org's runner list once, then decides from it. A runner
+"matches" when it carries every label in the selector.
+
+- `fallback-when: busy` goes to the fallback when no matching runner is online
+  and idle. Short jobs would rather run now than wait.
+- `fallback-when: offline` goes to the fallback only when no matching runner is
+  online. If some are online but busy, the job gets the primary selector and
+  queues. Long jobs want this: hosted costs more than the queue.
+
+`heavy` never falls back to the light pool. A heavy build there runs out of
+memory beside the light pool's other jobs (exit 137). A busy large pool queues
+the job, and a large pool with nothing online sends it to hosted.
+
+Both inputs default to the weight's own policy in the table, so leave them empty
+unless you know better. An explicit `fallback` or `fallback-when` always wins.
+A `labels` selector with no explicit `fallback` keeps the original behaviour:
+`self-hosted,Linux,light`, when no runner is idle.
+
+If the fleet cannot be read (no GitHub App token, or an API error), the picker
+cannot tell busy from offline, so it emits the primary selector and the job
+queues, with a warning. It no longer sends that job to the fallback.
+
+A self-hosted fallback queues when the whole fleet is offline, where a hosted one
+runs. Set `fallback: ubuntu-latest` for a light job that must finish even then.
+
+The `fell-back` output is `true` when the picked runner is the fallback, so a
+caller can widen `max-parallel` on hosted. The list is cached for the rest of the
+job, so `actions/pick-runner` called twice in one job (light, then heavy) mints one
+token and reads the fleet once.
 
 Public repos and fork pull requests **always** get hosted runners, with no way to
 opt out. The runner group refuses public repos, and a fork PR would otherwise run
@@ -701,7 +847,8 @@ The rules on fixes:
 A red build is `needs-manual` even when the agent finds the cause was already on
 the base branch. The comment says so in one line.
 
-`env` and `build-env` mean what they mean in `pr-checks`. They matter when the
+`env` and `build-env` mean what they mean in `pr-checks`: same format, same
+parser, and `build-env` reaches the build command only. They matter when the
 agent reproduces a failure to fix it, and when the job builds on its own. Copy
 the caller's `pr-checks` block across:
 

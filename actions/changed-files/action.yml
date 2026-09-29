@@ -1,0 +1,50 @@
+# List a pull request's changed files through the API, so a job that only needs
+# the list does not clone the whole history for `git diff`.
+# Thin wrapper; the reasoning is in changed-files.sh.
+name: Changed files
+description: List a pull request's changed files without a checkout, and say whether any match a set of globs.
+
+inputs:
+  patterns:
+    description: >-
+      Newline-separated paths or globs, `fnmatch`-style (`*` crosses `/`). A
+      pattern also matches everything under it, so `supabase/migrations` covers
+      the directory. Empty means "no filter", so `matched` is `true`.
+    default: ""
+  number:
+    description: >-
+      Pull request number. Empty (any event that is not a pull request) means
+      there is nothing to diff, so `matched` is `true`.
+    default: ${{ github.event.pull_request.number }}
+  repository:
+    description: 'owner/repo'
+    default: ${{ github.repository }}
+  token:
+    description: 'Token to read the pull request with. Needs pull-requests: read.'
+    default: ${{ github.token }}
+
+outputs:
+  files:
+    description: >-
+      Changed paths, one per line. A renamed file appears under both names. Empty
+      when the list was not read.
+    value: ${{ steps.list.outputs.files }}
+  matched:
+    description: >-
+      `true` when any changed file matches `patterns`, and whenever that cannot be
+      told: no pull request, no filter, an unreadable or empty diff, or a diff at
+      the API's 3000-file cap. `false` only when every changed file was read and
+      none matches. Skip work on `false` alone.
+    value: ${{ steps.list.outputs.matched }}
+
+runs:
+  using: composite
+  steps:
+    - id: list
+      shell: bash
+      env:
+        REPO:     ${{ inputs.repository }}
+        NUMBER:   ${{ inputs.number }}
+        PATTERNS: ${{ inputs.patterns }}
+        GH_TOKEN: ${{ inputs.token }}
+      run: ${{ github.action_path }}/changed-files.sh

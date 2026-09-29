@@ -36,6 +36,14 @@ outputs:
       the API's 3000-file cap. `false` only when every changed file was read and
       none matches. Skip work on `false` alone.
     value: ${{ steps.list.outputs.matched }}
+  all-matched:
+    description: >-
+      `true` only when the whole list was read and every changed file matches
+      `patterns`, for a skip that needs every file inside the paths (a docs-only
+      change). `false` on every doubt: no pull request, no filter, an unreadable
+      or empty diff, or a diff at the API's 3000-file cap. Skip work on `true`
+      alone.
+    value: ${{ steps.list.outputs.all-matched }}
 
 runs:
   using: composite

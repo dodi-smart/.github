@@ -1098,14 +1098,13 @@ validates the Renovate preset, and runs `hk check --all`. That runs shellcheck,
 actionlint, zizmor (workflow security, config in `zizmor.yml`), typos and the
 whitespace and merge-marker checks defined in `hk.pkl`.
 
-Run the same checks locally, and get them as git hooks (including a
-conventional-commit check on the message):
+### Git hooks
 
-```sh
-mise install
-hk install --mise
-hk check --all
-```
+Lint runs as git hooks through [hk](https://hk.jdx.dev), configured in `hk.pkl`. Running `mise install` turns them on for your clone: the `postinstall` hook in `mise.toml` runs `hk install --mise`. CI skips it. The hooks include a conventional-commit check on the message.
+
+- Run the checks by hand with `hk check --all`, or fix what can be fixed with `hk fix --all`.
+- Skip the hooks for one commit with `HK=0 git commit ...`.
+- The hook config is shared by every worktree of the clone. On a branch without `hk.pkl` the hooks do nothing, as long as hk is available globally: `mise use -g aqua:jdx/hk@2.4.0`. Alternatively, install once per machine with `hk install --global --mise` (Git 2.54 or later), which skips repos without hk config.
 
 Read `AGENTS.md` before changing anything. If you add a workflow, add its rule to
 the table there with the one line that says why, and extend

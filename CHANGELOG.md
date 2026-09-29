@@ -1,3 +1,9 @@
+## [1.16.1](https://github.com/dodi-smart/.github/compare/v1.16.0...v1.16.1) (2026-09-29)
+
+### 🐛 Bug Fixes
+
+* **agents:** persist checkout credentials for triage and assist, which claude-code-action fetches with ([81ee518](https://github.com/dodi-smart/.github/commit/81ee5186b953417ecff81ba8e3b03e84d764199d))
+
 ## [1.16.0](https://github.com/dodi-smart/.github/compare/v1.15.2...v1.16.0) (2026-09-29)
 
 ### ✨ Features

@@ -212,11 +212,6 @@ jobs:
       contents: read
       pull-requests: read
     steps:
-      - uses: actions/checkout@v7
-        with:
-          persist-credentials: false
-          sparse-checkout: ${{ inputs.commitlint-config }}
-          sparse-checkout-cone-mode: false
       - uses: dodi-smart/.github/actions/commitlint@v1
         with:
           config: ${{ inputs.commitlint-config }}

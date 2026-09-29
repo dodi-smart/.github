@@ -170,14 +170,6 @@ jobs:
       GH_TOKEN: ${{ github.token }}
       REPO:     ${{ github.repository }}
     steps:
-      # Only the workflow files, to see who calls pr-checks. No credentials
-      # persist, and nothing from the PR is installed or run here.
-      - uses: actions/checkout@v7
-        with:
-          ref: ${{ github.event.pull_request.head.ref }}
-          sparse-checkout: .github/workflows
-          persist-credentials: false
-
       - id: ci
         env:
           SHA:         ${{ github.event.pull_request.head.sha }}
@@ -188,7 +180,13 @@ jobs:
           LOGS="$RUNNER_TEMP/deps-logs"
           mkdir -p "$LOGS"
           out() { echo "$1" >> "$GITHUB_OUTPUT"; }
-          if [ -z "$CI_WORKFLOW" ] || ! grep -rqF "$CI_WORKFLOW@" .github/workflows 2>/dev/null; then
+          # Who calls CI_WORKFLOW, read from the API at the PR head: no checkout,
+          # so nothing from the PR lands on the runner.
+          callers() {
+            gh api "/repos/$REPO/contents/.github/workflows?ref=$SHA" --jq '.[] | select(.name | test("\\.ya?ml$")) | .path' \
+              | xargs -I{} gh api -H "Accept: application/vnd.github.raw" "/repos/$REPO/contents/{}?ref=$SHA"
+          }
+          if [ -z "$CI_WORKFLOW" ] || ! callers 2>/dev/null | grep -F "$CI_WORKFLOW@" >/dev/null; then
             out mode=own
             echo "no workflow here calls ${CI_WORKFLOW:-a CI workflow}, so this job builds the PR itself"
             exit 0

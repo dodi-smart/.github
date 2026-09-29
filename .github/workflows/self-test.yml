@@ -64,6 +64,11 @@ jobs:
       - name: Changed files count every doubt as a match
         run: ./actions/changed-files/test.sh
 
+      # A phase's command reaches the shell unmangled, each phase gets its own
+      # subshell, and the first failure stops the rest. pr-checks runs on this.
+      - name: run-phases runs each phase alone and stops at the first failure
+        run: ./actions/run-phases/test.sh
+
       # The wait must never pass on the job's own Deployment, and must count the
       # commit before a `[skip ci]` release commit, the one the host builds.
       - name: Deployment wait proves the host's deployment
@@ -250,6 +255,78 @@ jobs:
               sys.exit('::error::the pr-checks job must run unconditionally (if: always()), or it silently '
                         'skips instead of reporting the jobs it summarizes.')
           print('pr-checks.yml has one picker job (%s) and an always-on pr-checks summary job' % pickers[0])
+          "
+
+      # `build` runs beside `checks` unless the caller opts in, and the summary
+      # must still require `checks` either way. `needs` cannot vary with an
+      # input, so the ordered build is a second job; its steps must not drift.
+      - name: pr-checks orders build by input and the summary still needs checks
+        run: |
+          set -euo pipefail
+          python3 -c "
+          import sys, yaml
+          doc = yaml.safe_load(open('.github/workflows/pr-checks.yml'))
+          jobs = doc['jobs']
+          # PyYAML reads the bare key on as True.
+          inp = (doc.get('on') or doc.get(True))['workflow_call']['inputs'].get('build-after-checks')
+          if not inp or inp.get('default') is not False or inp.get('type') != 'boolean':
+              sys.exit('::error::pr-checks.yml needs a boolean input build-after-checks that defaults to false, so build runs beside checks unless a caller opts in.')
+          if 'checks' in jobs['build'].get('needs', []):
+              sys.exit('::error::the build job must not need checks, or it waits for lint and typecheck on every push. build-ordered is the job that does.')
+          if 'checks' not in jobs['build-ordered'].get('needs', []):
+              sys.exit('::error::build-ordered must need checks; it is the build-after-checks: true shape.')
+          if jobs['build']['steps'] != jobs['build-ordered']['steps']:
+              sys.exit('::error::build and build-ordered must run the same steps; they differ only in needs and if.')
+          summary = jobs['pr-checks']['needs']
+          for j in ('checks', 'build', 'build-ordered'):
+              if j not in summary:
+                  sys.exit('::error::the pr-checks summary job must need ' + j + ', or a failure there stops failing the required context.')
+          print('build-after-checks defaults to false and pr-checks still needs checks, build and build-ordered')
+          "
+
+      # This workflow runs the caller's own code, so no job holds a write token
+      # it does not use, no checkout leaves credentials in .git/config, and no
+      # expression is pasted into a script body.
+      - name: pr-checks and pr-review keep the token and shell hardening
+        run: |
+          set -euo pipefail
+          python3 -c "
+          import sys, yaml
+          errors = []
+          for f in ('pr-checks', 'pr-review'):
+              doc = yaml.safe_load(open('.github/workflows/%s.yml' % f))
+              if f == 'pr-checks' and doc.get('permissions') != {'contents': 'read'}:
+                  errors.append('pr-checks.yml needs workflow-level permissions: {contents: read}, so a job with no block of its own gets no more.')
+              for name, job in doc['jobs'].items():
+                  for step in job.get('steps') or []:
+                      if str(step.get('uses', '')).startswith('actions/checkout@'):
+                          if (step.get('with') or {}).get('persist-credentials') is not False:
+                              errors.append('%s.yml job %s: checkout must set persist-credentials: false, or the token stays in the checkout for the caller scripts to read.' % (f, name))
+                      if f == 'pr-checks' and '$' + '{{' in str(step.get('run', '')):
+                          errors.append('pr-checks.yml job %s: a run: script contains an expression. Pass it through env: and quote the variable.' % name)
+          if errors:
+              sys.exit('::error::' + ' '.join(errors))
+          print('every checkout drops credentials, no run: script in pr-checks holds an expression')
+          "
+
+      # The docs-only decision reads the API, never a clone. A hosted job that
+      # clones to list files is the cost this replaced.
+      - name: The pick job and the pr-review gate clone nothing
+        run: |
+          set -euo pipefail
+          python3 -c "
+          import sys, yaml
+          pick = yaml.safe_load(open('.github/workflows/pr-checks.yml'))['jobs']['pick']
+          gate = yaml.safe_load(open('.github/workflows/pr-review.yml'))['jobs']['gate']
+          for label, job in (('pr-checks pick', pick), ('pr-review gate', gate)):
+              for step in job['steps']:
+                  if str(step.get('uses', '')).startswith('actions/checkout@'):
+                      sys.exit('::error::the ' + label + ' job has a checkout. It lists changed files through actions/changed-files, which needs no clone.')
+              if not any('actions/changed-files@' in str(s.get('uses', '')) for s in job['steps']):
+                  sys.exit('::error::the ' + label + ' job must list changed files with actions/changed-files.')
+          if 'all-matched' not in str(pick['outputs']['docs_only']):
+              sys.exit('::error::pick.docs_only must come from changed-files all-matched, so only a fully read list can skip the checks.')
+          print('pick and the pr-review gate need no checkout')
           "
 
       # Each agent workflow used to run the picker as its own hosted job, needed

@@ -77,7 +77,7 @@ jobs:
       ci:      ${{ steps.ci.outputs.summary }}
       runner:  ${{ steps.pick.outputs.runner }}
     steps:
-      # Payload-only rules first, before the checkout. agent:no-touch, drafts
+      # Payload-only rules first, before the file listing. agent:no-touch, drafts
       # and bot PRs are decided without fetching anything. Bot dependency PRs
       # are rejected here because deps-verify owns them, and reviewing them in
       # both places double-posts on every Renovate PR.
@@ -93,17 +93,24 @@ jobs:
           draft:         ${{ github.event.pull_request.draft }}
           bots:          'reject'
 
-      - if: steps.gate.outputs.proceed == 'true'
-        uses: actions/checkout@v7
-        with: { fetch-depth: 0 }
+      # The changed files come from the API, so this job needs no checkout and
+      # no clone. `all-matched` is the docs-only claim: true only when the whole
+      # list was read and every file is documentation.
+      - id: changed
+        if: steps.gate.outputs.proceed == 'true'
+        uses: dodi-smart/.github/actions/changed-files@v1
+        with:
+          patterns: |-
+            **.md
+            docs/**
 
       - id: level
         env:
           PROCEED:   ${{ steps.gate.outputs.proceed }}
           REASON:    ${{ steps.gate.outputs.reason }}
           LABELS:    ${{ toJson(github.event.pull_request.labels.*.name) }}
-          BASE:      ${{ github.event.pull_request.base.sha }}
-          HEAD:      ${{ github.event.pull_request.head.sha }}
+          FILES:     ${{ steps.changed.outputs.files }}
+          DOCS_ONLY: ${{ steps.changed.outputs.all-matched }}
           SENSITIVE: ${{ inputs.sensitive-paths }}
           LEVEL:     ${{ inputs.level }}
           ELEVATED:  ${{ inputs.elevated-level }}
@@ -112,10 +119,10 @@ jobs:
           proceed="$PROCEED"; level="$LEVEL"; reason="$REASON"
 
           if [ "$proceed" = "true" ]; then
-            files=$(git diff --name-only "$BASE" "$HEAD" || true)
+            files="$FILES"
             if [ -z "$files" ]; then
               proceed=false; reason="no changed files"
-            elif ! printf '%s\n' "$files" | grep -qvE '(\.md$|^docs/)'; then
+            elif [ "$DOCS_ONLY" = "true" ]; then
               proceed=false; reason="docs only"
             fi
           fi
@@ -211,7 +218,9 @@ jobs:
       actions: read
     steps:
       - uses: actions/checkout@v7
-        with: { fetch-depth: 0 }
+        with:
+          fetch-depth: 0
+          persist-credentials: false
 
       # Stamped before the agent, so the inline count below asks "did THIS run
       # post" rather than "has anything ever posted".

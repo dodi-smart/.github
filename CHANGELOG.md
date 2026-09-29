@@ -1,3 +1,9 @@
+## [1.16.2](https://github.com/dodi-smart/.github/compare/v1.16.1...v1.16.2) (2026-09-29)
+
+### 🐛 Bug Fixes
+
+* **setup-stack:** authenticate the sparse-workspace heal with the job token ([fb3e196](https://github.com/dodi-smart/.github/commit/fb3e1961c793ae53b27fcb8548283d56239ddc0c))
+
 ## [1.16.1](https://github.com/dodi-smart/.github/compare/v1.16.0...v1.16.1) (2026-09-29)
 
 ### 🐛 Bug Fixes

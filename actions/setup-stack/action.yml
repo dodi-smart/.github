@@ -84,8 +84,8 @@ inputs:
   build-env:
     description: >-
       Same format and parser as `env`, for the build command only. Read the path
-      from the `build-env-file` output and source it in the build step, after
-      `env-file`. Kept apart from `env` so a placeholder the build needs is not
+      from the `build-env-file` output and source it alone in the build step:
+      it exports `env` first, then `build-env`. Kept apart from `env` so a placeholder the build needs is not
       in scope for lint and test.
     default: ''
 
@@ -113,8 +113,8 @@ outputs:
     value: ${{ steps.stepenv.outputs.file }}
   build-env-file:
     description: >-
-      Path to a shell file exporting the `build-env` input. Always written, empty
-      when nothing was given, so a caller can source it unconditionally.
+      Path to a shell file exporting `env` and then `build-env`, for the build
+      step alone. Always written, so a caller can source it unconditionally.
     value: ${{ steps.stepenv.outputs.build-file }}
   install:
     description: 'Resolved install command: the override, or the stack default. Empty means skip.'
@@ -255,11 +255,7 @@ runs:
         channel: ${{ inputs.flutter-channel }}
         cache: ${{ steps.resolve.outputs.cache_enabled == 'true' }}
 
-    # Pinned to a commit of the action's master branch, which is the ref the
-    # action documents for passing `toolchain` explicitly. It publishes no
-    # version tags, so a branch ref like `@stable` would move under every caller
-    # and Renovate could never propose a change. The comment names the branch
-    # Renovate tracks, so it can still bump the SHA.
+    # A SHA of master: the action has no version tags. See AGENTS.md.
     - if: inputs.stack == 'rust'
       uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # master
       with:
@@ -287,12 +283,13 @@ runs:
         file="${RUNNER_TEMP}/setup-stack-env.sh"
         build_file="${RUNNER_TEMP}/setup-stack-build-env.sh"
         "${{ github.action_path }}/envfile.sh" "$file" <<< "$STEP_ENV"
-        "${{ github.action_path }}/envfile.sh" "$build_file" <<< "$BUILD_ENV"
+        # The build file is env followed by build-env, so a build step sources
+        # one file and a build-env key wins over the same key in env.
+        "${{ github.action_path }}/envfile.sh" "$build_file" <<< "$STEP_ENV"$'\n'"$BUILD_ENV"
         {
           echo "file=$file"
           echo "build-file=$build_file"
         } >> "$GITHUB_OUTPUT"
-        echo "step environment: $(wc -l < "$file" | tr -d ' ') variable(s), build: $(wc -l < "$build_file" | tr -d ' ')"
 
     # Conventional commands per stack, so a caller that has nothing unusual to
     # say can name its stack and stop. Anything explicit wins over these.

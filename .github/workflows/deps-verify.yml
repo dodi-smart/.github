@@ -333,13 +333,12 @@ jobs:
           mkdir -p "$LOGS"
           fail=""
           run() {
-            local name="$1" cmd="$2" extra="${3:-}"   # extra: a file sourced after ENV_FILE
+            local name="$1" cmd="$2" envfile="${3:-$ENV_FILE}"
             [ -z "$cmd" ] && return 0
             echo "::group::$name: $cmd"
             # shellcheck source=/dev/null
             if ( set +u -eo pipefail
-                 . "$ENV_FILE"
-                 [ -z "$extra" ] || . "$extra"
+                 . "$envfile"
                  eval "$cmd" ) > "$LOGS/$name.log" 2>&1; then
               echo "passed"
             else

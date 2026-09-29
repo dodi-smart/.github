@@ -344,7 +344,6 @@ jobs:
         if: steps.setup.outputs.build != ''
         run: |
           set -euo pipefail
-          . "${{ steps.setup.outputs.env-file }}"
           . "${{ steps.setup.outputs.build-env-file }}"
           ${{ steps.setup.outputs.build }}
 
@@ -420,7 +419,6 @@ jobs:
         if: steps.setup.outputs.build != ''
         run: |
           set -euo pipefail
-          . "${{ steps.setup.outputs.env-file }}"
           . "${{ steps.setup.outputs.build-env-file }}"
           ${{ steps.setup.outputs.build }}
 

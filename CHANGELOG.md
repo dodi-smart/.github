@@ -1,3 +1,14 @@
+## [1.13.0](https://github.com/dodi-smart/.github/compare/v1.12.3...v1.13.0) (2026-09-29)
+
+### ✨ Features
+
+* **changed-files:** add an all-matched output for skips that need every file to match ([93ef35f](https://github.com/dodi-smart/.github/commit/93ef35f4b120f7abb91b043b37bf08fda286b40d))
+* **run-phases:** add an action that runs command phases with a timing table ([fd5dae0](https://github.com/dodi-smart/.github/commit/fd5dae02eeb6676bcd6ba6877561a342e4d6e18f))
+
+### ⚡ Performance Improvements
+
+* **pr-checks:** start build beside checks, drop the clones, run commands as timed phases ([cfd848a](https://github.com/dodi-smart/.github/commit/cfd848a09bcde4b83f90ef82cc44b186b794a782))
+
 ## [1.12.3](https://github.com/dodi-smart/.github/compare/v1.12.2...v1.12.3) (2026-09-29)
 
 ### ⚡ Performance Improvements

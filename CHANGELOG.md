@@ -1,3 +1,9 @@
+## [1.16.0](https://github.com/dodi-smart/.github/compare/v1.15.2...v1.16.0) (2026-09-29)
+
+### ✨ Features
+
+* **pr-checks:** opt-in hk input that runs hk check --all and keeps the SARIF as an artifact ([1d1f354](https://github.com/dodi-smart/.github/commit/1d1f354e496be5903168e25e1bd08d025c929cd2))
+
 ## [1.15.2](https://github.com/dodi-smart/.github/compare/v1.15.1...v1.15.2) (2026-09-29)
 
 ### 🐛 Bug Fixes

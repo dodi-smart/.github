@@ -1,3 +1,10 @@
+## [1.8.0](https://github.com/dodi-smart/.github/compare/v1.7.6...v1.8.0) (2026-09-29)
+
+### ✨ Features
+
+* **deps-verify:** fix what an update breaks and post a short, deterministic verdict ([08cf95f](https://github.com/dodi-smart/.github/commit/08cf95fd86c8932aad84f18ebf015a425d6899eb))
+* **deps-verify:** read the pr-checks verdict instead of building a second time beside it ([96ae3c9](https://github.com/dodi-smart/.github/commit/96ae3c9143138c71b2ba2d5bcdcd780516f143e6))
+
 ## [1.7.6](https://github.com/dodi-smart/.github/compare/v1.7.5...v1.7.6) (2026-09-29)
 
 ### 🐛 Bug Fixes

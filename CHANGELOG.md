@@ -1,3 +1,9 @@
+## [1.13.3](https://github.com/dodi-smart/.github/compare/v1.13.2...v1.13.3) (2026-09-29)
+
+### ⚡ Performance Improvements
+
+* **pr-checks:** fold zavet and react-doctor into pr-checks, run commitlint on the light pool ([#85](https://github.com/dodi-smart/.github/issues/85)) ([a3d6ffc](https://github.com/dodi-smart/.github/commit/a3d6ffcf519310757c9eb03977611e572a57752d)), closes [#46](https://github.com/dodi-smart/.github/issues/46)
+
 ## [1.13.2](https://github.com/dodi-smart/.github/compare/v1.13.1...v1.13.2) (2026-09-29)
 
 ### 🐛 Bug Fixes

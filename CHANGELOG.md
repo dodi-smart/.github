@@ -1,3 +1,9 @@
+## [1.7.6](https://github.com/dodi-smart/.github/compare/v1.7.5...v1.7.6) (2026-09-29)
+
+### 🐛 Bug Fixes
+
+* **release:** install semantic-release with --no-save so it never lands in the caller's manifest ([ccf671a](https://github.com/dodi-smart/.github/commit/ccf671aaf33d90fec24c63a7981e208e60e84968))
+
 ## [1.7.5](https://github.com/dodi-smart/.github/compare/v1.7.4...v1.7.5) (2026-09-28)
 
 ### ⬆️ Dependencies

@@ -83,11 +83,14 @@ echo "== light: the light pool when nothing is idle (unchanged) =="
 fleet "$F" light:idle light:busy
 pick "idle runner"                     "$LIGHT" false "$F"
 fleet "$F" light:busy light:busy
-pick "all busy, stays on the light pool" "$LIGHT" true  "$F"
+pick "all busy, stays on the light pool" "$LIGHT" false "$F"
 fleet "$F" light:offline light:offline
-pick "all offline"                     "$LIGHT" true  "$F"
+pick "all offline, no other pool to try" "$LIGHT" false "$F"
 fleet "$F" light:busy light:idle
 pick "mixed, one idle"                 "$LIGHT" false "$F"
+fleet "$F" light:busy
+pick "fallback equal to the selector is not a fall back" "$LIGHT" false "$F" FALLBACK="$LIGHT"
+if grep -q "falling back" "$TMP/log"; then fail=$((fail+1)); echo "  FAIL  ...logs no 'falling back' line"; else pass=$((pass+1)); echo "  ok    ...logs no 'falling back' line"; fi
 fleet "$F" light:busy light:busy
 pick "light + fallback-when offline queues when busy" "$LIGHT" false "$F" FALLBACK_WHEN=offline
 

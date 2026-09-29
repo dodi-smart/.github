@@ -24,6 +24,9 @@ runner_json() {
   jq -cn --arg s "$1" '$s | split(",") | map(gsub("^\\s+|\\s+$"; "")) | tojson' -r
 }
 
+# The decision's two outputs: a comma-separated selector, and whether it is a fall back.
+emit() { { echo "runner=$(runner_json "$1")"; echo "fell-back=$2"; } >> "$GITHUB_OUTPUT"; }
+
 resolve() {
   case "$FALLBACK_WHEN" in
     ""|busy|offline) ;;
@@ -68,7 +71,7 @@ decide() {
   local sel="${SELECTOR:-}" fleet="${FLEET_FILE:-}"
 
   if [ "${HOSTED_ONLY:-false}" = "true" ]; then
-    { echo "runner=$(runner_json "$HOSTED_RUNNER")"; echo "fell-back=false"; } >> "$GITHUB_OUTPUT"
+    emit "$HOSTED_RUNNER" false
     return
   fi
 
@@ -96,7 +99,7 @@ decide() {
   if [ -s "$fleet" ] && [ "$(jq 'length' "$fleet")" = "0" ]; then
     FLEET_ERR="the list came back empty"
   fi
-  if [ ! -s "$fleet" ] || [ "$(jq 'length' "$fleet")" = "0" ]; then
+  if [ ! -s "$fleet" ] || [ -n "${FLEET_ERR:-}" ]; then
     # Without a listing there is no telling a busy pool from an offline one, so
     # queue on the primary selector instead of guessing. The old behaviour sent
     # every unreadable-fleet job to the fallback, and for `heavy` that meant
@@ -104,7 +107,7 @@ decide() {
     if [ -n "${FLEET_ERR:-}" ]; then
       echo "::warning title=Runner selector was NOT validated::Could not read the org runner list ($FLEET_ERR), so '$sel' was NOT checked against the live fleet and the job queues on it. This says nothing about whether the labels exist. Usually the GitHub App token is missing or lacks org scope. See GH_APP_CLIENT_ID."
     fi
-    { echo "runner=$(runner_json "$sel")"; echo "fell-back=false"; } >> "$GITHUB_OUTPUT"
+    emit "$sel" false
     return
   fi
 
@@ -135,23 +138,15 @@ decide() {
     fi
   fi
 
-  local use_fallback=false
-  if [ "$online" = "0" ]; then
-    use_fallback=true
-  elif [ "$when" = "busy" ] && [ "$idle" = "0" ]; then
-    use_fallback=true
-  fi
-
-  # No fallback to go to: queue, and say so when nothing is there to pick it up.
-  if [ "$use_fallback" = "true" ] && [ -z "$fb" ]; then
-    use_fallback=false
-  fi
-
-  if [ "$use_fallback" = "true" ]; then
+  # Fall back when the pool is offline, or busy and the policy says so. Skip it
+  # when there is nowhere else to go: no fallback set, or it is the selector
+  # already (the light default). Then queue on the primary, no fall back reported.
+  if [ -n "$fb" ] && [ "$fb" != "$sel" ] \
+     && { [ "$online" = "0" ] || { [ "$when" = "busy" ] && [ "$idle" = "0" ]; }; }; then
     echo "falling back to '$fb' ($online online, $idle idle, fallback-when: $when)"
-    { echo "runner=$(runner_json "$fb")"; echo "fell-back=true"; } >> "$GITHUB_OUTPUT"
+    emit "$fb" true
   else
-    { echo "runner=$(runner_json "$sel")"; echo "fell-back=false"; } >> "$GITHUB_OUTPUT"
+    emit "$sel" false
   fi
 }
 

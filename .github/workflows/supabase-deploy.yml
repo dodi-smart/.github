@@ -88,6 +88,36 @@ on:
         type: number
         default: 6
 
+      # What makes the routes above a test of THIS commit. The frontend host
+      # builds the same push in parallel and moves `health-url` only when its own
+      # build ends, so without one of these two the check can pass against the
+      # deployment that was already live. Both are off by default and either or
+      # both may be set; a failed or timed-out wait fails the job.
+      #
+      # health-wait-environment: wait for a successful GitHub Deployment of the
+      # deployed commit in this environment, which the host posts as it builds.
+      # A release commit carries `[skip ci]`, so the commit before it counts too.
+      # Reading deployments needs `deployments: read` on the caller's token.
+      # health-sha-route: for a host that posts no Deployments. A route on
+      # `health-url` (e.g. `/api/version`) whose body carries the commit's sha.
+      health-wait-environment:
+        type: string
+        default: ""
+      health-sha-route:
+        type: string
+        default: ""
+      # How long each wait may take. `timeout-minutes` below must cover it, plus
+      # the deploy itself: raise it when you raise this.
+      health-wait-timeout-minutes:
+        type: number
+        default: 10
+      # Probe the deployment's own URL, as the host reported it, instead of
+      # `health-url`. Proves that exact deployment even if the alias has not moved
+      # yet, but the host may put that URL behind its own login.
+      health-use-deployment-url:
+        type: boolean
+        default: false
+
       timeout-minutes:
         type: number
         default: 15
@@ -132,7 +162,8 @@ jobs:
       - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.ref }}
-          fetch-depth: 1
+          # Two commits, so the wait can name the one before a `[skip ci]` release.
+          fetch-depth: 2
 
       - name: Setup Supabase CLI
         uses: supabase/setup-cli@v3.0.1
@@ -198,23 +229,39 @@ jobs:
           printf '%s\n' "$FUNCTION_SECRETS" > "$secrets_file"
           supabase secrets set --project-ref "$SUPABASE_PROJECT_ID" --env-file "$secrets_file"
 
+      - name: Say what the health check cannot prove
+        if: inputs.health-url != '' && inputs.health-wait-environment == '' && inputs.health-sha-route == ''
+        run: |
+          echo "::notice::the health check probes health-url and cannot prove it tests this commit: the host may still be building it, and the URL may serve the previous deployment. Set health-wait-environment or health-sha-route."
+
+      - name: Wait for the deployment of this commit
+        id: wait
+        if: inputs.health-url != '' && (inputs.health-wait-environment != '' || inputs.health-sha-route != '')
+        uses: dodi-smart/.github/actions/wait-for-deployment@v1
+        with:
+          environment: ${{ inputs.health-wait-environment }}
+          sha-url: ${{ inputs.health-sha-route != '' && format('{0}{1}', inputs.health-url, inputs.health-sha-route) || '' }}
+          timeout-minutes: ${{ inputs.health-wait-timeout-minutes }}
+
       # Fails the job, on purpose, after the last attempt. The anti-pattern this
       # replaces is a health check that logs `::warning::` and exits 0: a
       # deploy that leaves every route erroring still goes green, and a warning
       # buried in a job that reports success is one nobody reads before the
-      # next deploy stacks on top of it. Retries exist because the common case
-      # is the new version already live by the time this step runs; a deploy
-      # still propagating gets a few seconds of tolerance before this fails for
-      # real. Skipped entirely when health-url is empty, since not every
-      # caller's deploy resolves at a stable URL immediately.
+      # next deploy stacks on top of it. Retries give a deploy that is still
+      # propagating a few seconds of tolerance before this fails for real. Only
+      # after the wait above does a pass mean this commit is healthy; without it
+      # the routes may be answered by the previous deployment. Skipped entirely
+      # when health-url is empty, since not every caller's deploy resolves at a
+      # stable URL immediately.
       - name: Check health routes
         if: inputs.health-url != ''
         env:
-          HEALTH_URL: ${{ inputs.health-url }}
+          HEALTH_URL: ${{ (inputs.health-use-deployment-url && steps.wait.outputs.url) || inputs.health-url }}
           HEALTH_ROUTES: ${{ inputs.health-routes }}
           HEALTH_ATTEMPTS: ${{ inputs.health-attempts }}
         run: |
           set -euo pipefail
+          echo "probing ${HEALTH_URL}"
           attempt=1
           while [ "$attempt" -le "$HEALTH_ATTEMPTS" ]; do
             failed=0

@@ -1,0 +1,55 @@
+# Wait for the frontend host to deploy the commit this job checked out.
+# Thin wrapper; the mechanics and the reasoning are in wait.sh.
+name: Wait for deployment
+description: Wait for a successful GitHub Deployment of the checked-out commit, or for a URL to report its sha.
+
+inputs:
+  environment:
+    description: >-
+      Environment the host posts its deployments to. The wait passes on a
+      successful deployment of the checked-out commit there, and fails on a
+      failed one or on timeout. Empty skips this proof.
+    default: ""
+  sha-url:
+    description: >-
+      Full URL whose response body carries the commit sha (7 characters or more).
+      The wait passes when it does. For a host that posts no Deployments. Empty
+      skips this proof.
+    default: ""
+  timeout-minutes:
+    description: 'How long to wait for each proof before failing.'
+    default: '10'
+  interval-seconds:
+    description: 'Pause between polls.'
+    default: '15'
+  repository:
+    description: 'owner/repo the deployments belong to'
+    default: ${{ github.repository }}
+  token:
+    description: 'Token to read deployments with. Needs deployments: read.'
+    default: ${{ github.token }}
+
+outputs:
+  deployment-id:
+    description: 'Id of the deployment that passed. Empty for the `sha-url` proof.'
+    value: ${{ steps.wait.outputs.deployment-id }}
+  sha:
+    description: 'The commit that was proven: the deployment''s, or the one `sha-url` reported.'
+    value: ${{ steps.wait.outputs.sha }}
+  url:
+    description: 'The deployment''s own URL (`environment_url`, else `target_url`). Empty when the host set neither.'
+    value: ${{ steps.wait.outputs.url }}
+
+runs:
+  using: composite
+  steps:
+    - id: wait
+      shell: bash
+      env:
+        ENVIRONMENT:     ${{ inputs.environment }}
+        SHA_URL:         ${{ inputs.sha-url }}
+        TIMEOUT_MINUTES: ${{ inputs.timeout-minutes }}
+        INTERVAL:        ${{ inputs.interval-seconds }}
+        REPO:            ${{ inputs.repository }}
+        GH_TOKEN:        ${{ inputs.token }}
+      run: ${{ github.action_path }}/wait.sh

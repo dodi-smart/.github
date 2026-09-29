@@ -306,9 +306,11 @@ jobs:
 
           Spec currency is reported in the job summary and never fails a build, the same severity the local pre-commit hook uses.$note"
 
-          id=$(gh api "/repos/$REPO/issues/$NUM/comments" --paginate \
-                --jq "[.[] | select(.body | startswith(\"$marker\"))] | .[0].id" 2>/dev/null || echo "")
-          [ "$id" = "null" ] && id=""
+          # Bot-authored only, so a person quoting the marker never has their
+          # comment rewritten or deleted. Slurped, because --jq on a paginated
+          # call runs once per page and printed one line per page.
+          id=$(gh api "/repos/$REPO/issues/$NUM/comments?per_page=100" --paginate 2>/dev/null \
+                | jq -rs --arg m "$marker" '[.[][] | select(.user.type == "Bot" and (.body | startswith($m)))] | .[0].id // empty' || true)
           if [ "$CHECKS" != "failure" ] && [ "$GUARDS" != "failure" ]; then
             if [ -n "$id" ]; then
               gh api -X DELETE "/repos/$REPO/issues/comments/$id" >/dev/null

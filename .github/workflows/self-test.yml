@@ -289,6 +289,11 @@ jobs:
               for phrase in ('Do NOT push', 'NEVER edit a lockfile', 'Do not comment on, label, merge or approve'):
                   if phrase not in prompt:
                       bad.append('agent prompt lost: ' + phrase)
+          # Renovate ignores the fix commits only while the preset names
+          # their author. A drift here marks every fixed branch as edited.
+          email = yaml.safe_load(open('.github/workflows/deps-verify.yml'))['jobs']['verify']['env']['FIX_EMAIL']
+          if email not in open('default.json').read():
+              bad.append('FIX_EMAIL %s is not in default.json gitIgnoredAuthors' % email)
           if bad:
               sys.exit('::error::' + '; '.join(bad))
           print('deps-verify pushes from push, labels from publish, and the agent is told neither')

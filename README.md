@@ -661,9 +661,10 @@ Why it reads CI instead of building:
   the runner (exit 137, a killed Gradle daemon, a lost runner, a full disk) is
   re-run once, failed jobs only. A second failure like that is reported as
   `red:infra`.
-- **Only a repo with no `pr-checks` builds here.** If no `pr-checks` run shows
-  up within `ci-appear-minutes`, the job builds the PR itself, isolated. It does
-  the same with `ci-workflow: ""`.
+- **Only a repo with no `pr-checks` builds here.** When none of the repo's
+  workflows calls `ci-workflow`, or it is set to `""`, the job builds the PR
+  itself, isolated. That is read from the workflow files, not guessed from a
+  timer.
 
 The rules on fixes:
 

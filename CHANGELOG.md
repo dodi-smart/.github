@@ -1,3 +1,9 @@
+## [1.12.0](https://github.com/dodi-smart/.github/compare/v1.11.0...v1.12.0) (2026-09-29)
+
+### ✨ Features
+
+* **setup-stack:** build-env input, bun resolved from the repo, rust toolchain pinned by SHA ([1026a15](https://github.com/dodi-smart/.github/commit/1026a15669ffe0eadaa2480c721c6bec2a1476c6))
+
 ## [1.11.0](https://github.com/dodi-smart/.github/compare/v1.10.0...v1.11.0) (2026-09-29)
 
 ### ✨ Features

@@ -189,8 +189,15 @@ jobs:
           set -euo pipefail
           # Unquoted on purpose: PACKAGES is a space-separated list of package
           # specs, and word-splitting is exactly what is wanted here.
+          #
+          # --no-save, never -D. -D wrote this tooling into the caller's
+          # package.json and created a package-lock.json, even in a bun repo,
+          # and the release commit then committed both. Renovate went on to
+          # update that npm lockfile instead of the real one, so every
+          # dependency PR failed its frozen install, and it opened PRs for
+          # tooling the repo never chose.
           # shellcheck disable=SC2086
-          npm install -D $PACKAGES
+          npm install --no-save --no-audit --no-fund $PACKAGES
 
       # The shared config, linked by name into node_modules with its plugins
       # installed in a private prefix. Nothing is published and nothing is

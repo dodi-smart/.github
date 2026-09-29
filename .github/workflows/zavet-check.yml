@@ -89,6 +89,16 @@ jobs:
           bots:       'allow'
           skip-draft: 'false'
 
+      # The one report-only decision, derived from author-kind, read below.
+      - id: scope
+        env:
+          KIND: ${{ steps.author.outputs.author-kind }}
+        run: |
+          case "$KIND" in
+            dependency|automation) echo "report-only=true"  >> "$GITHUB_OUTPUT" ;;
+            *)                     echo "report-only=false" >> "$GITHUB_OUTPUT" ;;
+          esac
+
       - id: present
         env:
           DIR: ${{ inputs.zavet-dir }}
@@ -143,7 +153,7 @@ jobs:
       - name: Install dependencies for the decision checks
         id: install
         if: steps.present.outputs.yes == 'true' && inputs.checks && steps.setup.outputs.install != ''
-        continue-on-error: ${{ steps.author.outputs.author-kind == 'dependency' || steps.author.outputs.author-kind == 'automation' }}
+        continue-on-error: ${{ steps.scope.outputs.report-only == 'true' }}
         run: |
           set -euo pipefail
           . "${{ steps.setup.outputs.env-file }}"
@@ -285,7 +295,7 @@ jobs:
         env:
           CHECKS: ${{ steps.checks.outcome }}
           GUARDS: ${{ steps.guards.outcome }}
-          KIND: ${{ steps.author.outputs.author-kind }}
+          REPORT_ONLY: ${{ steps.scope.outputs.report-only }}
         run: |
           set +e            # see the checks step
           set -uo pipefail
@@ -304,11 +314,10 @@ jobs:
             echo "| Guard trailers | $(status "$GUARDS") |"
             echo
             echo "Spec currency is reported in the job summary and never fails a build, the same severity the local pre-commit hook uses."
-            case "$KIND" in
-              dependency|automation)
-                echo
-                echo "Report only: this is a dependency or automation bot's pull request, so the failure above is recorded here without failing the job." ;;
-            esac
+            if [ "$REPORT_ONLY" = true ]; then
+              echo
+              echo "Report only: this is a dependency or automation bot's pull request, so the failure above is recorded here without failing the job."
+            fi
           } > "$RUNNER_TEMP/zavet-comment.md"
 
       # Comments written before this used the shared action carry their own
@@ -342,7 +351,7 @@ jobs:
         env:
           CHECKS: ${{ steps.checks.outcome }}
           GUARDS: ${{ steps.guards.outcome }}
-          KIND: ${{ steps.author.outputs.author-kind }}
+          REPORT_ONLY: ${{ steps.scope.outputs.report-only }}
         run: |
           set -euo pipefail
           # `if` over `[ x ] && y` for legibility, and the values are echoed
@@ -350,11 +359,10 @@ jobs:
           # (For the record, `[ x ] && y` was NOT the bug. bash's `set -e` does
           # not exit on it. The real cause was the annotation grep above.)
           if [ "$CHECKS" = "failure" ] || [ "$GUARDS" = "failure" ]; then
-            case "$KIND" in
-              dependency|automation)
-                echo "::warning title=Knowledge-layer checks failed, report only::Bot PR ($KIND), so the failure is recorded without failing the job (checks=$CHECKS guards=$GUARDS)."
-                exit 0 ;;
-            esac
+            if [ "$REPORT_ONLY" = true ]; then
+              echo "::warning title=Knowledge-layer checks failed, report only::Dependency or automation bot PR, so the failure is recorded without failing the job (checks=$CHECKS guards=$GUARDS)."
+              exit 0
+            fi
             echo "knowledge-layer checks failed (checks=$CHECKS guards=$GUARDS)"
             exit 1
           fi

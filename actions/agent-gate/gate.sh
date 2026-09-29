@@ -2,8 +2,8 @@
 # The gate, as a standalone script so it can be tested without a runner.
 #
 # Reads its inputs from the environment and writes proceed/reason/mode, plus
-# author-kind and dependency-bots, to $GITHUB_OUTPUT. action.yml is a thin wrapper around this file; test.sh runs it
-# directly. Keeping the logic out of YAML is what makes the kill switch
+# author-kind and dependency-bots, to $GITHUB_OUTPUT. action.yml is a thin
+# wrapper around this file; test.sh runs it directly. Keeping the logic out of YAML is what makes the kill switch
 # something we can actually assert on (see test.sh).
 set -euo pipefail
 

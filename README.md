@@ -206,10 +206,8 @@ The dependency-bot list lives in `actions/agent-gate/gate.sh` and nowhere else.
 is none. It needs no `body-file`. The `action` output is `deleted` or `none`.
 `zavet-check.yml` uses it to retract its comment once a pull request is clean.
 
-**`zavet-check.yml` and automation PRs.** A pull request from a dependency bot or
-from an automation such as a scheduled sync (`github-actions[bot]`) is
-report-only: the checks run and the comment says what failed, but the job stays
-green. A pull request from `claude[bot]` or a person still fails closed. An
+**`zavet-check.yml` and automation PRs.** A dependency or automation bot's pull
+request is report-only; `claude[bot]` and people still fail closed. An
 automation that opens PRs with `GITHUB_TOKEN` triggers no pull request workflows
 at all, so nothing here would run on its PR. Open them with the org App token
 (`actions/create-github-app-token`) instead.

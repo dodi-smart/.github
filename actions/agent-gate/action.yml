@@ -77,7 +77,8 @@ outputs:
   author-kind:
     description: >-
       dependency (Renovate, Dependabot) | agent (claude[bot]) | automation (any
-      other bot) | human. Set on every run, including one the kill switch stopped.
+      other bot) | human. Written before every rule, so it is set even on a run
+      the kill switch stopped, and a caller may use the gate to classify alone.
     value: ${{ steps.gate.outputs.author-kind }}
   dependency-bots:
     description: 'Comma-separated dependency-bot logins, for claude-code-action allowed_bots'

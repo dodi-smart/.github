@@ -80,14 +80,26 @@ on:
 
       # Opt-in jobs that replace zavet-check.yml and react-doctor.yml. Neither
       # feeds the `pr-checks` summary. `zavet-stack` is the toolchain the
-      # decision checks run on. `react-doctor-paths` are newline globs, empty
-      # meaning every change. A repo that tunes React Doctor keeps react-doctor.yml.
+      # decision checks run on. `react-doctor-paths` are newline globs; the
+      # default is web source and package.json, narrow it to an app directory in
+      # a monorepo. A repo that tunes React Doctor keeps react-doctor.yml.
       zavet:       { type: boolean, default: false }
       zavet-dir:   { type: string,  default: ".zavet" }
       zavet-stack: { type: string,  default: "none" }
+      zavet-audit: { type: boolean, default: false }   # report-only health sweep
+      # The zavet job's install. Empty reuses `install`; set it when the decision
+      # checks need more, e.g. a build whose output a check reads.
+      zavet-install: { type: string, default: "" }
 
       react-doctor:           { type: boolean, default: false }
-      react-doctor-paths:     { type: string,  default: "" }
+      react-doctor-paths:
+        type: string
+        default: |-
+          **.ts
+          **.tsx
+          **.js
+          **.jsx
+          package.json
       react-doctor-directory: { type: string,  default: "." }
 
       # none | vitest | kover | lcov. `lcov`: the test command writes an LCOV
@@ -225,7 +237,8 @@ jobs:
         with:
           zavet-dir:       ${{ inputs.zavet-dir }}
           stack:           ${{ inputs.zavet-stack }}
-          install:         ${{ inputs.install }}
+          audit:           ${{ inputs.zavet-audit }}
+          install:         ${{ inputs.zavet-install || inputs.install }}
           node-version:    ${{ inputs.node-version }}
           bun-version:     ${{ inputs.bun-version }}
           java-version:    ${{ inputs.java-version }}

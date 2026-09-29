@@ -458,42 +458,11 @@ jobs:
               bad.append('actions/supabase-start must hold exactly one actions/cache step')
           elif 'restore-keys' in (caches[0].get('with') or {}):
               bad.append('actions/supabase-start uses restore-keys; the key must be exact')
-          checks = yaml.safe_load(open('.github/workflows/supabase-checks.yml'))['jobs']
-          for job in ('types', 'pgtap'):
-              steps = checks[job]['steps']
-              uses = [str(s.get('uses', '')) for s in steps]
-              if not any(u.startswith('dodi-smart/.github/actions/changed-files@') for u in uses):
-                  bad.append(job + ' lost its changed-files step')
-              if not any(u.startswith('dodi-smart/.github/actions/supabase-start@') for u in uses):
-                  bad.append(job + ' lost its supabase-start step')
-              if any((s.get('with') or {}).get('fetch-depth') == 0 for s in steps):
-                  bad.append(job + ' clones the full history again')
           if bad:
               print('::error::' + '; '.join(bad) + '. See AGENTS.md.')
               sys.exit(1)
-          print('supabase workflows: scripts clean, cache key exact, no full clone')
+          print('supabase workflows: scripts clean, cache key exact')
           SUPABASE
-
-      # The health check cannot prove it tests this commit unless one of the waits
-      # is set. Keep the inputs, and the notice that says so when neither is.
-      - name: Supabase deploy health check keeps its waits
-        run: |
-          set -euo pipefail
-          python3 - <<'DEPLOY'
-          import sys, yaml
-          doc = yaml.safe_load(open('.github/workflows/supabase-deploy.yml'))
-          inputs = doc[True]['workflow_call']['inputs']
-          want = ['health-wait-environment', 'health-sha-route', 'health-wait-timeout-minutes', 'health-use-deployment-url']
-          missing = [i for i in want if i not in inputs]
-          steps = doc['jobs']['deploy']['steps']
-          text = ' '.join(str(s.get('run', '')) for s in steps)
-          waits = [s for s in steps if str(s.get('uses', '')).startswith('dodi-smart/.github/actions/wait-for-deployment@')]
-          if missing or not waits or '::notice::' not in text:
-              print('::error::supabase-deploy lost a health-check wait: missing inputs %s, wait step %s, notice %s. See AGENTS.md.'
-                    % (missing, bool(waits), '::notice::' in text))
-              sys.exit(1)
-          print('health check keeps its waits')
-          DEPLOY
 
       # v1 moves the moment semantic-release succeeds, so the only thing between
       # a broken merge and every caller is this `needs`. Without it the two

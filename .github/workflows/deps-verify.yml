@@ -183,8 +183,8 @@ jobs:
           # Who calls CI_WORKFLOW, read from the API at the PR head: no checkout,
           # so nothing from the PR lands on the runner.
           callers() {
-            gh api "/repos/$REPO/contents/.github/workflows?ref=$SHA" --jq '.[] | select(.type == "file") | .path' \
-              | while read -r p; do gh api -H "Accept: application/vnd.github.raw" "/repos/$REPO/contents/$p?ref=$SHA"; done
+            gh api "/repos/$REPO/contents/.github/workflows?ref=$SHA" --jq '.[] | select(.name | test("\\.ya?ml$")) | .path' \
+              | xargs -I{} gh api -H "Accept: application/vnd.github.raw" "/repos/$REPO/contents/{}?ref=$SHA"
           }
           if [ -z "$CI_WORKFLOW" ] || ! callers 2>/dev/null | grep -F "$CI_WORKFLOW@" >/dev/null; then
             out mode=own

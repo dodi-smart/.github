@@ -447,10 +447,9 @@ reads the changed files through the API.
 ### Coverage
 
 `coverage` picks how a coverage comment is made. It is `none` by default, which
-posts nothing and adds no job. Otherwise `test` (or `all`) uploads the report as
-an artifact and a small `coverage` job on the light pool posts the comment from it. That
-job holds the only `pull-requests: write` token and runs none of your code. It
-runs when the tests pass, so a red run keeps the previous comment.
+posts nothing and adds no job. Otherwise a small `coverage` job on the light pool
+posts the comment from the report your tests write, after they pass. It runs none
+of your code. `AGENTS.md` has the reasoning.
 
 | `coverage` | Your test command must write | `coverage-path` | Comment from |
 |---|---|---|---|

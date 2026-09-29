@@ -5,7 +5,7 @@ description: Post overall and changed-file line coverage from an LCOV file as a 
 
 inputs:
   path:
-    description: The LCOV file.
+    description: The LCOV file, or a glob that matches it.
     default: coverage/lcov.info
   source-root:
     description: >-

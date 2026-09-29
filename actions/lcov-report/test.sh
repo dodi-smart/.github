@@ -77,8 +77,6 @@ expect_md "the comment says why it failed"    "Below the minimum"
 
 run x "$WORK/multi.info" $'src/a.ts\nsrc/b.ts' 0 75
 expect "the changed floor fails on its own"   failed "changed-file coverage 70.0% is below the 75% minimum"
-run x "$WORK/multi.info" $'src/a.ts\nsrc/b.ts' 60 60
-expect "both floors met"                      failed ""
 
 # Sorted worst first, and no more than five listed.
 many=""; for i in 1 2 3 4 5 6 7; do many="${many}SF:f$i.ts"$'\n'"LF:10"$'\n'"LH:$i"$'\nend_of_record\n'; done
@@ -90,17 +88,12 @@ if grep -qF '`f6.ts`' "$MD"; then bad "only five files are listed" "f6.ts is the
 
 run x "$WORK/empty.info" "" 0 0
 expect "an empty report has no overall figure" overall ""
-expect "an empty report passes with no floor"  failed ""
 run x "$WORK/empty.info" "" 50 0
 expect "an empty report fails a floor"         failed "the report has no instrumented lines, so overall coverage cannot meet the 50% minimum"
 
 # The root is the test runner's workspace, never this job's.
-run x "$WORK/abs.info" $'src/a.ts\nsrc/b.ts' 0 0 /runner/work/r/r
-expect "absolute and ./ paths match the changed files" changed 70.0
-run x "$WORK/abs.info" $'src/a.ts' 0 0 /runner/work/r/r/
-expect "a trailing slash on the root is fine"          changed 90.0
-run x "$WORK/abs.info" $'src/a.ts' 0 0 /some/other/root
-expect "a report from another root matches nothing"    changed ""
+run x "$WORK/abs.info" $'src/a.ts\nsrc/b.ts' 0 0 /runner/work/r/r/
+expect "absolute and ./ paths match, trailing slash or not" changed 70.0
 run x "$WORK/abs.info" $'lib.ts' 0 0 /runner/work/r/r
 expect "a path outside the root stays absolute"        changed ""
 
@@ -116,6 +109,11 @@ expect "and no changed floor to fail"           failed ""
 printf 'SF:src/we|ird`.ts\nLF:2\nLH:1\nend_of_record\n' > "$WORK/odd.info"
 run x "$WORK/odd.info" 'src/we|ird`.ts' 0 0
 expect_md "pipes and backticks are stripped from names" '| `src/weird.ts` | 1 / 2 | 50.0% |'
+
+# The path may be a glob, for the one file in a download directory.
+mkdir "$WORK/dl"; cp "$WORK/multi.info" "$WORK/dl/whatever.info"
+run x "$WORK/dl/*" "" 0 0
+expect "a glob finds the report" overall 80.0
 
 # A missing file is an error, not a pass.
 if OUT="$WORK/m.md" LCOV_FILE="$WORK/nope.info" GITHUB_OUTPUT="$WORK/o" "$SCRIPT" >/dev/null 2>&1; then

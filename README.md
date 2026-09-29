@@ -324,8 +324,9 @@ daemon. One job keeps one checkout and one warm `GRADLE_USER_HOME`. The split
 stays the right default for a cheap, independent lint.
 
 `env` (newline `KEY=VALUE`) reaches every command step, which is where build
-tuning like `GRADLE_OPTS` belongs. `build-env` still applies to the build step
-alone.
+tuning like `GRADLE_OPTS` belongs. `build-env` applies to the build step
+alone, and is parsed exactly like `env`: blank lines and `# comment` lines are
+skipped, and the first `=` splits the name from the value.
 
 ```yaml
 with:
@@ -383,6 +384,39 @@ they were only skipped. It is the one job a branch ruleset should require:
 split mode, where `checks / checks` and `checks / all` do not -- exactly one
 of those two is always skipped depending on `single-job`, so neither can be
 named in a ruleset that has to work for every caller.
+
+### setup-stack inputs and outputs
+
+Inputs beyond `stack` and the command overrides:
+
+| Input | Default | Meaning |
+|---|---|---|
+| `env` | empty | Newline `KEY=VALUE` for every command step. Written to the file named by the `env-file` output, because `$GITHUB_ENV` refuses `NODE_OPTIONS`. |
+| `build-env` | empty | The same format and the same parser, for the build command only. Written to the `build-env-file` output. |
+| `bun-version` | `auto` | See below. |
+| `rust-toolchain` | `stable` | Passed to the pinned rust toolchain action: `stable`, `nightly`, `1.89.0`, or any rustup specifier. |
+
+Outputs: `env-file` and `build-env-file` (both always written, empty when
+nothing was given, so source them unconditionally), plus the resolved `install`,
+`lint`, `typecheck`, `test`, `build` and `design-lint` commands.
+
+```sh
+. "$ENV_FILE"          # every command step
+. "$BUILD_ENV_FILE"    # the build step only
+```
+
+**Bun follows the repo.** `bun-version: auto` (or empty) installs the version the
+repo pins, so CI runs what developers run and a frozen install does not fail on a
+lockfile format the newest bun changed. It checks, from the checkout root and in
+this order: `package.json` `packageManager` (`bun@x.y.z`, any `+sha` suffix
+dropped), `.bun-version`, `.tool-versions` (`bun x.y.z`), `mise.toml` and
+`.mise.toml` (`bun = "x.y.z"` under `[tools]`). The step log says what it chose
+and from where. When none names bun it installs `latest` and prints a notice.
+Any explicit version, `latest` included, is used as given. The repo must be
+checked out before `setup-stack` runs.
+
+**Rust is pinned.** The toolchain action is pinned to a commit of its `master`
+branch (it publishes no version tags), and Renovate can still move that pin.
 
 ### Caches
 
@@ -681,7 +715,8 @@ The rules on fixes:
 A red build is `needs-manual` even when the agent finds the cause was already on
 the base branch. The comment says so in one line.
 
-`env` and `build-env` mean what they mean in `pr-checks`. They matter when the
+`env` and `build-env` mean what they mean in `pr-checks`: same format, same
+parser, and `build-env` reaches the build command only. They matter when the
 agent reproduces a failure to fix it, and when the job builds on its own. Copy
 the caller's `pr-checks` block across:
 

@@ -32,8 +32,13 @@ inputs:
     description: 'For stack=node, and for semantic-release on any stack'
     default: '24'
   bun-version:
-    description: 'For stack=bun'
-    default: 'latest'
+    description: >-
+      For stack=bun. `auto` (or empty) takes the repo's own pin, in this order:
+      package.json `packageManager` (bun@x.y.z), .bun-version, .tool-versions,
+      mise.toml, .mise.toml, and falls back to latest with a notice when none
+      names bun. Any explicit version, `latest` included, is used as given.
+      Needs the repo checked out first.
+    default: 'auto'
   java-version:
     description: 'For gradle/android/flutter. Empty skips the JDK on flutter.'
     default: '21'
@@ -44,10 +49,7 @@ inputs:
     description: 'For stack=flutter'
     default: 'stable'
   rust-toolchain:
-    # NO LONGER READ. The rust step pins the channel in the action ref, which
-    # takes no toolchain input. Declared rather than removed, because removing
-    # an input breaks every caller already pinned at @v1.
-    description: 'Ignored. The rust toolchain is pinned to stable in the action ref.'
+    description: 'For stack=rust: stable, nightly, a version such as 1.89.0, or any rustup toolchain specifier'
     default: 'stable'
   rust-components:
     description: 'For stack=rust, e.g. "clippy, rustfmt"'
@@ -79,6 +81,13 @@ inputs:
       and source it. Placeholders and build tuning only, never secrets: a value
       that must stay secret has no business in a PR build log.
     default: ''
+  build-env:
+    description: >-
+      Same format and parser as `env`, for the build command only. Read the path
+      from the `build-env-file` output and source it in the build step, after
+      `env-file`. Kept apart from `env` so a placeholder the build needs is not
+      in scope for lint and test.
+    default: ''
 
   # Command overrides. "@stack" means the conventional command for this stack;
   # an explicit empty string means the repo has no such step. Those differ, and
@@ -102,6 +111,11 @@ outputs:
       Path to a shell file exporting the `env` input. Always written, empty when
       nothing was given, so a caller can source it unconditionally.
     value: ${{ steps.stepenv.outputs.file }}
+  build-env-file:
+    description: >-
+      Path to a shell file exporting the `build-env` input. Always written, empty
+      when nothing was given, so a caller can source it unconditionally.
+    value: ${{ steps.stepenv.outputs.build-file }}
   install:
     description: 'Resolved install command: the override, or the stack default. Empty means skip.'
     value: ${{ steps.defaults.outputs.install }}
@@ -193,10 +207,19 @@ runs:
         } >> "$GITHUB_OUTPUT"
         echo "stack: $STACK, isolate=$do_isolate, cache=$cache_enabled (input cache=$CACHE, env=${RUNNER_ENVIRONMENT:-unknown}/${RUNNER_OS:-unknown}/${RUNNER_ARCH:-unknown})"
 
+    # Resolved here rather than by setup-bun's bun-version-file, which reads one
+    # file only. setup-bun takes an exact version or a range, never a leading v.
+    - id: bun
+      if: inputs.stack == 'bun'
+      shell: bash
+      env:
+        BUN_VERSION: ${{ inputs.bun-version }}
+      run: ${{ github.action_path }}/bun-version.sh "$BUN_VERSION"
+
     - if: inputs.stack == 'bun'
       uses: oven-sh/setup-bun@v2
       with:
-        bun-version: ${{ inputs.bun-version }}
+        bun-version: ${{ steps.bun.outputs.version }}
         # The bun install cache is never uploaded to GitHub on any runner.
         # setup-bun's cache of the bun executable stays on: exact key, not a store.
 
@@ -232,15 +255,15 @@ runs:
         channel: ${{ inputs.flutter-channel }}
         cache: ${{ steps.resolve.outputs.cache_enabled == 'true' }}
 
-    # `@stable` rather than `@master`, so the one floating ref in this repo names
-    # a channel instead of a moving branch of the action. This action publishes a
-    # branch per channel and the channel IS the ref, so `@stable` accepts no
-    # `toolchain` input and `rust-toolchain` below is inert: every repo gets
-    # stable. A repo needing a pinned version or nightly changes this step back
-    # to `@master` with an explicit `toolchain`, here, rather than forking.
+    # Pinned to a commit of the action's master branch, which is the ref the
+    # action documents for passing `toolchain` explicitly. It publishes no
+    # version tags, so a branch ref like `@stable` would move under every caller
+    # and Renovate could never propose a change. The comment names the branch
+    # Renovate tracks, so it can still bump the SHA.
     - if: inputs.stack == 'rust'
-      uses: dtolnay/rust-toolchain@stable
+      uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # master
       with:
+        toolchain: ${{ inputs.rust-toolchain }}
         components: ${{ inputs.rust-components }}
 
     - if: inputs.stack == 'rust' && steps.resolve.outputs.cache_enabled == 'true'
@@ -252,27 +275,24 @@ runs:
         xcode-version: ${{ inputs.xcode-version }}
 
     # The caller's step environment, parsed once so every command step is a
-    # one-line `source`. `IFS='='` splits on the FIRST `=` only, so URLs and
-    # base64 survive, and `%q` quotes the value so GRADLE_OPTS arrives as a
-    # string of flags rather than one word.
+    # one-line `source`. `env` and `build-env` go through the same script, so a
+    # comment line or a value with `=` in it means the same in both.
     - id: stepenv
       shell: bash
       env:
         STEP_ENV: ${{ inputs.env }}
+        BUILD_ENV: ${{ inputs.build-env }}
       run: |
         set -euo pipefail
         file="${RUNNER_TEMP}/setup-stack-env.sh"
-        : > "$file"
-        if [ -n "${STEP_ENV:-}" ]; then
-          while IFS='=' read -r k v; do
-            k="${k#"${k%%[![:space:]]*}"}"
-            [ -z "$k" ] && continue
-            case "$k" in \#*) continue ;; esac
-            printf 'export %s=%q\n' "$k" "$v" >> "$file"
-          done <<< "$STEP_ENV"
-        fi
-        echo "file=$file" >> "$GITHUB_OUTPUT"
-        echo "step environment: $(wc -l < "$file" | tr -d ' ') variable(s)"
+        build_file="${RUNNER_TEMP}/setup-stack-build-env.sh"
+        "${{ github.action_path }}/envfile.sh" "$file" <<< "$STEP_ENV"
+        "${{ github.action_path }}/envfile.sh" "$build_file" <<< "$BUILD_ENV"
+        {
+          echo "file=$file"
+          echo "build-file=$build_file"
+        } >> "$GITHUB_OUTPUT"
+        echo "step environment: $(wc -l < "$file" | tr -d ' ') variable(s), build: $(wc -l < "$build_file" | tr -d ' ')"
 
     # Conventional commands per stack, so a caller that has nothing unusual to
     # say can name its stack and stop. Anything explicit wins over these.

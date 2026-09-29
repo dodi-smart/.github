@@ -527,6 +527,36 @@ jobs:
       - name: Shared config links into a consumer
         run: ./actions/semantic-release-config/test.sh
 
+      # env and build-env parsing, and bun version resolution.
+      - name: setup-stack parses env files and resolves bun
+        run: ./actions/setup-stack/test.sh
+
+      - name: setup-stack stays pinned, resolved and parsed in one place
+        run: |
+          set -euo pipefail
+          python3 -c "
+          import glob, re, sys, yaml
+          bad = []
+          # A branch ref moves under every caller and Renovate never proposes a change.
+          for f in sorted(glob.glob('.github/workflows/*.yml') + glob.glob('actions/*/action.yml')):
+              for n, line in enumerate(open(f), 1):
+                  if re.match(r'\s*-?\s*uses:\s*\S+@(stable|main|master)\s*(#.*)?$', line):
+                      bad.append(f'{f}:{n}: {line.strip()} (pin a tag or a full SHA)')
+          # bun follows the repo unless a caller says otherwise.
+          for f in ['.github/workflows/' + w + '.yml' for w in ('pr-checks', 'deps-verify', 'zavet-check', 'release')]:
+              d = yaml.safe_load(open(f))[True]['workflow_call']['inputs']['bun-version']['default']
+              if d != 'auto': bad.append(f + ': bun-version defaults to ' + d + ', want auto')
+          d = yaml.safe_load(open('actions/setup-stack/action.yml'))['inputs']['bun-version']['default']
+          if d != 'auto': bad.append('setup-stack bun-version defaults to ' + d + ', want auto')
+          # build-env goes through the same parser as env, never a hand-written loop.
+          for f in glob.glob('.github/workflows/*.yml'):
+              t = open(f).read()
+              if not f.endswith('self-test.yml') and \"IFS='='\" in t: bad.append(f + ': hand-written KEY=VALUE loop, source build-env-file instead')
+          if bad:
+              print('::error::' + '; '.join(bad)); sys.exit(1)
+          print('refs pinned, bun-version defaults auto, no hand-written env loops')
+          "
+
       - name: Shell scripts pass shellcheck
         run: |
           sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck

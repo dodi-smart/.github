@@ -56,10 +56,9 @@ on:
 
       java-version:    { type: string, default: "21" }
       node-version:    { type: string, default: "24" }
-      bun-version:     { type: string, default: "latest" }
+      bun-version:     { type: string, default: "auto" }
       flutter-version: { type: string, default: "" }
-      # Ignored: setup-stack pins the rust channel in the action ref. Declared
-      # so a caller already passing it does not break.
+      # Passed to the pinned rust-toolchain action: stable, nightly, or a version.
       rust-toolchain:  { type: string, default: "stable" }
     secrets:
       CLAUDE_CODE_OAUTH_TOKEN: { required: true }
@@ -180,6 +179,7 @@ jobs:
           isolate:         true
           cache:           false
           env:             ${{ inputs.env }}
+          build-env:       ${{ inputs.build-env }}
           install:         ${{ inputs.install }}
           build:           ${{ inputs.build }}
           typecheck:       ${{ inputs.typecheck }}
@@ -320,8 +320,8 @@ jobs:
         if: steps.ci.outputs.mode == 'own'
         continue-on-error: true
         env:
-          ENV_FILE:  ${{ steps.setup.outputs.env-file }}
-          BUILD_ENV: ${{ inputs.build-env }}
+          ENV_FILE:       ${{ steps.setup.outputs.env-file }}
+          BUILD_ENV_FILE: ${{ steps.setup.outputs.build-env-file }}
           INSTALL:   ${{ steps.setup.outputs.install }}
           BUILD:     ${{ steps.setup.outputs.build }}
           TYPECHECK: ${{ steps.setup.outputs.typecheck }}
@@ -333,15 +333,13 @@ jobs:
           mkdir -p "$LOGS"
           fail=""
           run() {
-            local name="$1" cmd="$2" extra="${3:-}"
+            local name="$1" cmd="$2" extra="${3:-}"   # extra: a file sourced after ENV_FILE
             [ -z "$cmd" ] && return 0
             echo "::group::$name: $cmd"
             # shellcheck source=/dev/null
             if ( set +u -eo pipefail
                  . "$ENV_FILE"
-                 if [ -n "$extra" ]; then
-                   while IFS='=' read -r k v; do [ -z "$k" ] && continue; export "$k=$v"; done <<< "$extra"
-                 fi
+                 [ -z "$extra" ] || . "$extra"
                  eval "$cmd" ) > "$LOGS/$name.log" 2>&1; then
               echo "passed"
             else
@@ -351,7 +349,7 @@ jobs:
             echo "::endgroup::"
           }
           run install   "$INSTALL"
-          run build     "$BUILD" "$BUILD_ENV"
+          run build     "$BUILD" "$BUILD_ENV_FILE"
           run typecheck "$TYPECHECK"
           run test      "$TEST"
           run smoke     "$SMOKE"

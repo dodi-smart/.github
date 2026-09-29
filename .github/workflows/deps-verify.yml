@@ -80,6 +80,7 @@ jobs:
     timeout-minutes: 10   # the picker calls the org API and may retry
     outputs:
       proceed: ${{ steps.gate.outputs.proceed }}
+      dependency-bots: ${{ steps.gate.outputs.dependency-bots }}
       stack:   ${{ steps.stack.outputs.stack }}
       runner:  ${{ steps.pick.outputs.runner }}
     steps:
@@ -392,14 +393,14 @@ jobs:
       #
       # `allowed-bots` is load-bearing. Without it the action aborts with
       # "Workflow initiated by non-human actor", and every run here is
-      # bot-initiated. Named explicitly rather than '*'.
+      # bot-initiated. Named explicitly rather than '*', from the gate's list.
       - id: agent
         uses: dodi-smart/.github/actions/run-agent@v1
         with:
           oauth-token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           model: ${{ (steps.result.outputs.verdict != 'green' || steps.facts.outputs.update == 'major') && 'claude-opus-5' || 'claude-sonnet-5' }}
           max-turns: ${{ steps.result.outputs.verdict != 'green' && '60' || '25' }}
-          allowed-bots: "renovate[bot],dependabot[bot],app/renovate"
+          allowed-bots: ${{ needs.gate.outputs.dependency-bots }}
           allowed-tools: 'Bash "Bash(gh:*)" Read Write Edit Grep Glob WebFetch'
           prompt: |
             Verify dependency PR #${{ github.event.pull_request.number }} in

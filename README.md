@@ -70,7 +70,7 @@ exactly like a busy fleet.
 | `release.yml` | push to a release branch | semantic-release, single or multi-module |
 | `supabase-deploy.yml` | called after `release.yml` | Pushes a Supabase project's schema and functions for the tag a release just cut |
 | `react-doctor.yml` | pull request, React repos | Static analysis of React/TS source. Advisory by default. |
-| `zavet-check.yml` | pull request | Knowledge-layer checks, for repos that have one. Report-only on dependency bot PRs |
+| `zavet-check.yml` | pull request | Knowledge-layer checks, for repos that have one. Report-only on dependency and automation bot PRs |
 | `supabase-checks.yml` | pull request, Supabase repos | Deno edge-function check, generated-types check, pgTAP tests. Hosted only. |
 | `pick-runner.yml` | called by the others | Chooses a runner and validates the choice |
 
@@ -165,8 +165,7 @@ regression once did.
 | `health-attempts` | `6` | Retries before the health check fails the job |
 | `health-wait-environment` | `""` | Wait for a successful GitHub Deployment of the deployed commit in this environment before probing. See below |
 | `health-sha-route` | `""` | Route on `health-url` whose body carries the deployed commit's sha. The other proof, for a host that posts no Deployments |
-| `health-wait-timeout-minutes` | `10` | How long each wait may take before the job fails |
-| `health-use-deployment-url` | `false` | Probe the deployment's own URL instead of `health-url` |
+| `health-wait-timeout-minutes` | `10` | How long the whole wait may take before the job fails |
 | `timeout-minutes` | `15` | Job timeout. Raise it to cover `health-wait-timeout-minutes` plus the deploy itself |
 
 #### Secrets
@@ -206,9 +205,7 @@ Set one, and the check waits for this commit first:
   exposes a route that returns the commit sha, and the wait passes when the body
   contains the first seven characters of the deployed commit or of its parent
   under the same rule.
-- The routes are then probed at `health-url`, or, with `health-use-deployment-url`,
-  at the URL the host reported for that deployment. The host may put that URL
-  behind its own login, so the alias stays the default.
+- The routes are then probed at `health-url`.
 
 The log shows the deployment id and commit before the routes are probed.
 
@@ -227,7 +224,7 @@ The log shows the deployment id and commit before the routes are probed.
 | `actions/pick-runner` | Resolves a runner weight to a selector, validated against the live fleet. What `pick-runner.yml` calls, and what a job that already runs hosted (like `pr-checks.yml`'s `pick`) calls directly to pick more than once without a second hosted job. |
 
 `actions/changed-files` needs no checkout. It takes `patterns` (newline-separated
-globs, `fnmatch`-style, so `*` crosses `/`; a directory needs its own `dir/*`),
+paths or globs, `fnmatch`-style, so `*` crosses `/`; a pattern also matches everything under it),
 and outputs `files` (one path per line, a rename under both names) and `matched`.
 Skip work only when `matched` is `false`. It is `true` whenever the answer
 cannot be known. That covers an event that is not a pull request, no
@@ -244,6 +241,28 @@ which is cut off. The token needs `pull-requests: read`.
 - if: steps.changes.outputs.matched == 'true'
   run: ./heavy-check.sh
 ```
+
+**`agent-gate` inputs and outputs a caller may use beyond the basics.**
+
+| Name | Meaning |
+|---|---|
+| input `bots` | `reject` (default): stop on any non-human author. `only`: proceed for dependency bots only. `allow`: ignore the author. |
+| input `events` | Space-separated `github.event_name` values the workflow handles, checked right after `agent:no-touch`. Any other event stops the run. Empty (default) allows every event. `issue-triage.yml` passes `issues issue_comment workflow_dispatch`, so a person's PR review never reaches it. |
+| output `author-kind` | `dependency` (Renovate, Dependabot), `agent` (`claude[bot]`), `automation` (any other `[bot]` or `app/` login) or `human`. Written before every rule, `agent:no-touch` included, so it is set on a stopped run too. A workflow that needs only the classification can call the gate for it and ignore `proceed`. |
+| output `dependency-bots` | The comma-separated dependency-bot logins, for `claude-code-action`'s `allowed_bots`. `deps-verify.yml` reads it. |
+
+The dependency-bot list lives in `actions/agent-gate/gate.sh` and nowhere else.
+
+**`sticky-comment` delete mode.** `delete: true` finds the comment for `key`
+(bot-authored only, like an update) and deletes it, or does nothing when there
+is none. It needs no `body-file`. The `action` output is `deleted` or `none`.
+`zavet-check.yml` uses it to retract its comment once a pull request is clean.
+
+**`zavet-check.yml` and automation PRs.** A dependency or automation bot's pull
+request is report-only; `claude[bot]` and people still fail closed. An
+automation that opens PRs with `GITHUB_TOKEN` triggers no pull request workflows
+at all, so nothing here would run on its PR. Open them with the org App token
+(`actions/create-github-app-token`) instead.
 
 ## What you stop maintaining
 
@@ -476,7 +495,7 @@ gate stay with you, same as `pr-checks.yml`.
 |---|---|---|
 | `cli-version` | *(required)* | Supabase CLI version, pinned exact with a `renovate: datasource=npm depName=supabase` marker tracking the same `supabase` devDependency the repo installs from. Generated types must come from that same CLI or the diff below fails on formatting, not schema. |
 | `types-path` | `""` | Path of the committed generated types. Empty disables the `types` job (reported skipped, not failed). |
-| `migrations-paths` | `supabase/migrations`, `supabase/seed.sql` | Newline-separated files and directories whose change triggers the heavy steps of the `types` and `pgtap` jobs on a pull request (`pgtap` also on a change under `supabase/tests`). Any event that is not a pull request always runs them. |
+| `migrations-paths` | `supabase/migrations`, `supabase/seed.sql` | Newline-separated paths (a directory covers what is under it) or globs whose change triggers the heavy steps of the `types` and `pgtap` jobs on a pull request (`pgtap` also on a change under `supabase/tests`). Any event that is not a pull request always runs them. |
 | `seed-check` | `false` | Re-apply `supabase/seed.sql` after `db start` to prove it is re-runnable. |
 | `deno-dir` | `""` | Directory of Deno-only source, e.g. `supabase/functions`. Empty disables the `deno` job. |
 | `pgtap` | `false` | Run `supabase test db` in its own job. |

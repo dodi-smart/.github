@@ -1,3 +1,16 @@
+## [1.9.0](https://github.com/dodi-smart/.github/compare/v1.8.2...v1.9.0) (2026-09-29)
+
+### ✨ Features
+
+* **agent-gate:** classify the author once and add an event allow-list ([fb8cfe9](https://github.com/dodi-smart/.github/commit/fb8cfe9158b69acab960622a3d337b5da5b3e1ec))
+* **sticky-comment:** add a delete mode that needs no body file ([255e536](https://github.com/dodi-smart/.github/commit/255e536505575fa15e3b1164c8f5cc530199c4c2))
+
+### 🐛 Bug Fixes
+
+* **deps-verify:** read allowed-bots from the gate's dependency-bots output ([f7a500d](https://github.com/dodi-smart/.github/commit/f7a500dafdf51520a753b4e146f783cda14e6750))
+* **issue-triage:** stop a person's PR review before the triage agent ([650af65](https://github.com/dodi-smart/.github/commit/650af65f5287195387433b4563e671e6a9a01310))
+* **zavet-check:** report-only for automation bots, and comment through sticky-comment ([2b75405](https://github.com/dodi-smart/.github/commit/2b75405250d27844df6d10466a93844fa7674f15))
+
 ## [1.8.2](https://github.com/dodi-smart/.github/compare/v1.8.1...v1.8.2) (2026-09-29)
 
 ### 🐛 Bug Fixes

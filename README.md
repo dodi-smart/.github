@@ -576,12 +576,10 @@ jobs:
       stack: bun
       zavet: true
       zavet-stack: bun            # the toolchain the decision checks run on
-      zavet-audit: true           # optional report-only health sweep
-      zavet-install: bun install --frozen-lockfile && bun run build   # optional; empty reuses install
       react-doctor: true
-      react-doctor-paths: |
-        src/**
-        **.tsx
+      # Optional: zavet-audit (report-only sweep), zavet-install (defaults to
+      # install; set it when a check reads build output), react-doctor-paths
+      # (defaults to **.ts, **.tsx, **.js, **.jsx and package.json).
     secrets: inherit
 ```
 

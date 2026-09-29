@@ -1,4 +1,4 @@
-# Run a job's install/lint/typecheck/test/build commands as timed phases.
+# Run a job's install/lint/typecheck/test/build/smoke commands as timed phases.
 #
 # pr-checks used to repeat a source-the-env-file step per command in four jobs,
 # which left no timings anywhere. This runs the commands setup-stack resolved,
@@ -23,12 +23,26 @@ inputs:
   typecheck:   { description: 'Typecheck command', default: '' }
   test:        { description: 'Test command', default: '' }
   build:       { description: 'Build command', default: '' }
+  smoke:       { description: 'Smoke command, run after build', default: '' }
+
+  log-dir:
+    description: "When set, each phase's full output is also written to <log-dir>/<phase>.log."
+    default: ''
+  keep-going:
+    description: 'When true, run every phase and do not stop at the first failure. The step still fails if any phase failed.'
+    default: 'false'
+
+outputs:
+  failed:
+    description: 'The failed phases, space-separated. Empty when every phase passed.'
+    value: ${{ steps.run.outputs.failed }}
 
 runs:
   using: composite
   steps:
     # Commands go through the environment, never into the script text.
-    - shell: bash
+    - id: run
+      shell: bash
       env:
         ACTION_PATH:       ${{ github.action_path }}
         ENV_FILE:          ${{ inputs.env-file }}
@@ -39,4 +53,7 @@ runs:
         PHASE_TYPECHECK:   ${{ inputs.typecheck }}
         PHASE_TEST:        ${{ inputs.test }}
         PHASE_BUILD:       ${{ inputs.build }}
+        PHASE_SMOKE:       ${{ inputs.smoke }}
+        LOG_DIR:           ${{ inputs.log-dir }}
+        KEEP_GOING:        ${{ inputs.keep-going }}
       run: '"$ACTION_PATH/run-phases.sh"'

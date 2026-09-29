@@ -5,19 +5,25 @@
 # Reads its inputs from the environment: ENV_FILE and BUILD_ENV_FILE (sourced
 # before a phase; `build` takes BUILD_ENV_FILE, every other phase ENV_FILE) and
 # one PHASE_<NAME> command per phase, `-` written as `_`. An empty command means
-# the repo has no such step. PHASES names the order; the default is the order
-# every pr-checks job already ran its steps in.
+# the repo has no such step. The order is fixed: install, lint, design-lint,
+# typecheck, test, build, smoke.
+#
+# LOG_DIR, when set, also writes each phase's full output to LOG_DIR/<phase>.log,
+# for a reader that diagnoses from the log. KEEP_GOING=true runs every phase
+# instead of stopping at the first failure. Either way the failed phases go to
+# $GITHUB_OUTPUT as `failed`, space-separated.
 #
 # The commands reach `eval` through the environment, never through the script
 # text, so a quote or a `$` in one cannot change what this script does.
 set -uo pipefail
 
-PHASES="${PHASES:-install lint design-lint typecheck test build}"
+PHASES="install lint design-lint typecheck test build smoke"
 summary="${GITHUB_STEP_SUMMARY:-/dev/null}"
 
 rows=""
 failed=""
 status=0
+[ -z "${LOG_DIR:-}" ] || mkdir -p "$LOG_DIR"
 
 # phase name -> its environment variable holding the command
 cmd_of() {
@@ -32,7 +38,7 @@ for name in $PHASES; do
     echo "skipping $name: no command"
     continue
   fi
-  if [ -n "$failed" ]; then
+  if [ -n "$failed" ] && [ "${KEEP_GOING:-}" != true ]; then
     rows="$rows| $name | not run | - |"$'\n'
     continue
   fi
@@ -46,7 +52,7 @@ for name in $PHASES; do
   start=$SECONDS
   # A subshell per phase: one shell for all of them let a `cd app && ...` in one
   # command break the next. No `if` around it, which would switch `-e` off inside.
-  (
+  phase() (
     set -euo pipefail
     if [ -n "$envfile" ]; then
       # shellcheck source=/dev/null
@@ -54,7 +60,13 @@ for name in $PHASES; do
     fi
     eval "$cmd"
   )
-  rc=$?
+  if [ -n "${LOG_DIR:-}" ]; then
+    phase 2>&1 | tee "$LOG_DIR/$name.log"
+    rc=${PIPESTATUS[0]}
+  else
+    phase
+    rc=$?
+  fi
   took=$((SECONDS - start))
   echo "::endgroup::"
 
@@ -63,7 +75,7 @@ for name in $PHASES; do
   else
     rows="$rows| $name | failed (exit $rc) | $took |"$'\n'
     echo "::error::$name failed with exit code $rc"
-    failed="$name"
+    failed="${failed:+$failed }$name"
     status=1
   fi
 done
@@ -73,4 +85,5 @@ if [ -n "$rows" ]; then
     printf '| phase | result | seconds |\n|---|---|---|\n%s' "$rows"
   } >> "$summary"
 fi
+echo "failed=$failed" >> "${GITHUB_OUTPUT:-/dev/null}"
 exit "$status"

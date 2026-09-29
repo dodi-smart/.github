@@ -28,8 +28,8 @@ expect() {
 # and leaves the summary in $WORK/summary and the log in $WORK/log.
 RC=0
 run() {
-  rm -rf "$W"; mkdir "$W"; : > "$WORK/summary"
-  ( cd "$W" && env -i PATH="$PATH" HOME="$HOME" GITHUB_STEP_SUMMARY="$WORK/summary" "$@" "$SCRIPT" ) > "$WORK/log" 2>&1
+  rm -rf "$W"; mkdir "$W"; : > "$WORK/summary"; : > "$WORK/output"
+  ( cd "$W" && env -i PATH="$PATH" HOME="$HOME" GITHUB_STEP_SUMMARY="$WORK/summary" GITHUB_OUTPUT="$WORK/output" "$@" "$SCRIPT" ) > "$WORK/log" 2>&1
   RC=$?
 }
 
@@ -109,11 +109,38 @@ run PHASE_LINT=''
 expect "no phases exits 0" [ "$RC" -eq 0 ]
 expect "no phases writes no table" [ ! -s "$WORK/summary" ]
 
-# 10. A command's own output reaches the log, and a caller may name its phases.
+# 10. A command's own output reaches the log.
 run PHASE_LINT='echo visible-output'
 expect "command output reaches the log" logged visible-output
-run PHASES='a b-c' PHASE_A='echo a > a' PHASE_B_C='echo bc > bc'
-expect "PHASES names the order and maps - to _" holds bc 'bc '
+
+# 11. `smoke` runs last, after build, and is stopped by an earlier failure.
+run PHASE_SMOKE='echo s >> order' PHASE_BUILD='echo b >> order' PHASE_TEST='echo t >> order'
+expect "smoke runs after build" holds order 't b s '
+run PHASE_BUILD='exit 1' PHASE_SMOKE='touch smoke-ran'
+expect "a failed build stops smoke" absent smoke-ran
+
+# 12. `failed` lists the failed phases, in order, and is empty on a pass.
+run PHASE_LINT='true'
+expect "a pass reports an empty failed" grep -qxF 'failed=' "$WORK/output"
+run PHASE_LINT='exit 1' PHASE_TEST='true'
+expect "a stop reports the one failed phase" grep -qxF 'failed=lint' "$WORK/output"
+
+# 13. keep-going runs every phase and reports all the failures.
+run KEEP_GOING=true PHASE_INSTALL='exit 1' PHASE_TYPECHECK='touch typecheck-ran' PHASE_TEST='exit 2' PHASE_SMOKE='touch smoke-ran'
+expect "keep-going still fails the run" [ "$RC" -ne 0 ]
+expect "keep-going runs the phase after a failure" exists typecheck-ran
+expect "keep-going runs smoke after a failed test" exists smoke-ran
+expect "keep-going lists every failed phase" grep -qxF 'failed=install test' "$WORK/output"
+expect "keep-going marks no phase not run" row typecheck passed
+run KEEP_GOING=false PHASE_INSTALL='exit 1' PHASE_TEST='touch test-ran'
+expect "keep-going false still stops" absent test-ran
+
+# 14. log-dir keeps each phase's full output, and the log still shows it too.
+run LOG_DIR="$W/logs" PHASE_INSTALL='echo from-install' PHASE_TEST=$'echo from-test\nexit 4'
+expect "log-dir gets one file per phase" holds logs/install.log 'from-install '
+expect "a failed phase is logged in full" holds logs/test.log 'from-test '
+expect "the job log still shows the output" logged from-install
+expect "log-dir keeps the exit code" row test 'failed \(exit 4\)'
 
 echo "pass=$pass fail=$fail"
 [ "$fail" -eq 0 ]

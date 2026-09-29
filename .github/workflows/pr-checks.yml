@@ -60,14 +60,6 @@ on:
       # The split stays the default.
       single-job: { type: boolean, default: false }
 
-      # By default `build` starts right after `pick`, beside `checks` and `test`,
-      # so a PR waits for the slowest of the three and not for two in a row. The
-      # cost is one build spent on a push that then fails lint. Set this to run
-      # `build` only after `checks` passed, when a build is dear enough (a
-      # contended large pool, a long build) that a red lint should never reach it.
-      # `pr-checks` requires `checks` either way.
-      build-after-checks: { type: boolean, default: false }
-
       # Every changed file must match one of these globs (newline-separated,
       # `fnmatch`-style: `*` crosses `/`) for the run to skip `checks`, `test`,
       # `build` and `all`. `commitlint` still runs, because the commit message
@@ -123,7 +115,6 @@ jobs:
   # It always runs, unlike the jobs it feeds -- it is the job a docs-only skip
   # and single-job mode both still need, and its own two picks are what let
   # `checks`/`test`/`build`/`all` skip cleanly through `needs.pick.outputs`.
-  # No checkout: it lists the changed files through the API.
   pick:
     name: Pick runner
     runs-on: ubuntu-latest
@@ -270,9 +261,8 @@ jobs:
           min-coverage-overall: ${{ inputs.coverage-min-overall }}
           min-coverage-changed-files: ${{ inputs.coverage-min-changed }}
 
-  # `needs` cannot change with an input, and a job that lists `checks` waits for
-  # it whatever its `if:` says. So the two orderings are two jobs with the same
-  # steps, and exactly one of them runs. `Self test` fails if their steps differ.
+  # `build` needs only `pick`, so it starts beside `checks` and `test`: a push
+  # waits for the slowest of the three, not for two in a row.
   #
   # `build-env` holds placeholders a build needs present but not real, supplied
   # by the caller in plain sight. Never secrets: a value that must stay secret
@@ -280,41 +270,8 @@ jobs:
   # phase only, into that phase's own shell and not $GITHUB_ENV, which refuses
   # NODE_OPTIONS outright, and NODE_OPTIONS is what a Next.js build needs here.
   build:
-    if: ${{ !inputs.single-job && !inputs.build-after-checks && needs.pick.outputs.docs_only != 'true' }}
+    if: ${{ !inputs.single-job && needs.pick.outputs.docs_only != 'true' }}
     needs: [pick]
-    runs-on: ${{ fromJson(needs.pick.outputs.heavy) }}
-    timeout-minutes: ${{ inputs.timeout-minutes }}
-    steps:
-      - uses: actions/checkout@v7
-        with: { persist-credentials: false }
-      - id: setup
-        uses: dodi-smart/.github/actions/setup-stack@v1
-        with:
-          stack:           ${{ inputs.stack }}
-          isolate:         false
-          cache:           auto
-          env:             ${{ inputs.env }}
-          build-env:       ${{ inputs.build-env }}
-          install:         ${{ inputs.install }}
-          build:           ${{ inputs.build }}
-          java-version:    ${{ inputs.java-version }}
-          node-version:    ${{ inputs.node-version }}
-          bun-version:     ${{ inputs.bun-version }}
-          flutter-version: ${{ inputs.flutter-version }}
-          rust-toolchain:  ${{ inputs.rust-toolchain }}
-      - name: Run phases
-        uses: dodi-smart/.github/actions/run-phases@v1
-        with:
-          env-file:       ${{ steps.setup.outputs.env-file }}
-          build-env-file: ${{ steps.setup.outputs.build-env-file }}
-          install:        ${{ steps.setup.outputs.install }}
-          build:          ${{ steps.setup.outputs.build }}
-
-  # `build-after-checks: true`. The `if:` has no status function, so it implies
-  # `success()`: this waits for `checks` and is skipped when `checks` fails.
-  build-ordered:
-    if: ${{ !inputs.single-job && inputs.build-after-checks && needs.pick.outputs.docs_only != 'true' }}
-    needs: [pick, checks]
     runs-on: ${{ fromJson(needs.pick.outputs.heavy) }}
     timeout-minutes: ${{ inputs.timeout-minutes }}
     steps:
@@ -416,11 +373,11 @@ jobs:
   # change. A required context that a docs-only push never creates is a ruleset
   # that waits forever, which is what a caller's `paths-ignore` used to cause.
   #
-  # It needs `checks` whichever way `build` is ordered, so a red lint fails the
-  # required context even when `build` ran beside it.
+  # It needs `checks`, so a red lint fails the required context even though
+  # `build` runs beside it.
   pr-checks:
     name: PR Checks
-    needs: [pick, commitlint, checks, test, build, build-ordered, all]
+    needs: [pick, commitlint, checks, test, build, all]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 2
@@ -432,13 +389,12 @@ jobs:
           CHECKS:        ${{ needs.checks.result }}
           TEST:          ${{ needs.test.result }}
           BUILD:         ${{ needs.build.result }}
-          BUILD_ORDERED: ${{ needs.build-ordered.result }}
           ALL:           ${{ needs.all.result }}
           DOCS_ONLY:     ${{ needs.pick.outputs.docs_only }}
         run: |
           set -euo pipefail
           failed=""
-          for pair in "pick:$PICK" "commitlint:$COMMITLINT" "checks:$CHECKS" "test:$TEST" "build:$BUILD" "build-ordered:$BUILD_ORDERED" "all:$ALL"; do
+          for pair in "pick:$PICK" "commitlint:$COMMITLINT" "checks:$CHECKS" "test:$TEST" "build:$BUILD" "all:$ALL"; do
             name="${pair%%:*}"
             result="${pair#*:}"
             case "$result" in

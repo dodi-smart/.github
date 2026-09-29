@@ -233,7 +233,7 @@ The log shows the deployment id and commit before the routes are probed.
 | `actions/release-tooling` | Installs semantic-release and its default plugins from a pinned lockfile into a private prefix, cached on the lockfile hash, and puts `semantic-release` on `PATH` |
 | `actions/semantic-release-config` | Links the shared semantic-release config into a consumer's `node_modules` from a private prefix, never from a registry and never into the checkout it came with |
 | `actions/changed-files` | A pull request's changed files through the API, with no checkout, and whether any, or every one, match a set of globs |
-| `actions/run-phases` | Runs a job's install, lint, design-lint, typecheck, test and build commands as timed phases, each in its own subshell, and writes a timing table to the job summary. What `pr-checks.yml` runs its commands with |
+| `actions/run-phases` | Runs a job's install, lint, design-lint, typecheck, test, build and smoke commands as timed phases, each in its own subshell, and writes a timing table to the job summary. `log-dir` also writes each phase's output to a file; `keep-going: true` runs every phase and the `failed` output lists the ones that failed. What `pr-checks.yml` and `deps-verify.yml` run their commands with |
 | `actions/wait-for-deployment` | Waits for the frontend host's successful GitHub Deployment of the checked-out commit, or for a route to report its sha. What `supabase-deploy.yml`'s health check calls |
 | `actions/supabase-start` | Starts the local Supabase database with the stack's Docker images restored from the cache, saved on a miss. What both jobs of `supabase-checks.yml` call |
 | `actions/pick-runner` | Resolves a runner weight to a selector, validated against the live fleet. What `pick-runner.yml` calls, and what a job that already runs hosted (like `pr-checks.yml`'s `pick`) calls directly to pick more than once without a second hosted job. |
@@ -444,25 +444,16 @@ reads the changed files through the API.
 
 In the split shape `build` starts right after `pick`, beside `checks` and
 `test`, so a push waits for the slowest of the three and not for two in a row.
-`build-after-checks: true` restores the old order, where `build` starts only
-after `checks` passed and is skipped when it fails. Use it when a build is dear
-enough (a small large pool, a long build) that a red lint should never reach it.
-
-```yaml
-with:
-  stack: bun
-  build-after-checks: true
-```
-
-The `pr-checks` summary needs `checks` in both orders, so a failed lint fails
-the required context either way. With the input on, the build shows up as
-`build-ordered` in the run instead of `build`. `single-job` is unaffected.
+That takes about a minute off every PR, and a heavy job queues on its own pool
+instead of spilling onto light runners. The cost is one build spent on a push
+that then fails lint. The `pr-checks` summary needs `checks`, so a failed lint
+fails the required context all the same. `single-job` is unaffected.
 
 ### Timings in the job summary
 
 `checks`, `test`, `build` and `all` run their commands through
 `actions/run-phases`. Each job's summary lists every phase that has a command,
-in order (`install`, `lint`, `design-lint`, `typecheck`, `test`, `build`), with
+in order (`install`, `lint`, `design-lint`, `typecheck`, `test`, `build`, `smoke`), with
 its result and its seconds:
 
 | phase | result | seconds |

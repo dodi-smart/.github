@@ -54,27 +54,27 @@ esac
 : "${REPO:?}"
 out="${GITHUB_OUTPUT:-/dev/stdout}"
 
-finish() { # matched, all-matched, files
+finish() { # matched, files, all-matched (false unless given)
   {
     echo "matched=$1"
-    echo "all-matched=$2"
+    echo "all-matched=${3:-false}"
     echo "files<<CHANGED_FILES_EOF"
-    [ -z "$3" ] || printf '%s\n' "$3"
+    [ -z "$2" ] || printf '%s\n' "$2"
     echo "CHANGED_FILES_EOF"
   } >> "$out"
-  echo "matched=$1 all-matched=$2"
+  echo "matched=$1 all-matched=${3:-false}"
   exit 0
 }
 
 if [ -z "${NUMBER:-}" ]; then
   echo "::notice::not a pull request, so nothing to diff; treating the change as matching"
-  finish true false ""
+  finish true ""
 fi
 
 if ! entries=$(gh api --paginate "repos/$REPO/pulls/$NUMBER/files?per_page=100" \
   --jq '.[] | [.filename, (.previous_filename // "")] | @tsv'); then
   echo "::warning::could not list the files of $REPO#$NUMBER (the token needs pull-requests: read); treating the change as matching"
-  finish true false ""
+  finish true ""
 fi
 
 count=$(printf '%s\n' "$entries" | grep -c . || true)
@@ -84,14 +84,14 @@ echo "$count changed file(s)"
 
 if [ "$count" -eq 0 ]; then
   echo "::notice::the pull request lists no files; treating the change as matching"
-  finish true false ""
+  finish true ""
 fi
 if [ "$count" -ge "$CAP" ]; then
   echo "::notice::the pull request has $CAP files or more, which is where the API stops listing; treating the change as matching"
-  finish true false "$files"
+  finish true "$files"
 fi
 if [ -z "$(printf '%s' "${PATTERNS:-}" | tr -d '[:space:]')" ]; then
-  finish true false "$files"
+  finish true "$files"
 fi
-finish "$(printf '%s\n' "$files" | matches "$PATTERNS" any)" \
-       "$(printf '%s\n' "$files" | matches "$PATTERNS" all)" "$files"
+finish "$(printf '%s\n' "$files" | matches "$PATTERNS" any)" "$files" \
+       "$(printf '%s\n' "$files" | matches "$PATTERNS" all)"

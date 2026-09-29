@@ -369,50 +369,24 @@ jobs:
           mkdir -p "$RUNNER_TEMP/deps-logs"
           gh run view "$RUN_ID" --repo "$REPO" --log-failed > "$RUNNER_TEMP/deps-logs/ci.log" 2>&1 || true
 
-      # Only when there is no pr-checks run to read. Every command runs in its
-      # OWN subshell: one shell for all of them let a caller's `cd app && ...`
-      # install leave the next step in `app/`, where `cd app` then fails.
-      # Each step's full output is kept, because the agent diagnoses from the
-      # log, not from a step name. `build-env` is exported for the build step
-      # only, exactly as pr-checks does.
+      # Only when there is no pr-checks run to read. `run-phases` runs every
+      # command in its own subshell, keeps going past a failure, and writes each
+      # phase's full output to a log, because the agent diagnoses from the log,
+      # not from a phase name.
       - id: steps
         if: needs.wait.outputs.mode == 'own'
         continue-on-error: true
-        env:
-          ENV_FILE:       ${{ steps.setup.outputs.env-file }}
-          BUILD_ENV_FILE: ${{ steps.setup.outputs.build-env-file }}
-          INSTALL:        ${{ steps.setup.outputs.install }}
-          BUILD:          ${{ steps.setup.outputs.build }}
-          TYPECHECK:      ${{ steps.setup.outputs.typecheck }}
-          TEST:           ${{ steps.setup.outputs.test }}
-          SMOKE:          ${{ inputs.smoke }}
-        run: |
-          set -uo pipefail
-          LOGS="$RUNNER_TEMP/deps-logs"
-          mkdir -p "$LOGS"
-          fail=""
-          run() {
-            local name="$1" cmd="$2" envfile="${3:-$ENV_FILE}"
-            [ -z "$cmd" ] && return 0
-            echo "::group::$name: $cmd"
-            # shellcheck source=/dev/null
-            if ( set +u -eo pipefail
-                 . "$envfile"
-                 eval "$cmd" ) > "$LOGS/$name.log" 2>&1; then
-              echo "passed"
-            else
-              fail="$fail $name"
-              tail -n 60 "$LOGS/$name.log"
-            fi
-            echo "::endgroup::"
-          }
-          run install   "$INSTALL"
-          run build     "$BUILD" "$BUILD_ENV_FILE"
-          run typecheck "$TYPECHECK"
-          run test      "$TEST"
-          run smoke     "$SMOKE"
-          echo "failed=${fail# }" >> "$GITHUB_OUTPUT"
-          [ -z "$fail" ]
+        uses: dodi-smart/.github/actions/run-phases@v1
+        with:
+          env-file:       ${{ steps.setup.outputs.env-file }}
+          build-env-file: ${{ steps.setup.outputs.build-env-file }}
+          install:        ${{ steps.setup.outputs.install }}
+          build:          ${{ steps.setup.outputs.build }}
+          typecheck:      ${{ steps.setup.outputs.typecheck }}
+          test:           ${{ steps.setup.outputs.test }}
+          smoke:          ${{ inputs.smoke }}
+          log-dir:        ${{ runner.temp }}/deps-logs
+          keep-going:     true
 
       # One verdict string, whichever source produced it:
       #   green | red:<steps or jobs> | red:infra (the runner failed twice)

@@ -64,6 +64,11 @@ jobs:
       - name: Changed files count every doubt as a match
         run: ./actions/changed-files/test.sh
 
+      # A phase's command reaches the shell unmangled, each phase gets its own
+      # subshell, and the first failure stops the rest. pr-checks runs on this.
+      - name: run-phases runs each phase alone and stops at the first failure
+        run: ./actions/run-phases/test.sh
+
       # The wait must never pass on the job's own Deployment, and must count the
       # commit before a `[skip ci]` release commit, the one the host builds.
       - name: Deployment wait proves the host's deployment
@@ -250,6 +255,60 @@ jobs:
               sys.exit('::error::the pr-checks job must run unconditionally (if: always()), or it silently '
                         'skips instead of reporting the jobs it summarizes.')
           print('pr-checks.yml has one picker job (%s) and an always-on pr-checks summary job' % pickers[0])
+          "
+
+      # `build` runs beside `checks`, and the summary must still require
+      # `checks`, or a red lint stops failing the required context.
+      - name: pr-checks runs build beside checks and the summary still needs checks
+        run: |
+          set -euo pipefail
+          python3 -c "
+          import sys, yaml
+          jobs = yaml.safe_load(open('.github/workflows/pr-checks.yml'))['jobs']
+          if 'checks' in jobs['build'].get('needs', []):
+              sys.exit('::error::the build job must not need checks, or it waits for lint and typecheck on every push.')
+          summary = jobs['pr-checks']['needs']
+          for j in ('checks', 'build'):
+              if j not in summary:
+                  sys.exit('::error::the pr-checks summary job must need ' + j + ', or a failure there stops failing the required context.')
+          print('build needs only pick, and pr-checks still needs checks and build')
+          "
+
+      # This workflow runs the caller's own code, so no job holds a write token
+      # it does not use, no checkout leaves credentials in .git/config, and no
+      # expression is pasted into a script body.
+      - name: pr-checks and pr-review keep the token and shell hardening
+        run: |
+          set -euo pipefail
+          python3 -c "
+          import sys, yaml
+          errors = []
+          for f in ('pr-checks', 'pr-review'):
+              doc = yaml.safe_load(open('.github/workflows/%s.yml' % f))
+              if f == 'pr-checks' and doc.get('permissions') != {'contents': 'read'}:
+                  errors.append('pr-checks.yml needs workflow-level permissions: {contents: read}, so a job with no block of its own gets no more.')
+              for name, job in doc['jobs'].items():
+                  for step in job.get('steps') or []:
+                      # The review agent works in its checkout, so that one keeps credentials.
+                      if str(step.get('uses', '')).startswith('actions/checkout@') and (f, name) != ('pr-review', 'review'):
+                          if (step.get('with') or {}).get('persist-credentials') is not False:
+                              errors.append('%s.yml job %s: checkout must set persist-credentials: false, or the token stays in the checkout for the caller scripts to read.' % (f, name))
+                      if f == 'pr-checks' and '$' + '{{' in str(step.get('run', '')):
+                          errors.append('pr-checks.yml job %s: a run: script contains an expression. Pass it through env: and quote the variable.' % name)
+          # The docs-only decision reads the API, never a clone: a hosted job
+          # that clones to list files is the cost this replaced.
+          pick = yaml.safe_load(open('.github/workflows/pr-checks.yml'))['jobs']['pick']
+          gate = yaml.safe_load(open('.github/workflows/pr-review.yml'))['jobs']['gate']
+          for label, job in (('pr-checks pick', pick), ('pr-review gate', gate)):
+              if any(str(st.get('uses', '')).startswith('actions/checkout@') for st in job['steps']):
+                  errors.append('the ' + label + ' job has a checkout; it lists changed files through actions/changed-files, which needs no clone.')
+              if not any('actions/changed-files@' in str(st.get('uses', '')) for st in job['steps']):
+                  errors.append('the ' + label + ' job must list changed files with actions/changed-files.')
+          if 'all-matched' not in str(pick['outputs']['docs_only']):
+              errors.append('pick.docs_only must come from changed-files all-matched, so only a fully read list can skip the checks.')
+          if errors:
+              sys.exit('::error::' + ' '.join(errors))
+          print('every checkout drops credentials, no run: script in pr-checks holds an expression, pick and the gate clone nothing')
           "
 
       # Each agent workflow used to run the picker as its own hosted job, needed

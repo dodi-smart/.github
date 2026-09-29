@@ -8,9 +8,13 @@
 # diff at the API's 3000-file cap, where the list is cut off and a file that
 # matters could be past the cut.
 #
-# Reads its inputs from the environment and writes files/matched to
-# $GITHUB_OUTPUT. action.yml is a thin wrapper; test.sh runs `--names` and
-# `--match` directly.
+# `all-matched` is the same claim turned round, for a skip that needs EVERY file
+# inside the paths (a docs-only change). It is `true` only when the list was read
+# in full, is not empty, and every file matches, so every doubt is `false` there.
+#
+# Reads its inputs from the environment and writes files/matched/all-matched to
+# $GITHUB_OUTPUT. action.yml is a thin wrapper; test.sh runs `--names`, `--match`
+# and `--all` directly.
 set -euo pipefail
 
 # Where the API stops listing files, however many pages you ask for.
@@ -22,35 +26,43 @@ names() {
   awk -F'\t' 'NF && $1 != "" { print $1; if ($2 != "") print $2 }' | sort -u
 }
 
-# Paths on stdin, newline-separated patterns in $1. `fnmatch`-style, so `*` crosses
-# `/`, the same as pr-checks' `docs-only-paths`. A pattern also matches everything
-# under it, so a directory needs no `dir/*` of its own.
+# Paths on stdin, newline-separated patterns in $1, `any` or `all` in $2.
+# `fnmatch`-style, so `*` crosses `/`, the same as pr-checks' `docs-only-paths`. A
+# pattern also matches everything under it, so a directory needs no `dir/*` of its
+# own. `all` needs at least one path and one pattern, so it is never vacuously true.
 matches() {
   python3 -c '
 import fnmatch, sys
 pats = [p.strip().rstrip("/") for p in sys.argv[1].splitlines() if p.strip()]
 pats += [p + "/*" for p in pats]
 files = [f for f in sys.stdin.read().splitlines() if f]
-print("true" if any(fnmatch.fnmatchcase(f, p) for f in files for p in pats) else "false")
-' "$1"
+hit = lambda f: any(fnmatch.fnmatchcase(f, p) for p in pats)
+if sys.argv[2] == "all":
+    ok = bool(files and pats and all(hit(f) for f in files))
+else:
+    ok = any(hit(f) for f in files)
+print("true" if ok else "false")
+' "$1" "${2:-any}"
 }
 
 case "${1:-}" in
   --names) names; exit 0 ;;
-  --match) matches "${2-}"; exit 0 ;;
+  --match) matches "${2-}" any; exit 0 ;;
+  --all)   matches "${2-}" all; exit 0 ;;
 esac
 
 : "${REPO:?}"
 out="${GITHUB_OUTPUT:-/dev/stdout}"
 
-finish() { # matched, files
+finish() { # matched, files, all-matched (false unless given)
   {
     echo "matched=$1"
+    echo "all-matched=${3:-false}"
     echo "files<<CHANGED_FILES_EOF"
     [ -z "$2" ] || printf '%s\n' "$2"
     echo "CHANGED_FILES_EOF"
   } >> "$out"
-  echo "matched=$1"
+  echo "matched=$1 all-matched=${3:-false}"
   exit 0
 }
 
@@ -81,4 +93,5 @@ fi
 if [ -z "$(printf '%s' "${PATTERNS:-}" | tr -d '[:space:]')" ]; then
   finish true "$files"
 fi
-finish "$(printf '%s\n' "$files" | matches "$PATTERNS")" "$files"
+finish "$(printf '%s\n' "$files" | matches "$PATTERNS" any)" "$files" \
+       "$(printf '%s\n' "$files" | matches "$PATTERNS" all)"

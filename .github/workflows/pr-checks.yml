@@ -14,12 +14,18 @@
 # ONE hosted `pick` job resolves both runners (and whether the change is
 # docs-only), instead of two hosted picker jobs. Picking twice used to cost two
 # full hosted minutes before any real work started; picking once from inside a
-# job that already exists costs one. `pr-checks` at the bottom is a summary job
+# job that already exists costs one. It reads the changed files through the API,
+# so it needs no checkout and no clone. `pr-checks` at the bottom is a summary job
 # that always runs: it is the one status-check context a branch ruleset should
 # require, because it exists in both single-job and split mode, and because a
 # docs-only change still produces it even though `checks`/`test`/`build`/`all`
 # are skipped.
 name: PR Checks
+
+# This workflow runs the caller's own code (install scripts, tests, builds), so
+# no job holds more than it needs. Jobs that need more say so themselves.
+permissions:
+  contents: read
 
 on:
   workflow_call:
@@ -60,8 +66,9 @@ on:
       # is what it checks, and is unaffected by which files changed.
       #
       # `docs_only` is always `false` on `workflow_dispatch`, and whenever the
-      # diff against the PR base cannot be computed -- a skip is only ever a
-      # positive claim, never the fallback when something went wrong reading it.
+      # changed files cannot be listed in full (an API error, or the 3000-file
+      # cap) -- a skip is only ever a positive claim, never the fallback when
+      # something went wrong reading it.
       docs-only-paths:
         type: string
         default: |-
@@ -112,63 +119,28 @@ jobs:
     name: Pick runner
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    permissions:
+      contents: read
+      pull-requests: read      # the changed-files listing
     outputs:
       light:     ${{ steps.light.outputs.runner }}
       heavy:     ${{ steps.heavy.outputs.runner }}
-      docs_only: ${{ steps.docs.outputs.docs_only }}
+      docs_only: ${{ steps.docs.outputs.all-matched }}
     steps:
-      # Full history: the only way to diff reliably against whatever commit
-      # the PR base names, which a shallow default checkout does not carry.
-      - uses: actions/checkout@v7
-        with: { fetch-depth: 0 }
-
-      # A skip is a positive claim, never a fallback. `workflow_dispatch` has
-      # no PR to diff against, and an unresolvable base/head commit means the
-      # diff could not be read, not that it was read and found docs-only.
+      # `all-matched` is a positive claim, never a fallback: it is `true` only
+      # when the whole list was read and every file matches `docs-only-paths`.
+      # A `workflow_dispatch` (no PR), an API error, an empty list and the
+      # 3000-file cap all come out `false`.
       - id: docs
-        shell: bash
-        env:
-          PATTERNS: ${{ inputs.docs-only-paths }}
-          EVENT:    ${{ github.event_name }}
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-        run: |
-          set -euo pipefail
-          if [ "$EVENT" != "pull_request" ] && [ "$EVENT" != "pull_request_target" ]; then
-            echo "docs_only=false" >> "$GITHUB_OUTPUT"
-            echo "not a pull_request event ($EVENT), docs_only=false"
-            exit 0
-          fi
-          if [ -z "${BASE_SHA:-}" ] || [ -z "${HEAD_SHA:-}" ] \
-             || ! git cat-file -e "${BASE_SHA}^{commit}" 2>/dev/null \
-             || ! git cat-file -e "${HEAD_SHA}^{commit}" 2>/dev/null; then
-            echo "::warning::could not resolve the PR base/head commit to diff, assuming docs_only=false"
-            echo "docs_only=false" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          changed="$(git diff --name-only "$BASE_SHA" "$HEAD_SHA")"
-          if [ -z "$changed" ]; then
-            echo "docs_only=false" >> "$GITHUB_OUTPUT"
-            echo "empty diff, docs_only=false"
-            exit 0
-          fi
-          result=$(CHANGED="$changed" python3 -c "
-          import fnmatch, os
-          patterns = [p.strip() for p in os.environ['PATTERNS'].splitlines() if p.strip()]
-          changed = [f for f in os.environ['CHANGED'].splitlines() if f.strip()]
-          ok = bool(changed) and all(any(fnmatch.fnmatch(f, p) for p in patterns) for f in changed)
-          print('true' if ok else 'false')
-          ")
-          echo "docs_only=$result" >> "$GITHUB_OUTPUT"
-          echo "changed files:"
-          echo "$changed"
-          echo "docs_only=$result"
+        uses: dodi-smart/.github/actions/changed-files@v1
+        with:
+          patterns: ${{ inputs.docs-only-paths }}
 
       # The picker carries the same `if:` as the job it feeds. In single-job
       # mode nothing runs on the light pool; in a docs-only change neither
       # pool is needed at all.
       - id: light
-        if: ${{ !inputs.single-job && steps.docs.outputs.docs_only != 'true' }}
+        if: ${{ !inputs.single-job && steps.docs.outputs.all-matched != 'true' }}
         uses: dodi-smart/.github/actions/pick-runner@v1
         with:
           weight:             ${{ inputs.light-weight }}
@@ -176,7 +148,7 @@ jobs:
           gh-app-private-key: ${{ secrets.GH_APP_PRIVATE_KEY }}
 
       - id: heavy
-        if: ${{ steps.docs.outputs.docs_only != 'true' }}
+        if: ${{ steps.docs.outputs.all-matched != 'true' }}
         uses: dodi-smart/.github/actions/pick-runner@v1
         with:
           weight:             ${{ inputs.heavy-weight }}
@@ -184,20 +156,30 @@ jobs:
           gh-app-private-key: ${{ secrets.GH_APP_PRIVATE_KEY }}
 
   # Hosted on purpose: needs full history and no toolchain, so the large pool
-  # would be wasted on it.
+  # would be wasted on it. The only job here that keeps full history.
   commitlint:
     if: inputs.commitlint
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    permissions:
+      contents: read
+      pull-requests: read
     steps:
       - uses: actions/checkout@v7
-        with: { fetch-depth: 0 }
+        with:
+          fetch-depth: 0
+          persist-credentials: false
       - uses: wagoid/commitlint-github-action@v6
         with:
           configFile: ${{ inputs.commitlint-config }}
 
   # ---------------------------------------------------------------------------
   # Split shape: light work on the small pool, heavy work on the large one.
+  #
+  # Every job below runs its commands through `run-phases`, which sources the
+  # env file setup-stack wrote before each one (always written, empty when the
+  # caller passed no `env`), skips a phase whose command is empty, stops at the
+  # first failure, and puts a timing table in the job summary.
   # ---------------------------------------------------------------------------
 
   checks:
@@ -207,6 +189,7 @@ jobs:
     timeout-minutes: ${{ inputs.timeout-minutes }}
     steps:
       - uses: actions/checkout@v7
+        with: { persist-credentials: false }
       - id: setup
         uses: dodi-smart/.github/actions/setup-stack@v1
         with:
@@ -223,34 +206,14 @@ jobs:
           bun-version:     ${{ inputs.bun-version }}
           flutter-version: ${{ inputs.flutter-version }}
           rust-toolchain:  ${{ inputs.rust-toolchain }}
-
-      # Every command step below sources the env file setup-stack wrote. It is
-      # always written, empty when the caller passed no `env`, so the source is
-      # unconditional and there is no second code path to get wrong.
-      - name: Install
-        if: steps.setup.outputs.install != ''
-        run: |
-          set -euo pipefail
-          . "${{ steps.setup.outputs.env-file }}"
-          ${{ steps.setup.outputs.install }}
-      - name: Lint
-        if: steps.setup.outputs.lint != ''
-        run: |
-          set -euo pipefail
-          . "${{ steps.setup.outputs.env-file }}"
-          ${{ steps.setup.outputs.lint }}
-      - name: Design lint
-        if: steps.setup.outputs.design-lint != ''
-        run: |
-          set -euo pipefail
-          . "${{ steps.setup.outputs.env-file }}"
-          ${{ steps.setup.outputs.design-lint }}
-      - name: Typecheck
-        if: steps.setup.outputs.typecheck != ''
-        run: |
-          set -euo pipefail
-          . "${{ steps.setup.outputs.env-file }}"
-          ${{ steps.setup.outputs.typecheck }}
+      - name: Run phases
+        uses: dodi-smart/.github/actions/run-phases@v1
+        with:
+          env-file:    ${{ steps.setup.outputs.env-file }}
+          install:     ${{ steps.setup.outputs.install }}
+          lint:        ${{ steps.setup.outputs.lint }}
+          design-lint: ${{ steps.setup.outputs.design-lint }}
+          typecheck:   ${{ steps.setup.outputs.typecheck }}
 
   test:
     if: ${{ !inputs.single-job && needs.pick.outputs.docs_only != 'true' }}
@@ -261,8 +224,10 @@ jobs:
       contents: read
       pull-requests: write     # coverage comment
     steps:
+      # Default depth: both coverage reporters list the changed files through
+      # the API, so neither needs history.
       - uses: actions/checkout@v7
-        with: { fetch-depth: 0 }
+        with: { persist-credentials: false }
       - id: setup
         uses: dodi-smart/.github/actions/setup-stack@v1
         with:
@@ -277,18 +242,12 @@ jobs:
           bun-version:     ${{ inputs.bun-version }}
           flutter-version: ${{ inputs.flutter-version }}
           rust-toolchain:  ${{ inputs.rust-toolchain }}
-      - name: Install
-        if: steps.setup.outputs.install != ''
-        run: |
-          set -euo pipefail
-          . "${{ steps.setup.outputs.env-file }}"
-          ${{ steps.setup.outputs.install }}
-      - name: Test
-        if: steps.setup.outputs.test != ''
-        run: |
-          set -euo pipefail
-          . "${{ steps.setup.outputs.env-file }}"
-          ${{ steps.setup.outputs.test }}
+      - name: Run phases
+        uses: dodi-smart/.github/actions/run-phases@v1
+        with:
+          env-file: ${{ steps.setup.outputs.env-file }}
+          install:  ${{ steps.setup.outputs.install }}
+          test:     ${{ steps.setup.outputs.test }}
 
       - if: always() && inputs.coverage == 'vitest'
         uses: davelosert/vitest-coverage-report-action@v2
@@ -302,13 +261,22 @@ jobs:
           min-coverage-overall: ${{ inputs.coverage-min-overall }}
           min-coverage-changed-files: ${{ inputs.coverage-min-changed }}
 
+  # `build` needs only `pick`, so it starts beside `checks` and `test`: a push
+  # waits for the slowest of the three, not for two in a row.
+  #
+  # `build-env` holds placeholders a build needs present but not real, supplied
+  # by the caller in plain sight. Never secrets: a value that must stay secret
+  # has no business in a PR build log. `run-phases` sources them for the build
+  # phase only, into that phase's own shell and not $GITHUB_ENV, which refuses
+  # NODE_OPTIONS outright, and NODE_OPTIONS is what a Next.js build needs here.
   build:
     if: ${{ !inputs.single-job && needs.pick.outputs.docs_only != 'true' }}
-    needs: [pick, checks]
+    needs: [pick]
     runs-on: ${{ fromJson(needs.pick.outputs.heavy) }}
     timeout-minutes: ${{ inputs.timeout-minutes }}
     steps:
       - uses: actions/checkout@v7
+        with: { persist-credentials: false }
       - id: setup
         uses: dodi-smart/.github/actions/setup-stack@v1
         with:
@@ -324,31 +292,16 @@ jobs:
           bun-version:     ${{ inputs.bun-version }}
           flutter-version: ${{ inputs.flutter-version }}
           rust-toolchain:  ${{ inputs.rust-toolchain }}
-
-      - name: Install
-        if: steps.setup.outputs.install != ''
-        run: |
-          set -euo pipefail
-          . "${{ steps.setup.outputs.env-file }}"
-          ${{ steps.setup.outputs.install }}
-
-      # Placeholders a build needs present but not real, supplied by the caller
-      # in plain sight. Never secrets: a value that must stay secret has no
-      # business in a PR build log.
-      #
-      # Exported into THIS shell, not $GITHUB_ENV, which refuses NODE_OPTIONS
-      # outright, and NODE_OPTIONS is the variable a Next.js build needs here.
-      # setup-stack's env files exist for the same reason, and `build-env` goes
-      # through the same parser as `env`, so a `# comment` line is skipped.
-      - name: Build
-        if: steps.setup.outputs.build != ''
-        run: |
-          set -euo pipefail
-          . "${{ steps.setup.outputs.build-env-file }}"
-          ${{ steps.setup.outputs.build }}
+      - name: Run phases
+        uses: dodi-smart/.github/actions/run-phases@v1
+        with:
+          env-file:       ${{ steps.setup.outputs.env-file }}
+          build-env-file: ${{ steps.setup.outputs.build-env-file }}
+          install:        ${{ steps.setup.outputs.install }}
+          build:          ${{ steps.setup.outputs.build }}
 
   # ---------------------------------------------------------------------------
-  # Single-job shape: the same steps, in the same order, with the same
+  # Single-job shape: the same phases, in the same order, with the same
   # skip-on-empty rule. Only the runner and the job boundaries differ.
   # ---------------------------------------------------------------------------
 
@@ -362,7 +315,7 @@ jobs:
       pull-requests: write     # coverage comment
     steps:
       - uses: actions/checkout@v7
-        with: { fetch-depth: 0 }
+        with: { persist-credentials: false }
       - id: setup
         uses: dodi-smart/.github/actions/setup-stack@v1
         with:
@@ -382,45 +335,17 @@ jobs:
           bun-version:     ${{ inputs.bun-version }}
           flutter-version: ${{ inputs.flutter-version }}
           rust-toolchain:  ${{ inputs.rust-toolchain }}
-
-      - name: Install
-        if: steps.setup.outputs.install != ''
-        run: |
-          set -euo pipefail
-          . "${{ steps.setup.outputs.env-file }}"
-          ${{ steps.setup.outputs.install }}
-      - name: Lint
-        if: steps.setup.outputs.lint != ''
-        run: |
-          set -euo pipefail
-          . "${{ steps.setup.outputs.env-file }}"
-          ${{ steps.setup.outputs.lint }}
-      - name: Design lint
-        if: steps.setup.outputs.design-lint != ''
-        run: |
-          set -euo pipefail
-          . "${{ steps.setup.outputs.env-file }}"
-          ${{ steps.setup.outputs.design-lint }}
-      - name: Typecheck
-        if: steps.setup.outputs.typecheck != ''
-        run: |
-          set -euo pipefail
-          . "${{ steps.setup.outputs.env-file }}"
-          ${{ steps.setup.outputs.typecheck }}
-      - name: Test
-        if: steps.setup.outputs.test != ''
-        run: |
-          set -euo pipefail
-          . "${{ steps.setup.outputs.env-file }}"
-          ${{ steps.setup.outputs.test }}
-
-      # `build-env` applies exactly as in the split shape; see that step.
-      - name: Build
-        if: steps.setup.outputs.build != ''
-        run: |
-          set -euo pipefail
-          . "${{ steps.setup.outputs.build-env-file }}"
-          ${{ steps.setup.outputs.build }}
+      - name: Run phases
+        uses: dodi-smart/.github/actions/run-phases@v1
+        with:
+          env-file:       ${{ steps.setup.outputs.env-file }}
+          build-env-file: ${{ steps.setup.outputs.build-env-file }}
+          install:        ${{ steps.setup.outputs.install }}
+          lint:           ${{ steps.setup.outputs.lint }}
+          design-lint:    ${{ steps.setup.outputs.design-lint }}
+          typecheck:      ${{ steps.setup.outputs.typecheck }}
+          test:           ${{ steps.setup.outputs.test }}
+          build:          ${{ steps.setup.outputs.build }}
 
       # Same reporters, in the job that produced the report. A coverage file
       # written on one runner is not readable from another.
@@ -447,6 +372,9 @@ jobs:
   # skipped depending on `single-job`, and both are skipped on a docs-only
   # change. A required context that a docs-only push never creates is a ruleset
   # that waits forever, which is what a caller's `paths-ignore` used to cause.
+  #
+  # It needs `checks`, so a red lint fails the required context even though
+  # `build` runs beside it.
   pr-checks:
     name: PR Checks
     needs: [pick, commitlint, checks, test, build, all]
@@ -456,13 +384,13 @@ jobs:
     steps:
       - name: Summarize
         env:
-          PICK:       ${{ needs.pick.result }}
-          COMMITLINT: ${{ needs.commitlint.result }}
-          CHECKS:     ${{ needs.checks.result }}
-          TEST:       ${{ needs.test.result }}
-          BUILD:      ${{ needs.build.result }}
-          ALL:        ${{ needs.all.result }}
-          DOCS_ONLY:  ${{ needs.pick.outputs.docs_only }}
+          PICK:          ${{ needs.pick.result }}
+          COMMITLINT:    ${{ needs.commitlint.result }}
+          CHECKS:        ${{ needs.checks.result }}
+          TEST:          ${{ needs.test.result }}
+          BUILD:         ${{ needs.build.result }}
+          ALL:           ${{ needs.all.result }}
+          DOCS_ONLY:     ${{ needs.pick.outputs.docs_only }}
         run: |
           set -euo pipefail
           failed=""

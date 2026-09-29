@@ -232,18 +232,23 @@ The log shows the deployment id and commit before the routes are probed.
 | `actions/deps-intent` | Decides from a dependency PR's diff whether `deps-verify.yml` has anything new to judge. Internal to that workflow |
 | `actions/release-tooling` | Installs semantic-release and its default plugins from a pinned lockfile into a private prefix, cached on the lockfile hash, and puts `semantic-release` on `PATH` |
 | `actions/semantic-release-config` | Links the shared semantic-release config into a consumer's `node_modules` from a private prefix, never from a registry and never into the checkout it came with |
-| `actions/changed-files` | A pull request's changed files through the API, with no checkout, and whether any match a set of globs |
+| `actions/changed-files` | A pull request's changed files through the API, with no checkout, and whether any, or every one, match a set of globs |
+| `actions/run-phases` | Runs a job's install, lint, design-lint, typecheck, test, build and smoke commands as timed phases, each in its own subshell, and writes a timing table to the job summary. `log-dir` also writes each phase's output to a file; `keep-going: true` runs every phase and the `failed` output lists the ones that failed. What `pr-checks.yml` and `deps-verify.yml` run their commands with |
 | `actions/wait-for-deployment` | Waits for the frontend host's successful GitHub Deployment of the checked-out commit, or for a route to report its sha. What `supabase-deploy.yml`'s health check calls |
 | `actions/supabase-start` | Starts the local Supabase database with the stack's Docker images restored from the cache, saved on a miss. What both jobs of `supabase-checks.yml` call |
 | `actions/pick-runner` | Resolves a runner weight to a selector, validated against the live fleet. What `pick-runner.yml` calls, and what a job that already runs hosted (like `pr-checks.yml`'s `pick`) calls directly to pick more than once without a second hosted job. |
 
 `actions/changed-files` needs no checkout. It takes `patterns` (newline-separated
 paths or globs, `fnmatch`-style, so `*` crosses `/`; a pattern also matches everything under it),
-and outputs `files` (one path per line, a rename under both names) and `matched`.
-Skip work only when `matched` is `false`. It is `true` whenever the answer
-cannot be known. That covers an event that is not a pull request, no
-`patterns`, an empty or unreadable list, and a list at the API's 3000-file cap,
-which is cut off. The token needs `pull-requests: read`.
+and outputs `files` (one path per line, a rename under both names), `matched`
+and `all-matched`. Skip work only when `matched` is `false`. It is `true`
+whenever the answer cannot be known. That covers an event that is not a pull
+request, no `patterns`, an empty or unreadable list, and a list at the API's
+3000-file cap, which is cut off. `all-matched` is the opposite claim, for a
+skip that needs every file inside the paths (a docs-only change): it is `true`
+only when the whole list was read and every file matches, and `false` on every
+one of those doubts. Skip work on `all-matched` only when it is `true`. The
+token needs `pull-requests: read`.
 
 ```yaml
 - id: changes
@@ -432,13 +437,40 @@ with:
 
 Either shape runs behind ONE hosted `pick` job, not two. It resolves both the
 light and the heavy runner (skipping whichever `single-job` does not need), so
-picking twice costs one hosted job instead of two.
+picking twice costs one hosted job instead of two. It needs no checkout: it
+reads the changed files through the API.
+
+### When `build` starts
+
+In the split shape `build` starts right after `pick`, beside `checks` and
+`test`, so a push waits for the slowest of the three and not for two in a row.
+That takes about a minute off every PR, and a heavy job queues on its own pool
+instead of spilling onto light runners. The cost is one build spent on a push
+that then fails lint. The `pr-checks` summary needs `checks`, so a failed lint
+fails the required context all the same. `single-job` is unaffected.
+
+### Timings in the job summary
+
+`checks`, `test`, `build` and `all` run their commands through
+`actions/run-phases`. Each job's summary lists every phase that has a command,
+in order (`install`, `lint`, `design-lint`, `typecheck`, `test`, `build`, `smoke`), with
+its result and its seconds:
+
+| phase | result | seconds |
+|---|---|---|
+| install | passed | 14 |
+| lint | passed | 9 |
+| typecheck | failed (exit 2) | 21 |
+| test | not run | - |
+
+Each phase is a collapsed log group. The first failure stops the run, and the
+phases after it are listed as `not run`. A phase with no command is left out.
 
 ### Docs-only changes, and the one context to require
 
 `pick` also decides whether the change is docs-only: every file the PR touches
 must match one of `docs-only-paths` (newline-separated globs, default `**.md`
-and `docs/**`) against the PR base. When it is, `checks`, `test`, `build` and
+and `docs/**`), read from the pull request's file list through the API. When it is, `checks`, `test`, `build` and
 `all` all skip -- but `commitlint` still runs, because it checks the commit
 message, not the files. The default catches a Markdown-only change; widen it
 per caller for e.g. `docs/** design/**`.
@@ -452,8 +484,15 @@ with:
 ```
 
 A skip is only ever a positive finding. On `workflow_dispatch`, or whenever the
-diff against the PR base cannot be computed, `docs_only` is `false` and every
-job runs as normal.
+file list cannot be read in full (an API error, or a pull request of 3000 files
+or more, where the API stops listing), `docs_only` is `false` and every job runs
+as normal.
+
+`pr-checks.yml` grants `contents: read` at the workflow level, so a job that
+needs more asks for it: `pick` and `commitlint` read pull requests, and `test`
+and `all` write them for the coverage comment. A checkout in these workflows
+never keeps the job token in its git config, so a caller's install, test and
+build scripts cannot read it. Only `commitlint` clones full history.
 
 This is also why a caller should **not** add `paths-ignore: ['**.md']` to its
 own `on: pull_request:` trigger to get the same effect. `paths-ignore` skips

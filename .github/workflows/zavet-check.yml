@@ -131,15 +131,23 @@ jobs:
           java-version:    ${{ inputs.java-version }}
           flutter-version: ${{ inputs.flutter-version }}
 
+      # On a dependency bot's PR an install failure is the update's problem,
+      # and pr-checks and deps-verify already report it. Failing here as well
+      # put a red knowledge-layer check on a PR whose knowledge layer nobody
+      # touched, which is what the report-only rule above exists to prevent.
+      # The checks are then skipped, because a check run without its
+      # dependencies would fail for the same reason and blame a decision.
       - name: Install dependencies for the decision checks
+        id: install
         if: steps.present.outputs.yes == 'true' && inputs.checks && steps.setup.outputs.install != ''
+        continue-on-error: ${{ steps.mode.outputs.enforce == 'false' }}
         run: |
           set -euo pipefail
           . "${{ steps.setup.outputs.env-file }}"
           ${{ steps.setup.outputs.install }}
 
       - id: checks
-        if: steps.present.outputs.yes == 'true' && inputs.checks
+        if: steps.present.outputs.yes == 'true' && inputs.checks && steps.install.outcome != 'failure'
         continue-on-error: true
         env:
           GH_TOKEN: ${{ github.token }}
@@ -265,8 +273,10 @@ jobs:
           printf '%s\n' "$out"
           { echo "### Audit (report only)"; echo '```'; printf '%s\n' "$out"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
 
-      # One comment, updated in place. A new comment per push turns a useful
-      # signal into something people collapse and stop reading.
+      # One comment, updated in place, and ONLY when something failed. A clean
+      # result is already the green check; a table saying "passed" on every PR
+      # is the noise that teaches people to skip bot comments. A comment left
+      # from an earlier failing push is deleted once the PR is clean again.
       - if: always() && steps.present.outputs.yes == 'true' && github.event_name == 'pull_request'
         env:
           GH_TOKEN: ${{ github.token }}
@@ -296,9 +306,19 @@ jobs:
 
           Spec currency is reported in the job summary and never fails a build, the same severity the local pre-commit hook uses.$note"
 
-          id=$(gh api "/repos/$REPO/issues/$NUM/comments" --paginate \
-                --jq "[.[] | select(.body | startswith(\"$marker\"))] | .[0].id" 2>/dev/null || echo "")
-          if [ -n "$id" ] && [ "$id" != "null" ]; then
+          # Bot-authored only, so a person quoting the marker never has their
+          # comment rewritten or deleted. Slurped, because --jq on a paginated
+          # call runs once per page and printed one line per page.
+          id=$(gh api "/repos/$REPO/issues/$NUM/comments?per_page=100" --paginate 2>/dev/null \
+                | jq -rs --arg m "$marker" '[.[][] | select(.user.type == "Bot" and (.body | startswith($m)))] | .[0].id // empty' || true)
+          if [ "$CHECKS" != "failure" ] && [ "$GUARDS" != "failure" ]; then
+            if [ -n "$id" ]; then
+              gh api -X DELETE "/repos/$REPO/issues/comments/$id" >/dev/null
+            fi
+            echo "clean, no comment"
+            exit 0
+          fi
+          if [ -n "$id" ]; then
             gh api -X PATCH "/repos/$REPO/issues/comments/$id" -f body="$body" >/dev/null
           else
             gh api -X POST "/repos/$REPO/issues/$NUM/comments" -f body="$body" >/dev/null

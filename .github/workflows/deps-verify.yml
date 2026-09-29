@@ -1,9 +1,11 @@
-# Reusable: verify a Renovate/Dependabot PR by actually building it and reading
-# what upstream changed.
+# Reusable: verify a Renovate/Dependabot PR from the repo's own CI result and
+# what upstream changed, and fix the code when the update broke it.
 #
-# This job REPORTS. It never merges and never changes mergeability, so
-# Renovate's own automerge rules stay the sole merge policy. Adding evidence to
-# a pull request is useful. Quietly acquiring merge authority is not.
+# It never merges and never approves, so Renovate's own automerge rules stay
+# the sole merge policy. It may push fix commits to the dependency branch:
+# code only, never a version Renovate chose, at most two rounds, each one a
+# plain commit anyone can read or revert. A fix is still evidence. Merging is
+# not.
 name: Dependency Verification
 
 on:
@@ -36,6 +38,21 @@ on:
       typecheck: { type: string, default: "@stack" }
       test:      { type: string, default: "@stack" }
       smoke:     { type: string, default: "" }
+
+      # The same two inputs as pr-checks, with the same meaning, so a caller
+      # copies one block into both. Without them a Next.js build here failed on
+      # a missing placeholder that pr-checks had, and every web repo's
+      # dependency PR came out red for a reason unrelated to the update.
+      #   env:       every command step. Placeholders and tuning, never secrets.
+      #   build-env: build step only.
+      env:       { type: string, default: "" }   # newline-separated KEY=VALUE
+      build-env: { type: string, default: "" }   # newline-separated KEY=VALUE
+
+      # Where the build verdict comes from. When one of the repo's own workflows
+      # calls this path, its run on the PR's head commit is read instead of
+      # building here. Empty means always build here.
+      ci-workflow:        { type: string, default: "dodi-smart/.github/.github/workflows/pr-checks.yml" }
+      ci-timeout-minutes: { type: number, default: 45 }
 
       java-version:    { type: string, default: "21" }
       node-version:    { type: string, default: "24" }
@@ -110,26 +127,59 @@ jobs:
           gh-app-client-id:   ${{ secrets.GH_APP_CLIENT_ID }}
           gh-app-private-key: ${{ secrets.GH_APP_PRIVATE_KEY }}
 
-  # Deterministic gates FIRST. If the build is red the compiler has already
-  # explained why, and an agent adds nothing but cost.
-  build:
+  # ONE job: the build verdict (read from the repo's pr-checks run, or built
+  # here when there is none), then the agent, then a deterministic push and
+  # publish. The order inside the job is the rule: nothing below the verdict
+  # steps can run before there is a verdict.
+  #
+  # Waiting for pr-checks holds this runner idle for a few minutes. That is the
+  # price of not running a second build of the same commit beside it.
+  verify:
     needs: [gate]
     if: needs.gate.outputs.proceed == 'true'
     runs-on: ${{ fromJson(needs.gate.outputs.runner) }}
-    timeout-minutes: 25
-    outputs:
-      verdict: ${{ steps.result.outputs.verdict }}
+    timeout-minutes: 120
+    permissions:
+      contents: read
+      pull-requests: write
+      id-token: write
+      actions: write   # read the pr-checks run, and re-run it once after an infra failure
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPO:     ${{ github.repository }}
+      PR:       ${{ github.event.pull_request.number }}
+      HEAD_REF: ${{ github.event.pull_request.head.ref }}
+      BASE_REF: ${{ github.event.pull_request.base.ref }}
+      # The identity every fix commit carries. It is also the author the shared
+      # Renovate preset lists under gitIgnoredAuthors, so Renovate keeps owning
+      # a branch this job has committed to. Change both together.
+      FIX_NAME:  github-actions[bot]
+      FIX_EMAIL: 41898282+github-actions[bot]@users.noreply.github.com
+      # Hoisted: the secrets context is not available in a step-level `if:`.
+      HAS_APP: ${{ secrets.GH_APP_CLIENT_ID != '' }}
     steps:
+      # The PR BRANCH, not the merge ref: a fix is committed on top of it.
+      # No credentials persist. Dependency install scripts run below, and a
+      # token they could read is a token they could push with. The push token
+      # is minted after the agent, for one step.
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.ref }}
+          fetch-depth: 0
+          filter: blob:none   # history for the range below, blobs on demand
+          persist-credentials: false
 
-      # Isolation is hard-coded, never a caller input. A verification job that
-      # can see yesterday's tree is not verifying.
+      # Toolchain only. setup-stack resolves the commands and installs nothing,
+      # so the green path below never pays for an install. Isolation is
+      # hard-coded, never a caller input: a verification job that can see
+      # yesterday's tree is not verifying.
       - id: setup
         uses: dodi-smart/.github/actions/setup-stack@v1
         with:
           stack:           ${{ needs.gate.outputs.stack }}
           isolate:         true
           cache:           false
+          env:             ${{ inputs.env }}
           install:         ${{ inputs.install }}
           build:           ${{ inputs.build }}
           typecheck:       ${{ inputs.typecheck }}
@@ -140,150 +190,429 @@ jobs:
           flutter-version: ${{ inputs.flutter-version }}
           rust-toolchain:  ${{ inputs.rust-toolchain }}
 
-      # Every step runs even after one fails, so the agent below can explain the
-      # whole picture rather than only the first thing that broke.
+      # Facts the agent and the publish step both need, computed once.
+      #   update:     major | lockfile | other, from Renovate's own labels/title
+      #   fix-rounds: fix commits this job pushed to the branch. The push step
+      #               writes each round as ONE commit with a Deps-Verify-Round
+      #               trailer, so the count never depends on a subject the
+      #               agent chose.
+      #   base-sha:   the head before the agent, so its commits can be isolated
+      # It also sets the commit identity, before the agent can commit anything.
+      - id: facts
+        env:
+          TITLE:  ${{ github.event.pull_request.title }}
+          LABELS: ${{ toJson(github.event.pull_request.labels.*.name) }}
+        run: |
+          set -euo pipefail
+          git config user.name  "$FIX_NAME"
+          git config user.email "$FIX_EMAIL"
+          update=other
+          printf '%s' "$TITLE" | grep -qi 'lock file maintenance' && update=lockfile
+          printf '%s' "$LABELS" | jq -e 'index("deps:major")' >/dev/null && update=major
+          # Only commits this PR adds: a fix merged with an earlier PR is in the
+          # base branch's history and is not a round spent on this one.
+          fixes=$(git log --format='%h %s%x09%(trailers:key=Deps-Verify-Round,valueonly,separator=)' \
+                    "origin/$BASE_REF..HEAD" | awk -F'\t' '$2 != "" { print $1 }')
+          rounds=$(printf '%s' "$fixes" | grep -c . || true)
+          {
+            echo "update=$update"
+            echo "fix-rounds=$rounds"
+            echo "base-sha=$(git rev-parse HEAD)"
+            echo "fixes<<EOF_FIXES"
+            printf '%s\n' "${fixes:-none}"
+            echo "EOF_FIXES"
+          } >> "$GITHUB_OUTPUT"
+          echo "update=$update fix-rounds=$rounds"
+
+      # The repo's own CI is the build verdict. Building here as well ran a
+      # second full build of the same commit at the same moment, on the same
+      # runner hosts, and the pair ran out of memory. So when the repo calls
+      # the shared pr-checks, this waits for that run on this exact commit and
+      # reads it. Whether it calls it is read from the repo's own workflow
+      # files, never guessed from a timer.
+      #
+      # A run that died of the runner (exit 137, a killed daemon, a lost
+      # runner, a full disk) says nothing about the update, so it is re-run
+      # ONCE, failed jobs only. A second infra failure is reported as such.
+      - id: ci
+        env:
+          SHA:         ${{ github.event.pull_request.head.sha }}
+          CI_WORKFLOW: ${{ inputs.ci-workflow }}
+          TIMEOUT:     ${{ inputs.ci-timeout-minutes }}
+        run: |
+          set -euo pipefail
+          LOGS="$RUNNER_TEMP/deps-logs"
+          mkdir -p "$LOGS"
+          out() { echo "$1" >> "$GITHUB_OUTPUT"; }
+          if [ -z "$CI_WORKFLOW" ] || ! grep -rqF "$CI_WORKFLOW@" .github/workflows 2>/dev/null; then
+            out mode=own
+            echo "no workflow here calls ${CI_WORKFLOW:-a CI workflow}, so this job builds the PR itself"
+            exit 0
+          fi
+          out mode=ci
+
+          # The newest run on this commit whose workflow calls CI_WORKFLOW. A
+          # skipped run (a draft, a filtered event) is not one. Listed only
+          # until it is found; after that the run itself is polled.
+          find_run() {
+            gh api "/repos/$REPO/actions/runs?head_sha=$SHA&per_page=100" \
+              | jq -r --arg w "$CI_WORKFLOW" '
+                  [.workflow_runs[]
+                   | select(any(.referenced_workflows[]?; .path | startswith($w)))
+                   | select(.conclusion != "skipped")]
+                  | sort_by(.id) | last | .id // empty'
+          }
+          # `|`, not a tab: read collapses adjacent tabs, and an in-progress
+          # run has an empty conclusion between two.
+          poll_run() {
+            IFS='|' read -r status conclusion attempt url < <(gh api "/repos/$REPO/actions/runs/$id" \
+              --jq '[.status, (.conclusion // ""), .run_attempt, .html_url] | map(tostring) | join("|")')
+          }
+          # Returns 1 on timeout. After a re-run the API can still show the
+          # finished first attempt for a moment, so it waits for the attempt
+          # number to move as well.
+          wait_ci() {
+            local deadline=$(( $(date +%s) + TIMEOUT * 60 ))
+            while [ "$(date +%s)" -lt "$deadline" ]; do
+              [ -n "$id" ] || id=$(find_run || true)
+              if [ -n "$id" ]; then
+                poll_run || true
+                [ "$status" = completed ] && [ "$attempt" -ge "$min_attempt" ] && return 0
+              fi
+              sleep 30
+            done
+            return 1
+          }
+          fetch_log() { gh run view "$id" --repo "$REPO" --log-failed > "$LOGS/ci.log" 2>&1 || true; }
+          infra() {
+            grep -qE 'exit code 137|signal SIGKILL|daemon disappeared unexpectedly|received a shutdown signal|lost communication with the server|No space left on device|ENOSPC|JavaScript heap out of memory' "$LOGS/ci.log"
+          }
+
+          id="" status="" conclusion="" attempt=0 url="" min_attempt=1
+          wait_ci || conclusion=timeout
+          if [ "$conclusion" != success ] && [ "$conclusion" != timeout ] && [ "$attempt" = 1 ] \
+             && { fetch_log; infra; }; then
+            echo "::notice title=Re-running CI::The pr-checks run failed on the runner, not the code. Re-running its failed jobs once."
+            gh run rerun "$id" --repo "$REPO" --failed
+            min_attempt=2
+            wait_ci || conclusion=timeout
+          fi
+
+          failed=""
+          if [ "$conclusion" != success ] && [ -n "$id" ]; then
+            fetch_log
+            failed=$(gh api "/repos/$REPO/actions/runs/$id/jobs" \
+                     --jq '[.jobs[] | select(.conclusion == "failure") | .name] | join(", ")' || true)
+            if infra; then out infra=true; fi
+          fi
+          out "conclusion=$conclusion"
+          out "failed=$failed"
+          out "url=$url"
+          echo "pr-checks: $conclusion (attempt $attempt) $url ${failed:+failed: $failed}"
+
+      # Only when there is no pr-checks run to read. Every command runs in its
+      # OWN subshell: one shell for all of them let a caller's `cd app && ...`
+      # install leave the next step in `app/`, where `cd app` then fails.
+      # Each step's full output is kept, because the agent diagnoses from the
+      # log, not from a step name. `build-env` is exported for the build step
+      # only, exactly as pr-checks does.
       - id: steps
+        if: steps.ci.outputs.mode == 'own'
         continue-on-error: true
         env:
+          ENV_FILE:  ${{ steps.setup.outputs.env-file }}
+          BUILD_ENV: ${{ inputs.build-env }}
           INSTALL:   ${{ steps.setup.outputs.install }}
           BUILD:     ${{ steps.setup.outputs.build }}
           TYPECHECK: ${{ steps.setup.outputs.typecheck }}
           TEST:      ${{ steps.setup.outputs.test }}
           SMOKE:     ${{ inputs.smoke }}
         run: |
-          set -x
+          set -uo pipefail
+          LOGS="$RUNNER_TEMP/deps-logs"
+          mkdir -p "$LOGS"
           fail=""
-          run() { [ -z "$2" ] && return 0; eval "$2" || fail="$fail $1"; }
+          run() {
+            local name="$1" cmd="$2" extra="${3:-}"
+            [ -z "$cmd" ] && return 0
+            echo "::group::$name: $cmd"
+            # shellcheck source=/dev/null
+            if ( set +u -eo pipefail
+                 . "$ENV_FILE"
+                 if [ -n "$extra" ]; then
+                   while IFS='=' read -r k v; do [ -z "$k" ] && continue; export "$k=$v"; done <<< "$extra"
+                 fi
+                 eval "$cmd" ) > "$LOGS/$name.log" 2>&1; then
+              echo "passed"
+            else
+              fail="$fail $name"
+              tail -n 60 "$LOGS/$name.log"
+            fi
+            echo "::endgroup::"
+          }
           run install   "$INSTALL"
-          run build     "$BUILD"
+          run build     "$BUILD" "$BUILD_ENV"
           run typecheck "$TYPECHECK"
           run test      "$TEST"
           run smoke     "$SMOKE"
           echo "failed=${fail# }" >> "$GITHUB_OUTPUT"
           [ -z "$fail" ]
 
+      # One verdict string, whichever source produced it:
+      #   green | red:<steps or jobs> | red:infra (the runner failed twice)
       - id: result
         env:
-          FAILED: ${{ steps.steps.outputs.failed }}
+          MODE:       ${{ steps.ci.outputs.mode }}
+          CONCLUSION: ${{ steps.ci.outputs.conclusion }}
+          CI_FAILED:  ${{ steps.ci.outputs.failed }}
+          INFRA:      ${{ steps.ci.outputs.infra }}
+          OWN_FAILED: ${{ steps.steps.outputs.failed }}
         run: |
-          if [ -z "${FAILED:-}" ]; then
-            echo "verdict=green" >> "$GITHUB_OUTPUT"
+          set -euo pipefail
+          if [ "$MODE" = own ]; then
+            v=green; [ -n "${OWN_FAILED:-}" ] && v="red:$OWN_FAILED"
+          elif [ "$CONCLUSION" = success ]; then
+            v=green
+          elif [ "${INFRA:-}" = true ]; then
+            v=red:infra
           else
-            echo "verdict=red:$FAILED" >> "$GITHUB_OUTPUT"
-            # The steps are continue-on-error so the agent still gets to explain
-            # the failure, which means this job goes green regardless. Annotate,
-            # or the run summary claims a build passed when it did not.
-            echo "::warning title=Dependency build failed::Failed steps: $FAILED. See the verdict comment on the PR."
+            v="red:${CI_FAILED:-$CONCLUSION}"
+          fi
+          echo "verdict=$v" >> "$GITHUB_OUTPUT"
+          echo "verdict: $v"
+          if [ "$v" != green ]; then
+            echo "::warning title=Dependency build failed::$v. The agent reads the logs and either fixes the cause or explains it on the PR."
           fi
 
-  review:
-    needs: [gate, build]
-    if: needs.gate.outputs.proceed == 'true'
-    runs-on: ${{ fromJson(needs.gate.outputs.runner) }}
-    timeout-minutes: 20
-    permissions:
-      contents: read
-      pull-requests: write
-      id-token: write
-    steps:
-      - uses: actions/checkout@v7
-
-      # Sonnet: reading changelogs against a verdict the deterministic gate has
-      # already produced is mechanical work, not judgement.
+      # Opus when there is something to fix or a major to read; Sonnet when the
+      # build is green on a minor or patch, where the work is reading notes.
+      #
+      # The agent commits and never pushes. The push is the deterministic step
+      # after it, which checks what the commits touch first.
       #
       # `allowed-bots` is load-bearing. Without it the action aborts with
       # "Workflow initiated by non-human actor", and every run here is
       # bot-initiated. Named explicitly rather than '*'.
-      - uses: dodi-smart/.github/actions/run-agent@v1
+      - id: agent
+        uses: dodi-smart/.github/actions/run-agent@v1
         with:
           oauth-token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          model: claude-sonnet-5
+          model: ${{ (steps.result.outputs.verdict != 'green' || steps.facts.outputs.update == 'major') && 'claude-opus-5' || 'claude-sonnet-5' }}
+          max-turns: ${{ steps.result.outputs.verdict != 'green' && '60' || '25' }}
           allowed-bots: "renovate[bot],dependabot[bot],app/renovate"
-          allowed-tools: 'Bash "Bash(gh:*)" Read Grep Glob WebFetch'
+          allowed-tools: 'Bash "Bash(gh:*)" Read Write Edit Grep Glob WebFetch'
           prompt: |
             Verify dependency PR #${{ github.event.pull_request.number }} in
-            ${{ github.repository }}.
+            ${{ github.repository }}, and fix it when the update broke something.
 
-            Deterministic result already in hand: `${{ needs.build.outputs.verdict }}`
-            (`green` = install/build/typecheck/test/smoke all passed; `red:<steps>`
-            = those steps failed).
+            You are on the PR branch `${{ github.event.pull_request.head.ref }}`,
+            base `${{ github.event.pull_request.base.ref }}`.
 
-            Do this:
+            Facts already established. Do not re-derive them:
+            - Build result: `${{ steps.result.outputs.verdict }}`.
+              `green`, `red:<failed jobs or steps>`, or `red:infra` when the
+              runner itself failed twice (out of memory, killed daemon).
+            - Source: ${{ steps.ci.outputs.mode == 'ci' && format('the repo''s own PR checks run, {0}. The failed jobs'' logs are in `{1}/deps-logs/ci.log`.', steps.ci.outputs.url, runner.temp) || format('this job''s own build. Each step''s output is in `{0}/deps-logs/<step>.log`.', runner.temp) }}
+            - Update kind: `${{ steps.facts.outputs.update }}`.
+            - Fix rounds already pushed: ${{ steps.facts.outputs.fix-rounds }} of 2.
+            - Fix commits already on this branch:
+              ${{ steps.facts.outputs.fixes }}
 
-            1. Read the manifest and lockfile diff. List every package whose version
-               changed, with the old and new version.
-            2. For each one, find what actually changed upstream: release notes,
-               CHANGELOG, or the GitHub compare view between the two tags. Do not
-               speculate about a package you could not find notes for; say you could
-               not find them.
-            3. For each breaking or deprecating change, grep this repo for real
-               usage of the affected API. A breaking change the code never touches
-               is not a risk here, say so explicitly rather than alarming.
-            4. Write the report to `${{ runner.temp }}/deps-verdict.md`, in this
-               order:
+            Nothing is installed. Run a command only when you need to: to
+            reproduce a failure you are fixing, or to prove a fix. On a green
+            build that you do not change, run nothing. The repo's own
+            commands, runnable as they are. Source the env file first, and use
+            a subshell per command, install first:
+              env file:  ${{ steps.setup.outputs.env-file }}
+              install:   ${{ steps.setup.outputs.install }}
+              build:     ${{ steps.setup.outputs.build }}
+              typecheck: ${{ steps.setup.outputs.typecheck }}
+              test:      ${{ steps.setup.outputs.test }}
 
-               - One verdict line first, because "can this merge" is the only
-                 question most readers have:
-                 `**deps:verified** — build green, nothing breaking reaches this repo.`
-                 (bold label, then one plain sentence of why).
-               - Then a compact table, one row per package. Cells hold a few
-                 words, NEVER a sentence — a sentence in a cell wraps into an
-                 unreadable wall on GitHub:
+            ## Work
 
-                 | Package | Version | Change | Reach here |
-                 |---|---|---|---|
-                 | `example-pkg` | `8.2 → 9.0` | major, ESM-only | none, API unused |
+            1. List every direct dependency whose version changed, from the
+               manifest diff against `origin/${{ github.event.pull_request.base.ref }}`.
+               Count lockfile-only transitive changes, do not list them.
+            2. For a major, and for any package whose notes mention a deprecation
+               or removal, read the release notes or the compare view between
+               the two tags. Skip notes for a patch with nothing in its title.
+               Never guess about notes you could not find; say so.
+            3. Grep this repo for each breaking or deprecated API. A change the
+               code never touches is not a risk here.
+            4. If the build is red, read the logs FIRST. Decide for each failed
+               job or step: caused by this update, caused by the runner
+               (`red:infra`, exit 137, a killed process: never try to fix
+               those), or already failing on the base branch (check the base
+               branch's latest CI with `gh run list --branch ${{ github.event.pull_request.base.ref }}`
+               before reproducing anything).
+            5. Fix when the update caused the failure, or when this repo calls
+               an API the notes deprecate and name a replacement for, and only
+               while fix rounds are under 2:
+               - Make the smallest change that fixes it. Code only.
+               - NEVER edit a lockfile, a version catalog, or a dependency
+                 version in a manifest. Renovate chose those. A fix that needs
+                 a different version is a `needs-manual`, not a fix.
+               - Re-run the failed commands until they pass.
+               - Commit with `git commit -m "chore(deps): adapt to <pkg> <version>"`
+                 and a body of one or two lines naming what changed.
+               - Do NOT push. A later step checks and pushes your commits.
+            6. Write `${{ runner.temp }}/deps-verdict.json`:
+                 {"verdict": "verified" | "fixed" | "needs-manual", "reason": "<one line>"}
+               - `verified`: build green, nothing breaking reaches this repo.
+               - `fixed`: you committed a fix in this run and the commands pass.
+               - `needs-manual`: anything else. A red build you did not fix is
+                 always this, including one that was already red on the base.
+            7. Write `${{ runner.temp }}/deps-verdict.md`, the body of the PR
+               comment. The job writes the verdict line above it from the
+               JSON, so do not repeat the verdict or the reason. Hard limit
+               1000 characters. Exactly this shape:
 
-               - Then, only for a package with a story (major bump, breaking
-                 change, notes you could not find), a short section:
-                 `**example-pkg 8.2 → 9.0**` as a bold lead, followed by 2–4
-                 plain sentences: what changed upstream, whether this repo's
-                 code touches it, and a link to the release notes. A patch or
-                 minor bump with nothing notable gets a table row and no
-                 section.
+                 | Package | Version | Notes |
+                 |---|---|---|
+                 | `pkg` | `1.2.3 → 1.3.0` | minor |
 
-               Write the FILE. Do not comment on the pull request yourself. A
-               later step posts that file as a single comment and rewrites the
-               same comment on every future run, so Renovate pushing a new commit
-               refreshes the verdict instead of stacking another copy under it.
-               Your final message goes to the job summary, which is not where
-               anyone looks, so anything you leave out of the file is lost. This
-               job FAILS if the file is missing or empty.
+               - Notes cells hold a few words, never a sentence.
+               - Add `+ N transitive lockfile updates` under the table if any.
+               - More than 8 rows: put the table in `<details><summary>N packages</summary>`.
+               - For each fix commit, one line: `Fixed: <what changed> (<short sha>)`.
+               - For needs-manual, one line naming the blocker and the log line
+                 that shows it, in backticks.
+               - A major may add at most two sentences and a release-notes link.
+               - Nothing else. No headings, no closing summary, no advice.
 
-            Then apply exactly one label:
-              deps:verified      build green AND no breaking change reaches our usage
-              deps:breaking      a breaking change demonstrably reaches our usage
-              deps:needs-manual  build red, or you could not establish what changed
+            Write both files with the Write tool. The job posts the comment and
+            sets the label from them, and fails if either is missing.
+            Do not comment on, label, merge or approve the pull request yourself.
 
-            Do NOT merge, approve, or change mergeability. Reporting is the whole
-            job; the repo's existing automerge rules decide what lands.
+      # Minted after the agent, so no dependency script ever ran beside it.
+      - id: app-token
+        if: ${{ !cancelled() && env.HAS_APP == 'true' && steps.agent.outcome != 'skipped' }}
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id:    ${{ secrets.GH_APP_CLIENT_ID }}
+          private-key:  ${{ secrets.GH_APP_PRIVATE_KEY }}
+          owner:        ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
 
-            Be brief. If everything is clean, say so in two lines and stop. A long
-            report on a boring patch bump trains people to ignore the report.
+      # Only this step pushes. A push is refused, never forced, when:
+      #   - the fix-round cap is reached,
+      #   - a commit carries any other author,
+      #   - a fix touches a file Renovate's own commits changed, or any
+      #     lockfile or version catalog: the versions are Renovate's choice,
+      #   - the branch moved since checkout (Renovate pushed; the next run redoes it).
+      # A push with GITHUB_TOKEN would not start the checks on the new commit
+      # and is rejected by the rulesets, so no App means no push.
+      - id: push
+        if: ${{ !cancelled() && steps.agent.outcome != 'skipped' }}
+        env:
+          BASE_SHA: ${{ steps.facts.outputs.base-sha }}
+          ROUNDS:   ${{ steps.facts.outputs.fix-rounds }}
+          APP_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          set -euo pipefail
+          git reset -q --hard HEAD   # uncommitted edits are not part of a fix
+          new=$(git rev-list --count "$BASE_SHA..HEAD")
+          echo "pushed=false" >> "$GITHUB_OUTPUT"
+          if [ "$new" = 0 ]; then echo "no fix commits"; exit 0; fi
+          refuse() { echo "refused=$1" >> "$GITHUB_OUTPUT"; echo "::warning title=Fix not pushed::$1"; exit 0; }
+          [ "$ROUNDS" -ge 2 ] && refuse "fix-round cap of 2 reached"
+          others=$(git log --format='%ae' "$BASE_SHA..HEAD" | grep -vxF "$FIX_EMAIL" || true)
+          [ -n "$others" ] && refuse "a commit carries another author: $others"
+          renovate=$(git log --format='%H %ae' "origin/$BASE_REF..$BASE_SHA" \
+                     | while read -r c e; do [ "$e" = "$FIX_EMAIL" ] || git show --format= --name-only "$c"; done)
+          clash=$(git diff --name-only "$BASE_SHA" HEAD | while read -r f; do
+                    if printf '%s\n' "$renovate" | grep -qxF "$f" \
+                       || printf '%s' "$f" | grep -qE '(^|/)(bun\.lockb?|package-lock\.json|pnpm-lock\.yaml|yarn\.lock|Cargo\.lock|pubspec\.lock|Podfile\.lock|Package\.resolved|gradle\.lockfile|libs\.versions\.toml)$'; then
+                      echo "$f"
+                    fi
+                  done)
+          [ -n "$clash" ] && refuse "a fix touched a file whose versions Renovate owns: $(printf '%s ' "$clash" | tr '\n' ' ')"
+          # One commit per round, carrying the trailer the facts step counts.
+          first=$(git log --reverse --format='%s' "$BASE_SHA..HEAD" | head -n 1)
+          rest=$(git log --reverse --format='- %s' "$BASE_SHA..HEAD" | tail -n +2)
+          args=(-m "$first")
+          [ -n "$rest" ] && args+=(-m "$rest")
+          args+=(-m "Deps-Verify-Round: $(( ROUNDS + 1 ))")
+          git reset -q --soft "$BASE_SHA"
+          git commit -q "${args[@]}"
+          [ -z "${APP_TOKEN:-}" ] && refuse "GH_APP_CLIENT_ID is not set, and a GITHUB_TOKEN push starts no checks"
+          url="https://x-access-token:${APP_TOKEN}@github.com/${REPO}.git"
+          remote=$(git ls-remote "$url" "refs/heads/$HEAD_REF" | cut -f1)
+          [ "$remote" != "$BASE_SHA" ] && refuse "the branch moved since checkout"
+          git push -q "$url" "HEAD:refs/heads/$HEAD_REF"
+          echo "pushed=true" >> "$GITHUB_OUTPUT"
+          echo "::notice title=Fix pushed::Round $(( ROUNDS + 1 )). The push starts a fresh verification of the new head, which publishes the verdict."
+
+      # The label and the comment are set HERE, from the agent's files, never by
+      # the agent. One label, the others removed, so a PR never carries two
+      # verdicts. A build that is red and was not fixed is needs-manual whatever
+      # the agent wrote, and a branch that carries fix commits is `fixed`, never
+      # `verified`, so a later automerge rule can tell the two apart.
+      #
+      # Skipped when this run pushed: the push starts a new run on the new head,
+      # and that run's verdict is the one that counts.
+      - id: publish
+        if: ${{ !cancelled() && steps.agent.outcome != 'skipped' && steps.push.outputs.pushed != 'true' }}
+        env:
+          VERDICT:  ${{ steps.result.outputs.verdict }}
+          ROUNDS:   ${{ steps.facts.outputs.fix-rounds }}
+          REFUSED:  ${{ steps.push.outputs.refused }}
+          JSON:     ${{ runner.temp }}/deps-verdict.json
+          MD:       ${{ runner.temp }}/deps-verdict.md
+          COMMENT:  ${{ runner.temp }}/deps-comment.md
+          APP_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          set -euo pipefail
+          agent=$(jq -r '.verdict // empty' "$JSON" 2>/dev/null || true)
+          reason=$(jq -r '.reason // empty' "$JSON" 2>/dev/null || true)
+          missing=false
+          case "$agent" in verified|fixed|needs-manual) ;; *) missing=true ;; esac
+          [ -s "$MD" ] || missing=true
+
+          # The job's facts decide; the agent's word only counts when they agree.
+          if   [ "$VERDICT" != green ] || [ "$missing" = true ]; then label=needs-manual
+          elif [ "$agent" = needs-manual ]; then label=needs-manual
+          elif [ "$ROUNDS" -gt 0 ];         then label=fixed          # green, with fix commits on the branch
+          elif [ "$agent" = fixed ];        then label=needs-manual   # a fix that never reached the branch
+          else                                   label=verified
+          fi
+
+          {
+            if [ "$missing" = true ]; then
+              # shellcheck disable=SC2016  # the backticks are markdown
+              printf '**deps:%s** The verification agent wrote no report. Build: `%s`. See the run log.\n' "$label" "$VERDICT"
+            else
+              printf '**deps:%s** %s\n\n' "$label" "$reason"
+              cat "$MD"
+              [ -z "${REFUSED:-}" ] || printf '\nA fix was prepared but not pushed: %s.\n' "$REFUSED"
+            fi
+          } > "$COMMENT"
+
+          # Labels with the App's token when there is one, so a repo that has
+          # never seen `deps:fixed` gets it created on first use.
+          export GH_TOKEN="${APP_TOKEN:-$GH_TOKEN}"
+          gh label create "deps:$label" --repo "$REPO" --color ededed >/dev/null 2>&1 || true
+          for old in deps:verified deps:fixed deps:breaking deps:needs-manual; do
+            [ "$old" = "deps:$label" ] && continue
+            gh api -X DELETE "/repos/$REPO/issues/$PR/labels/$old" >/dev/null 2>&1 || true
+          done
+          gh api "/repos/$REPO/issues/$PR/labels" -f "labels[]=deps:$label" >/dev/null
+          echo "verdict label: deps:$label"
+          if [ "$missing" = true ]; then
+            echo "::error title=No verification report::The agent wrote no deps-verdict.json or deps-verdict.md, so a fallback comment was posted."
+            echo "failed=true" >> "$GITHUB_OUTPUT"
+          fi
 
       # One comment per pull request, rewritten by every later run. Renovate
       # rebases a long-lived PR repeatedly, and stacked verdict tables are how a
-      # report stops being read. sticky-comment FAILS on a missing or empty file,
-      # so a table that was never written cannot pass as SUCCESS.
-      - uses: dodi-smart/.github/actions/sticky-comment@v1
+      # report stops being read.
+      - if: ${{ !cancelled() && steps.publish.outcome == 'success' }}
+        uses: dodi-smart/.github/actions/sticky-comment@v1
         with:
           key:       deps-verify
           number:    ${{ github.event.pull_request.number }}
-          body-file: ${{ runner.temp }}/deps-verdict.md
+          body-file: ${{ runner.temp }}/deps-comment.md
 
-      # The other half. A comment with no label leaves nothing for automerge to
-      # read, exactly as a label with no comment leaves nothing for a person.
-      - name: The verdict was recorded as a label
-        env:
-          GH_TOKEN: ${{ github.token }}
-          REPO:     ${{ github.repository }}
-          PR:       ${{ github.event.pull_request.number }}
-        run: |
-          set -euo pipefail
-          label=$(gh api "/repos/$REPO/issues/$PR/labels" \
-                  --jq '[.[].name | select(. == "deps:verified" or . == "deps:breaking" or . == "deps:needs-manual")] | join(" ")')
-          if [ -z "$label" ]; then
-            echo "::error title=Dependency verification recorded no verdict::The agent ran and wrote its table, but applied no deps:* label, so nothing downstream can act on it."
-            exit 1
-          fi
-          echo "verdict label: $label"
+      - if: ${{ !cancelled() && steps.publish.outputs.failed == 'true' }}
+        run: exit 1

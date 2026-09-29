@@ -103,8 +103,9 @@ jobs:
       id-token: write
       actions: read
     steps:
-      - uses: actions/checkout@v7
-        with: { fetch-depth: 1, persist-credentials: false }
+      # Credentials persist on purpose: the action runs `git fetch` from this checkout before the agent starts.
+      - uses: actions/checkout@v7 # zizmor: ignore[artipacked]
+        with: { fetch-depth: 1 }
 
       # No `prompt`. With none supplied the action follows the instruction in
       # the comment that mentioned it, which is the point of this workflow.

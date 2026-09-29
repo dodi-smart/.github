@@ -43,6 +43,55 @@ check "human quote does not shadow"    review 31 "[$(human 30 "quoting $M"),$(bo
 # The API omits body on a deleted comment; `.body // ""` must not blow up.
 check "missing body field"          review ""  '[{"id":40,"user":{"type":"Bot"}}]'
 
+# Whole-script runs against a fake `gh`, so argument handling and delete mode
+# are checked without the API. The fake serves $COMMENTS for a read and logs
+# every DELETE it is asked to make.
+TMP="$(mktemp -d "${TMPDIR:-/tmp}/sticky-test.XXXXXX")"
+trap 'rm -rf "$TMP"' EXIT
+mkdir "$TMP/bin"
+cat > "$TMP/bin/gh" <<'FAKE'
+#!/usr/bin/env bash
+case "$*" in
+  *"-X DELETE"*) echo "$*" >> "$CALLS" ;;
+  *"/comments?per_page"*) printf '%s' "$COMMENTS" ;;
+  *) echo "unexpected gh call: $*" >&2; exit 1 ;;
+esac
+FAKE
+chmod +x "$TMP/bin/gh"
+
+# $1 name, $2 want exit code, $3 want action output, $4 want DELETE calls,
+# $5 comments JSON; the rest is extra environment for the run.
+run() {
+  local name="$1" want_rc="$2" want_action="$3" want_calls="$4" rc action calls
+  : > "$TMP/out"; : > "$TMP/calls"
+  env PATH="$TMP/bin:$PATH" GITHUB_OUTPUT="$TMP/out" CALLS="$TMP/calls" COMMENTS="$5" \
+    KEY=review REPO=o/r NUMBER=7 "${@:6}" "$HERE/sticky.sh" >"$TMP/log" 2>&1
+  rc=$?
+  action="$(grep '^action=' "$TMP/out" | cut -d= -f2)"
+  calls="$(wc -l < "$TMP/calls" | tr -d ' ')"
+  if [ "$rc" = "$want_rc" ] && [ "$action" = "$want_action" ] && [ "$calls" = "$want_calls" ]; then
+    printf '  ok   %-42s rc=%s action=%s deletes=%s\n' "$name" "$rc" "${action:-<none>}" "$calls"; pass=$((pass + 1))
+  else
+    printf '  FAIL %-42s rc=%s action=%s deletes=%s (wanted %s %s %s)\n' "$name" "$rc" "${action:-<none>}" "$calls" "$want_rc" "${want_action:-<none>}" "$want_calls"
+    fail=$((fail + 1))
+  fi
+}
+
+: > "$TMP/empty"
+CS="[$(bot 11 "$M b")]"
+
+# A run that writes has to name a body, and the file has to exist and have content.
+run "no body-file, not delete"             1 ""      0 "[]" BODY_FILE=
+run "body-file missing"                    1 ""      0 "[]" BODY_FILE="$TMP/nope"
+run "body-file empty"                      1 ""      0 "[]" BODY_FILE="$TMP/empty"
+
+# Delete mode needs no body, removes the bot's comment, and leaves a person's alone.
+run "delete, no body-file, comment found"  0 deleted 1 "$CS" DELETE=true
+run "delete, nothing to delete"            0 none    0 "[]" DELETE=true
+run "delete ignores a missing body-file"   0 none    0 "[]" DELETE=true BODY_FILE="$TMP/nope"
+run "delete leaves a human quote alone"    0 none    0 "[$(human 30 "quoting $M")]" DELETE=true
+run "delete touches only its own key"      0 none    0 "[$(bot 20 "$N t")]" DELETE=true
+
 echo
 echo "pass=$pass fail=$fail"
 [ "$fail" -eq 0 ]

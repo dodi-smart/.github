@@ -69,6 +69,7 @@ fi
 # person's PR review never reaches an issue agent. It sits after the kill
 # switch and can only stop a run, never start one.
 if [ -n "${EVENTS:-}" ]; then
+  # shellcheck disable=SC2153  # EVENT and EVENTS are two inputs, not a typo
   case " $EVENTS " in
     *" $EVENT "*) : ;;
     *) stop "event $EVENT is not one this workflow handles ($EVENTS)" ;;

@@ -1,3 +1,16 @@
+## [1.12.2](https://github.com/dodi-smart/.github/compare/v1.12.1...v1.12.2) (2026-09-29)
+
+### ⚡ Performance Improvements
+
+* **setup-stack:** cache Gradle and Kotlin/Native on self-hosted macOS ([dca11d6](https://github.com/dodi-smart/.github/commit/dca11d60724ff5a275ac40d6c1e7d1571577dc9f))
+
+## [1.12.1](https://github.com/dodi-smart/.github/compare/v1.12.0...v1.12.1) (2026-09-29)
+
+### ⚡ Performance Improvements
+
+* **release:** add release-tooling, semantic-release installed in a private prefix from a lockfile ([33f0db3](https://github.com/dodi-smart/.github/commit/33f0db3e77e17a2185e1d724d05e01d74d48ddd1))
+* **release:** use release-tooling and run the backmerge inside the release job ([a5fbc71](https://github.com/dodi-smart/.github/commit/a5fbc715cd6ada0e7f181aaf538578e9fe945358))
+
 ## [1.12.0](https://github.com/dodi-smart/.github/compare/v1.11.0...v1.12.0) (2026-09-29)
 
 ### ✨ Features

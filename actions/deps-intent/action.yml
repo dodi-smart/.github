@@ -1,0 +1,61 @@
+# Decide whether deps-verify has anything new to judge on this push.
+# Thin wrapper, so a workflow can reach the script; the rules and the reasoning
+# are in intent.sh.
+name: Dependency intent
+description: Hash a dependency PR's diff and decide whether its verification can be skipped.
+
+inputs:
+  base-ref:
+    description: 'Base branch of the pull request'
+    required: true
+  head-sha:
+    description: 'Head commit of the pull request'
+    required: true
+  number:
+    description: 'Pull request number'
+    required: true
+  title:
+    description: 'Pull request title, to tell lock file maintenance apart'
+    default: ''
+  labels:
+    description: "JSON array of the pull request's label names"
+    required: true
+  verdict:
+    description: 'green, or red:<what failed>. Empty when the build is not known yet, which never skips.'
+    default: ''
+  repository:
+    description: 'owner/repo'
+    default: ${{ github.repository }}
+  token:
+    description: 'Token that reads the repository and pull request comments.'
+    default: ${{ github.token }}
+
+outputs:
+  judge:
+    description: 'skip | lockfile | agent'
+    value: ${{ steps.intent.outputs.judge }}
+  intent:
+    description: 'Hash of the diff, empty when only lockfiles changed. Publish records it in the comment.'
+    value: ${{ steps.intent.outputs.intent }}
+  update:
+    description: 'major | lockfile | other'
+    value: ${{ steps.intent.outputs.update }}
+  reason:
+    description: 'Why that judge, for the log'
+    value: ${{ steps.intent.outputs.reason }}
+
+runs:
+  using: composite
+  steps:
+    - id: intent
+      shell: bash
+      env:
+        BASE_REF: ${{ inputs.base-ref }}
+        HEAD_SHA: ${{ inputs.head-sha }}
+        NUMBER:   ${{ inputs.number }}
+        TITLE:    ${{ inputs.title }}
+        LABELS:   ${{ inputs.labels }}
+        VERDICT:  ${{ inputs.verdict }}
+        REPO:     ${{ inputs.repository }}
+        GH_TOKEN: ${{ inputs.token }}
+      run: ${{ github.action_path }}/intent.sh run

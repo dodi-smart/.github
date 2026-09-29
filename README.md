@@ -229,6 +229,7 @@ The log shows the deployment id and commit before the routes are probed.
 | `actions/run-agent` | Invokes the agent with the org's tool allowlist and reporting defaults |
 | `actions/setup-stack` | Installs a toolchain, resolves cache isolation, supplies conventional commands |
 | `actions/sticky-comment` | One keyed comment per pull request, rewritten in place on every later run |
+| `actions/deps-intent` | Decides from a dependency PR's diff whether `deps-verify.yml` has anything new to judge. Internal to that workflow |
 | `actions/release-tooling` | Installs semantic-release and its default plugins from a pinned lockfile into a private prefix, cached on the lockfile hash, and puts `semantic-release` on `PATH` |
 | `actions/semantic-release-config` | Links the shared semantic-release config into a consumer's `node_modules` from a private prefix, never from a registry and never into the checkout it came with |
 | `actions/changed-files` | A pull request's changed files through the API, with no checkout, and whether any, or every one, match a set of globs |
@@ -560,13 +561,21 @@ branch (it publishes no version tags), and Renovate can still move that pin.
 - **Verification jobs isolate.** `deps-verify` pins caches to `RUNNER_TEMP` with
   GitHub cache off, because a verification job that can see yesterday's tree is
   not verifying.
-- **Self-hosted uses home dirs**, so the per-runner named volumes are actually
-  read. GitHub cache stays off there.
+- **Self-hosted Linux uses home dirs**, so the per-runner named volumes are
+  actually read. GitHub cache stays off there.
+- **Self-hosted macOS caches like hosted.** Those runners are image-based VMs
+  that start every job with an empty home, so `cache: auto` is true there and
+  nothing else would persist.
 - **`~/.pub-cache` is job-scoped in every mode.** A home dir is only worth using
   if a volume backs it, and the image mounts none for pub.
 - **Hosted uses one mechanism per stack**, `setup-gradle` / `rust-cache` /
   `flutter-action`. Never a package store, and never `restore-keys` on one, which
   is how a partial tarball comes back on every retry.
+- **Gradle repos with a cache on** get `setup-gradle`, including `stack: xcode`
+  when the repo has a root `gradlew`. A repo whose `gradle/libs.versions.toml`
+  names the multiplatform plugin and a `kotlin` version also caches `~/.konan`,
+  Kotlin/Native's toolchain, keyed on OS, arch and that version. Both need the repo checked out
+  before `setup-stack`.
 
 **Never cache a project build directory.** Not `build/`, not `*/build`, not
 `.gradle`. `*/build/intermediates` holds absolute paths and the workspace root is
@@ -894,6 +903,26 @@ The rules on fixes:
 
 A red build is `needs-manual` even when the agent finds the cause was already on
 the base branch. The comment says so in one line.
+
+Which runner it takes:
+
+- **A green build waits and reads on a light runner.** A `wait` job starts on the
+  light pool, polls the `pr-checks` run and decides the verdict. The `verify` job
+  then runs on the light pool too when the verdict is green, so a green PR never
+  holds a heavy slot. It takes the heavy pool only to build or fix: a red or
+  infra verdict, or a repo with no `pr-checks` that builds here. With an `apple`
+  or `hosted` `runner-weight`, or explicit `runner-labels`, there is no lighter
+  pool, so both jobs use that selector.
+- **A rebase of an unchanged update runs nothing.** `wait` hashes the changed lines
+  of every file except lockfiles and records the hash in the comment. When the
+  build is green, the PR already carries `deps:verified` (or `deps:fixed` with its
+  fix commits still on the branch) and the hash is the same, `verify` does not
+  start, and the label and comment stay. A changed diff, a missing record, or any
+  red build goes to the agent, as does a repo that builds here, since there is no
+  verdict to trust yet.
+- **Lock file maintenance is judged by the build.** A green build with only
+  lockfiles changed gets `deps:verified` and a one-line comment, with no agent.
+  A red one goes to the agent as before.
 
 `env` and `build-env` mean what they mean in `pr-checks`: same format, same
 parser, and `build-env` reaches the build command only. They matter when the

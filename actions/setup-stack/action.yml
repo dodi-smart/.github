@@ -9,8 +9,11 @@
 #   isolate=true             -> RUNNER_TEMP dirs, GitHub cache off (deps-verify)
 #   self-hosted Linux ARM64  -> isolated anyway; matches no runner today, and is
 #                               kept because it describes a class of machine
-#   self-hosted X64          -> home dirs, GitHub cache off; the named volume
+#   self-hosted Linux X64    -> home dirs, GitHub cache off; the named volume
 #                               the runner image mounts IS the cache
+#   self-hosted macOS        -> home dirs, and cache=auto becomes true: the
+#                               runners are image-based VMs that start every job
+#                               with an empty home, so no volume backs anything
 #   github-hosted            -> home dirs, and cache=auto becomes true
 #
 # Two rules that are easy to undo by accident:
@@ -20,7 +23,8 @@
 #
 #   Hosted GitHub cache is ONE mechanism per stack (setup-gradle / rust-cache /
 #   flutter-action). Never a package store, and never restore-keys on one, which
-#   is how a poisoned entry reimports.
+#   is how a poisoned entry reimports. The one extra cache, ~/.konan, is a
+#   toolchain download (Kotlin/Native's LLVM), not a store: exact key, no restore-keys.
 name: Setup stack
 description: Install the toolchain for a stack and resolve its package-cache mode.
 
@@ -61,14 +65,15 @@ inputs:
     description: >-
       Pin package caches to RUNNER_TEMP and disable GitHub cache. Forced on for
       self-hosted Linux ARM64. Default false: X64 self-hosted uses home dirs
-      backed by named volumes, hosted uses home dirs plus the toolchain cache
-      actions. PUB_CACHE is job-scoped either way.
+      backed by named volumes, hosted and macOS self-hosted use home dirs plus
+      the toolchain cache actions. PUB_CACHE is job-scoped either way.
     default: 'false'
   cache:
     description: >-
-      auto | true | false. auto becomes true only on github-hosted, and is
-      ignored when isolated or on self-hosted (those never use GitHub cache).
-      Applies to setup-gradle / rust-cache / flutter-action only, never bun.
+      auto | true | false. auto becomes true on github-hosted and on self-hosted
+      macOS (ephemeral VMs), and is ignored when isolated or on self-hosted
+      Linux (persistent volumes are the cache there). Applies to setup-gradle /
+      rust-cache / flutter-action and the Kotlin/Native toolchain cache, never bun.
     default: 'auto'
 
   env:
@@ -168,11 +173,14 @@ runs:
           do_isolate=true
         fi
 
-        # GitHub Actions cache: never when isolated, never on self-hosted.
-        # auto becomes true only on github-hosted. An unknown environment falls
-        # through to hosted, so a job that lands on ubuntu-latest still caches.
+        # GitHub Actions cache: never when isolated, never on self-hosted Linux
+        # (a persistent volume is the cache there). self-hosted macOS is an
+        # ephemeral VM with an empty home per job, so it caches like hosted.
+        # An unknown environment falls through to hosted, so a job that lands
+        # on ubuntu-latest still caches.
         cache_enabled=false
-        if [ "$do_isolate" != "true" ] && [ "${RUNNER_ENVIRONMENT:-}" != "self-hosted" ]; then
+        if [ "$do_isolate" != "true" ] \
+          && { [ "${RUNNER_ENVIRONMENT:-}" != "self-hosted" ] || [ "${RUNNER_OS:-}" = "macOS" ]; }; then
           if [ "$CACHE" = "true" ] || [ "$CACHE" = "auto" ]; then
             cache_enabled=true
           fi
@@ -230,6 +238,18 @@ runs:
         # No cache: npm. Hosted cache is one mechanism per stack, and this
         # action never uploads a package store under restore-keys.
 
+    # Reads the checkout, never runs Gradle. The Kotlin version keys the
+    # Kotlin/Native cache, and only a multiplatform catalog has one to cache.
+    - id: gradle
+      if: inputs.stack == 'gradle' || inputs.stack == 'android' || inputs.stack == 'xcode'
+      shell: bash
+      run: |
+        [ -f gradlew ] && echo "gradle=true" >> "$GITHUB_OUTPUT"
+        cat=gradle/libs.versions.toml
+        if [ -f "$cat" ] && grep -q multiplatform "$cat"; then
+          sed -n 's/^[[:space:]]*kotlin[[:space:]]*=[[:space:]]*"\([^"]*\)".*/kotlin=\1/p' "$cat" | head -n 1 >> "$GITHUB_OUTPUT"
+        fi
+
     - if: (inputs.stack == 'gradle' || inputs.stack == 'android') || (inputs.stack == 'flutter' && inputs.java-version != '')
       uses: actions/setup-java@v6
       with:
@@ -237,13 +257,24 @@ runs:
         distribution: temurin
         # No cache: gradle. The hosted Gradle cache is setup-gradle's job.
 
-    - if: inputs.stack == 'gradle' || inputs.stack == 'android'
+    # xcode joins when the repo has a gradlew: a KMP iOS job calls it itself.
+    # setup-gradle only caches ~/.gradle here, so it needs no JDK.
+    - if: inputs.stack == 'gradle' || inputs.stack == 'android' || steps.gradle.outputs.gradle == 'true'
       uses: gradle/actions/setup-gradle@v6
       with:
         # Publishing a build scan from a verification job leaks the dependency
         # graph of a private repo to a third party. Off unless a repo opts in.
         build-scan-publish: false
         cache-disabled: ${{ steps.resolve.outputs.cache_enabled != 'true' }}
+
+    # ~/.konan holds Kotlin/Native's LLVM and libffi, about a minute of download
+    # per job. A toolchain, not a package store, so an exact key and no
+    # restore-keys: a new Kotlin version is a new entry, never a partial one.
+    - if: steps.resolve.outputs.cache_enabled == 'true' && steps.gradle.outputs.kotlin != ''
+      uses: actions/cache@v6
+      with:
+        path: ~/.konan
+        key: konan-${{ runner.os }}-${{ runner.arch }}-${{ steps.gradle.outputs.kotlin }}
 
     - if: inputs.stack == 'android'
       uses: android-actions/setup-android@v4

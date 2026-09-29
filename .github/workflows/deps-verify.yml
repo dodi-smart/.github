@@ -81,7 +81,8 @@ jobs:
       proceed: ${{ steps.gate.outputs.proceed }}
       dependency-bots: ${{ steps.gate.outputs.dependency-bots }}
       stack:   ${{ steps.stack.outputs.stack }}
-      runner:  ${{ steps.pick.outputs.runner }}
+      light:   ${{ steps.pick-light.outputs.runner }}
+      heavy:   ${{ steps.pick-heavy.outputs.runner }}
     steps:
       # `bots: only` is the inverse of every other agent workflow: this one runs
       # for Renovate and Dependabot and nothing else. It also absorbs the author
@@ -118,7 +119,22 @@ jobs:
 
       # Only when the run above is still proceeding: a human-authored PR (this
       # workflow runs for bots only) must never pay for a hosted picker.
-      - id: pick
+      #
+      # Both pools are picked here, because the wait job below runs on light and
+      # the verify job takes heavy only when there is something to build. The
+      # action caches the fleet listing, so the second call costs no API calls.
+      # An `apple` or `hosted` weight, or an explicit selector, has no lighter
+      # pool to wait on (the light pool cannot run Xcode), so light follows it.
+      - id: pick-light
+        if: steps.gate.outputs.proceed == 'true'
+        uses: dodi-smart/.github/actions/pick-runner@v1
+        with:
+          weight:             ${{ (inputs.runner-weight == 'apple' || inputs.runner-weight == 'hosted') && inputs.runner-weight || 'light' }}
+          labels:             ${{ inputs.runner-labels }}
+          gh-app-client-id:   ${{ secrets.GH_APP_CLIENT_ID }}
+          gh-app-private-key: ${{ secrets.GH_APP_PRIVATE_KEY }}
+
+      - id: pick-heavy
         if: steps.gate.outputs.proceed == 'true'
         uses: dodi-smart/.github/actions/pick-runner@v1
         with:
@@ -127,114 +143,38 @@ jobs:
           gh-app-client-id:   ${{ secrets.GH_APP_CLIENT_ID }}
           gh-app-private-key: ${{ secrets.GH_APP_PRIVATE_KEY }}
 
-  # ONE job: the build verdict (read from the repo's pr-checks run, or built
-  # here when there is none), then the agent, then a deterministic push and
-  # publish. The order inside the job is the rule: nothing below the verdict
-  # steps can run before there is a verdict.
-  #
-  # Waiting for pr-checks holds this runner idle for a few minutes. That is the
-  # price of not running a second build of the same commit beside it.
-  verify:
+  # Waits for the caller's pr-checks run on a LIGHT runner, decides the build
+  # verdict, and decides whether `verify` runs at all (actions/deps-intent). A
+  # run that died of the runner is re-run ONCE, failed jobs only.
+  wait:
     needs: [gate]
     if: needs.gate.outputs.proceed == 'true'
-    runs-on: ${{ fromJson(needs.gate.outputs.runner) }}
+    runs-on: ${{ fromJson(needs.gate.outputs.light) }}
     timeout-minutes: 120
     permissions:
-      contents: read
-      pull-requests: write
-      id-token: write
-      actions: write   # read the pr-checks run, and re-run it once after an infra failure
+      contents: read        # the compare API
+      pull-requests: read   # the verdict comment
+      actions: write        # read the pr-checks run, and re-run it once after an infra failure
+    outputs:
+      mode:    ${{ steps.ci.outputs.mode }}        # own | ci
+      verdict: ${{ steps.ci.outputs.verdict }}     # ci mode only; own mode is decided by the build
+      url:     ${{ steps.ci.outputs.url }}
+      run-id:  ${{ steps.ci.outputs.run-id }}
+      judge:   ${{ steps.judge.outputs.judge }}    # skip | lockfile | agent
+      intent:  ${{ steps.judge.outputs.intent }}
+      update:  ${{ steps.judge.outputs.update }}   # major | lockfile | other
     env:
       GH_TOKEN: ${{ github.token }}
       REPO:     ${{ github.repository }}
-      PR:       ${{ github.event.pull_request.number }}
-      HEAD_REF: ${{ github.event.pull_request.head.ref }}
-      BASE_REF: ${{ github.event.pull_request.base.ref }}
-      # The identity every fix commit carries. It is also the author the shared
-      # Renovate preset lists under gitIgnoredAuthors, so Renovate keeps owning
-      # a branch this job has committed to. Change both together.
-      FIX_NAME:  github-actions[bot]
-      FIX_EMAIL: 41898282+github-actions[bot]@users.noreply.github.com
-      # Hoisted: the secrets context is not available in a step-level `if:`.
-      HAS_APP: ${{ secrets.GH_APP_CLIENT_ID != '' }}
     steps:
-      # The PR BRANCH, not the merge ref: a fix is committed on top of it.
-      # No credentials persist. Dependency install scripts run below, and a
-      # token they could read is a token they could push with. The push token
-      # is minted after the agent, for one step.
+      # Only the workflow files, to see who calls pr-checks. No credentials
+      # persist, and nothing from the PR is installed or run here.
       - uses: actions/checkout@v7
         with:
           ref: ${{ github.event.pull_request.head.ref }}
-          fetch-depth: 0
-          filter: blob:none   # history for the range below, blobs on demand
+          sparse-checkout: .github/workflows
           persist-credentials: false
 
-      # Toolchain only. setup-stack resolves the commands and installs nothing,
-      # so the green path below never pays for an install. Isolation is
-      # hard-coded, never a caller input: a verification job that can see
-      # yesterday's tree is not verifying.
-      - id: setup
-        uses: dodi-smart/.github/actions/setup-stack@v1
-        with:
-          stack:           ${{ needs.gate.outputs.stack }}
-          isolate:         true
-          cache:           false
-          env:             ${{ inputs.env }}
-          build-env:       ${{ inputs.build-env }}
-          install:         ${{ inputs.install }}
-          build:           ${{ inputs.build }}
-          typecheck:       ${{ inputs.typecheck }}
-          test:            ${{ inputs.test }}
-          java-version:    ${{ inputs.java-version }}
-          node-version:    ${{ inputs.node-version }}
-          bun-version:     ${{ inputs.bun-version }}
-          flutter-version: ${{ inputs.flutter-version }}
-          rust-toolchain:  ${{ inputs.rust-toolchain }}
-
-      # Facts the agent and the publish step both need, computed once.
-      #   update:     major | lockfile | other, from Renovate's own labels/title
-      #   fix-rounds: fix commits this job pushed to the branch. The push step
-      #               writes each round as ONE commit with a Deps-Verify-Round
-      #               trailer, so the count never depends on a subject the
-      #               agent chose.
-      #   base-sha:   the head before the agent, so its commits can be isolated
-      # It also sets the commit identity, before the agent can commit anything.
-      - id: facts
-        env:
-          TITLE:  ${{ github.event.pull_request.title }}
-          LABELS: ${{ toJson(github.event.pull_request.labels.*.name) }}
-        run: |
-          set -euo pipefail
-          git config user.name  "$FIX_NAME"
-          git config user.email "$FIX_EMAIL"
-          update=other
-          printf '%s' "$TITLE" | grep -qi 'lock file maintenance' && update=lockfile
-          printf '%s' "$LABELS" | jq -e 'index("deps:major")' >/dev/null && update=major
-          # Only commits this PR adds: a fix merged with an earlier PR is in the
-          # base branch's history and is not a round spent on this one.
-          fixes=$(git log --format='%h %s%x09%(trailers:key=Deps-Verify-Round,valueonly,separator=)' \
-                    "origin/$BASE_REF..HEAD" | awk -F'\t' '$2 != "" { print $1 }')
-          rounds=$(printf '%s' "$fixes" | grep -c . || true)
-          {
-            echo "update=$update"
-            echo "fix-rounds=$rounds"
-            echo "base-sha=$(git rev-parse HEAD)"
-            echo "fixes<<EOF_FIXES"
-            printf '%s\n' "${fixes:-none}"
-            echo "EOF_FIXES"
-          } >> "$GITHUB_OUTPUT"
-          echo "update=$update fix-rounds=$rounds"
-
-      # The repo's own CI is the build verdict. Building here as well ran a
-      # second full build of the same commit at the same moment, on the same
-      # runner hosts, and the pair ran out of memory. So when the repo calls
-      # the shared pr-checks, this waits for that run on this exact commit and
-      # reads it. Whether it calls it is read from the repo's own workflow
-      # files, never guessed from a timer.
-      #
-      # A run that died of the runner (exit 137, a killed daemon, a lost
-      # runner, a full disk) says nothing about the update, so it is re-run
-      # ONCE, failed jobs only. A second infra failure is reported as such.
       - id: ci
         env:
           SHA:         ${{ github.event.pull_request.head.sha }}
@@ -299,17 +239,135 @@ jobs:
             wait_ci || conclusion=timeout
           fi
 
-          failed=""
-          if [ "$conclusion" != success ] && [ -n "$id" ]; then
-            fetch_log
-            failed=$(gh api "/repos/$REPO/actions/runs/$id/jobs" \
-                     --jq '[.jobs[] | select(.conclusion == "failure") | .name] | join(", ")' || true)
-            if infra; then out infra=true; fi
+          # One verdict string: green | red:<failed jobs> | red:infra (the runner
+          # failed twice). Decided here so `verify` can pick its runner from it.
+          v=green
+          if [ "$conclusion" != success ]; then
+            v="red:$conclusion"
+            if [ -n "$id" ]; then
+              fetch_log
+              if infra; then
+                v=red:infra
+              else
+                failed=$(gh api "/repos/$REPO/actions/runs/$id/jobs" \
+                         --jq '[.jobs[] | select(.conclusion == "failure") | .name] | join(", ")' || true)
+                v="red:${failed:-$conclusion}"
+              fi
+            fi
           fi
-          out "conclusion=$conclusion"
-          out "failed=$failed"
+          out "verdict=$v"
           out "url=$url"
-          echo "pr-checks: $conclusion (attempt $attempt) $url ${failed:+failed: $failed}"
+          out "run-id=$id"
+          echo "pr-checks: $conclusion (attempt $attempt) $url"
+          echo "verdict: $v"
+
+      # Ends the run here when nothing new is left to judge. With no verdict yet
+      # (a repo that builds in `verify`) the answer is always the agent.
+      - id: judge
+        uses: dodi-smart/.github/actions/deps-intent@v1
+        with:
+          base-ref: ${{ github.event.pull_request.base.ref }}
+          head-sha: ${{ github.event.pull_request.head.sha }}
+          number:   ${{ github.event.pull_request.number }}
+          title:    ${{ github.event.pull_request.title }}
+          labels:   ${{ toJson(github.event.pull_request.labels.*.name) }}
+          verdict:  ${{ steps.ci.outputs.verdict }}
+
+  # The build (here, when the repo has no pr-checks), the agent, then a
+  # deterministic push and publish. A green verdict stays on the light pool;
+  # anything that needs a build or a fix takes the heavy one.
+  verify:
+    needs: [gate, wait]
+    if: needs.gate.outputs.proceed == 'true' && needs.wait.outputs.judge != 'skip'
+    runs-on: ${{ fromJson(needs.wait.outputs.verdict == 'green' && needs.gate.outputs.light || needs.gate.outputs.heavy) }}
+    timeout-minutes: 120
+    permissions:
+      contents: read
+      pull-requests: write
+      id-token: write
+      actions: read   # the failed jobs' logs of the pr-checks run
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPO:     ${{ github.repository }}
+      PR:       ${{ github.event.pull_request.number }}
+      HEAD_REF: ${{ github.event.pull_request.head.ref }}
+      BASE_REF: ${{ github.event.pull_request.base.ref }}
+      # The identity every fix commit carries. It is also the author the shared
+      # Renovate preset lists under gitIgnoredAuthors, so Renovate keeps owning
+      # a branch this job has committed to. Change both together.
+      FIX_NAME:  github-actions[bot]
+      FIX_EMAIL: 41898282+github-actions[bot]@users.noreply.github.com
+      # Hoisted: the secrets context is not available in a step-level `if:`.
+      HAS_APP: ${{ secrets.GH_APP_CLIENT_ID != '' }}
+    steps:
+      # The PR BRANCH, not the merge ref: a fix is committed on top of it.
+      # No credentials persist. Dependency install scripts run below, and a
+      # token they could read is a token they could push with. The push token
+      # is minted after the agent, for one step.
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.ref }}
+          fetch-depth: 0
+          filter: blob:none   # history for the range below, blobs on demand
+          persist-credentials: false
+
+      # Toolchain only. setup-stack resolves the commands and installs nothing,
+      # so the green path below never pays for an install. Isolation is
+      # hard-coded, never a caller input: a verification job that can see
+      # yesterday's tree is not verifying.
+      - id: setup
+        uses: dodi-smart/.github/actions/setup-stack@v1
+        with:
+          stack:           ${{ needs.gate.outputs.stack }}
+          isolate:         true
+          cache:           false
+          env:             ${{ inputs.env }}
+          build-env:       ${{ inputs.build-env }}
+          install:         ${{ inputs.install }}
+          build:           ${{ inputs.build }}
+          typecheck:       ${{ inputs.typecheck }}
+          test:            ${{ inputs.test }}
+          java-version:    ${{ inputs.java-version }}
+          node-version:    ${{ inputs.node-version }}
+          bun-version:     ${{ inputs.bun-version }}
+          flutter-version: ${{ inputs.flutter-version }}
+          rust-toolchain:  ${{ inputs.rust-toolchain }}
+
+      # Facts the agent and the publish step both need, computed once.
+      #   fix-rounds: fix commits this job pushed to the branch. The push step
+      #               writes each round as ONE commit with a Deps-Verify-Round
+      #               trailer, so the count never depends on a subject the
+      #               agent chose.
+      #   base-sha:   the head before the agent, so its commits can be isolated
+      # It also sets the commit identity, before the agent can commit anything.
+      - id: facts
+        run: |
+          set -euo pipefail
+          git config user.name  "$FIX_NAME"
+          git config user.email "$FIX_EMAIL"
+          # Only commits this PR adds: a fix merged with an earlier PR is in the
+          # base branch's history and is not a round spent on this one.
+          fixes=$(git log --format='%h %s%x09%(trailers:key=Deps-Verify-Round,valueonly,separator=)' \
+                    "origin/$BASE_REF..HEAD" | awk -F'\t' '$2 != "" { print $1 }')
+          rounds=$(printf '%s' "$fixes" | grep -c . || true)
+          {
+            echo "fix-rounds=$rounds"
+            echo "base-sha=$(git rev-parse HEAD)"
+            echo "fixes<<EOF_FIXES"
+            printf '%s\n' "${fixes:-none}"
+            echo "EOF_FIXES"
+          } >> "$GITHUB_OUTPUT"
+          echo "fix-rounds=$rounds"
+
+      # Logs do not cross jobs, so a red pr-checks verdict fetches the failed
+      # jobs' logs here, where the agent reads them.
+      - if: needs.wait.outputs.mode == 'ci' && needs.wait.outputs.verdict != 'green' && needs.wait.outputs.run-id != ''
+        env:
+          RUN_ID: ${{ needs.wait.outputs.run-id }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/deps-logs"
+          gh run view "$RUN_ID" --repo "$REPO" --log-failed > "$RUNNER_TEMP/deps-logs/ci.log" 2>&1 || true
 
       # Only when there is no pr-checks run to read. Every command runs in its
       # OWN subshell: one shell for all of them let a caller's `cd app && ...`
@@ -318,7 +376,7 @@ jobs:
       # log, not from a step name. `build-env` is exported for the build step
       # only, exactly as pr-checks does.
       - id: steps
-        if: steps.ci.outputs.mode == 'own'
+        if: needs.wait.outputs.mode == 'own'
         continue-on-error: true
         env:
           ENV_FILE:       ${{ steps.setup.outputs.env-file }}
@@ -358,23 +416,19 @@ jobs:
 
       # One verdict string, whichever source produced it:
       #   green | red:<steps or jobs> | red:infra (the runner failed twice)
+      # The wait job decided it from the pr-checks run. Only a repo with no
+      # pr-checks is decided here, from its own build.
       - id: result
         env:
-          MODE:       ${{ steps.ci.outputs.mode }}
-          CONCLUSION: ${{ steps.ci.outputs.conclusion }}
-          CI_FAILED:  ${{ steps.ci.outputs.failed }}
-          INFRA:      ${{ steps.ci.outputs.infra }}
-          OWN_FAILED: ${{ steps.steps.outputs.failed }}
+          MODE:        ${{ needs.wait.outputs.mode }}
+          WAIT_RESULT: ${{ needs.wait.outputs.verdict }}
+          OWN_FAILED:  ${{ steps.steps.outputs.failed }}
         run: |
           set -euo pipefail
           if [ "$MODE" = own ]; then
             v=green; [ -n "${OWN_FAILED:-}" ] && v="red:$OWN_FAILED"
-          elif [ "$CONCLUSION" = success ]; then
-            v=green
-          elif [ "${INFRA:-}" = true ]; then
-            v=red:infra
           else
-            v="red:${CI_FAILED:-$CONCLUSION}"
+            v="$WAIT_RESULT"
           fi
           echo "verdict=$v" >> "$GITHUB_OUTPUT"
           echo "verdict: $v"
@@ -392,10 +446,11 @@ jobs:
       # "Workflow initiated by non-human actor", and every run here is
       # bot-initiated. Named explicitly rather than '*', from the gate's list.
       - id: agent
+        if: needs.wait.outputs.judge == 'agent'
         uses: dodi-smart/.github/actions/run-agent@v1
         with:
           oauth-token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          model: ${{ (steps.result.outputs.verdict != 'green' || steps.facts.outputs.update == 'major') && 'claude-opus-5' || 'claude-sonnet-5' }}
+          model: ${{ (steps.result.outputs.verdict != 'green' || needs.wait.outputs.update == 'major') && 'claude-opus-5' || 'claude-sonnet-5' }}
           max-turns: ${{ steps.result.outputs.verdict != 'green' && '60' || '25' }}
           allowed-bots: ${{ needs.gate.outputs.dependency-bots }}
           allowed-tools: 'Bash "Bash(gh:*)" Read Write Edit Grep Glob WebFetch'
@@ -410,8 +465,8 @@ jobs:
             - Build result: `${{ steps.result.outputs.verdict }}`.
               `green`, `red:<failed jobs or steps>`, or `red:infra` when the
               runner itself failed twice (out of memory, killed daemon).
-            - Source: ${{ steps.ci.outputs.mode == 'ci' && format('the repo''s own PR checks run, {0}. The failed jobs'' logs are in `{1}/deps-logs/ci.log`.', steps.ci.outputs.url, runner.temp) || format('this job''s own build. Each step''s output is in `{0}/deps-logs/<step>.log`.', runner.temp) }}
-            - Update kind: `${{ steps.facts.outputs.update }}`.
+            - Source: ${{ needs.wait.outputs.mode == 'ci' && format('the repo''s own PR checks run, {0}. The failed jobs'' logs are in `{1}/deps-logs/ci.log`.', needs.wait.outputs.url, runner.temp) || format('this job''s own build. Each step''s output is in `{0}/deps-logs/<step>.log`.', runner.temp) }}
+            - Update kind: `${{ needs.wait.outputs.update }}`.
             - Fix rounds already pushed: ${{ steps.facts.outputs.fix-rounds }} of 2.
             - Fix commits already on this branch:
               ${{ steps.facts.outputs.fixes }}
@@ -483,9 +538,19 @@ jobs:
             sets the label from them, and fails if either is missing.
             Do not comment on, label, merge or approve the pull request yourself.
 
+      # Lock file maintenance has no agent report. A green build is `verified`
+      # with this fixed verdict, written where the agent's would be, so publish
+      # has one path.
+      - if: needs.wait.outputs.judge == 'lockfile'
+        run: |
+          set -euo pipefail
+          reason="Lock file maintenance; the repo's checks passed."
+          jq -nc --arg r "$reason" '{verdict: "verified", reason: $r}' > "$RUNNER_TEMP/deps-verdict.json"
+          echo "No dependency versions changed, only lock files." > "$RUNNER_TEMP/deps-verdict.md"
+
       # Minted after the agent, so no dependency script ever ran beside it.
       - id: app-token
-        if: ${{ !cancelled() && env.HAS_APP == 'true' && steps.agent.outcome != 'skipped' }}
+        if: ${{ !cancelled() && env.HAS_APP == 'true' }}
         uses: actions/create-github-app-token@v3
         with:
           client-id:    ${{ secrets.GH_APP_CLIENT_ID }}
@@ -502,7 +567,7 @@ jobs:
       # A push with GITHUB_TOKEN would not start the checks on the new commit
       # and is rejected by the rulesets, so no App means no push.
       - id: push
-        if: ${{ !cancelled() && steps.agent.outcome != 'skipped' }}
+        if: ${{ !cancelled() && needs.wait.outputs.judge == 'agent' }}
         env:
           BASE_SHA: ${{ steps.facts.outputs.base-sha }}
           ROUNDS:   ${{ steps.facts.outputs.fix-rounds }}
@@ -542,18 +607,22 @@ jobs:
           echo "pushed=true" >> "$GITHUB_OUTPUT"
           echo "::notice title=Fix pushed::Round $(( ROUNDS + 1 )). The push starts a fresh verification of the new head, which publishes the verdict."
 
-      # The label and the comment are set HERE, from the agent's files, never by
+      # The label and the comment are set HERE, from the verdict files, never by
       # the agent. One label, the others removed, so a PR never carries two
       # verdicts. A build that is red and was not fixed is needs-manual whatever
       # the agent wrote, and a branch that carries fix commits is `fixed`, never
       # `verified`, so a later automerge rule can tell the two apart.
       #
+      # Every comment carries the intent hash, a hidden line the next run reads
+      # to tell a rebase of the same update from a new one.
+      #
       # Skipped when this run pushed: the push starts a new run on the new head,
       # and that run's verdict is the one that counts.
       - id: publish
-        if: ${{ !cancelled() && steps.agent.outcome != 'skipped' && steps.push.outputs.pushed != 'true' }}
+        if: ${{ !cancelled() && steps.push.outputs.pushed != 'true' }}
         env:
           VERDICT:  ${{ steps.result.outputs.verdict }}
+          INTENT:   ${{ needs.wait.outputs.intent }}
           ROUNDS:   ${{ steps.facts.outputs.fix-rounds }}
           REFUSED:  ${{ steps.push.outputs.refused }}
           JSON:     ${{ runner.temp }}/deps-verdict.json
@@ -562,9 +631,9 @@ jobs:
           APP_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
           set -euo pipefail
+          missing=false
           agent=$(jq -r '.verdict // empty' "$JSON" 2>/dev/null || true)
           reason=$(jq -r '.reason // empty' "$JSON" 2>/dev/null || true)
-          missing=false
           case "$agent" in verified|fixed|needs-manual) ;; *) missing=true ;; esac
           [ -s "$MD" ] || missing=true
 
@@ -586,6 +655,7 @@ jobs:
               [ -z "${REFUSED:-}" ] || printf '\nA fix was prepared but not pushed: %s.\n' "$REFUSED"
             fi
           } > "$COMMENT"
+          [ -z "$INTENT" ] || printf '\n<!-- deps-intent: %s -->\n' "$INTENT" >> "$COMMENT"
 
           # Labels with the App's token when there is one, so a repo that has
           # never seen `deps:fixed` gets it created on first use.

@@ -217,10 +217,11 @@ jobs:
       id-token: write
       actions: read
     steps:
+      # Credentials persist here on purpose: the review agent works in this
+      # checkout and may fetch from it.
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
-          persist-credentials: false
 
       # Stamped before the agent, so the inline count below asks "did THIS run
       # post" rather than "has anything ever posted".

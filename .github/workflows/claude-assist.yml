@@ -52,6 +52,10 @@ jobs:
   gate:
     runs-on: ubuntu-latest
     timeout-minutes: 10   # the picker calls the org API and may retry
+    permissions:
+      contents: read
+      issues: read
+      pull-requests: read
     outputs:
       proceed: ${{ steps.gate.outputs.proceed }}
       runner:  ${{ steps.pick.outputs.runner }}

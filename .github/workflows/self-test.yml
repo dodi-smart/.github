@@ -203,6 +203,23 @@ jobs:
           print('dependency bots are listed once, in the gate')
           "
 
+      # The gate reads the live labels, which needs a token that can read them.
+      - name: Every agent gate job can read labels
+        run: |
+          set -euo pipefail
+          python3 -c "
+          import sys, yaml
+          bad = []
+          for f in ['issue-triage', 'issue-implement', 'claude-assist', 'pr-review', 'deps-verify']:
+              gate = yaml.safe_load(open('.github/workflows/' + f + '.yml'))['jobs']['gate']
+              perms = gate.get('permissions') or {}
+              if not any(perms.get(k) in ('read', 'write') for k in ('issues', 'pull-requests')):
+                  bad.append(f)
+          if bad:
+              sys.exit('::error::gate job cannot read labels (needs issues or pull-requests): ' + ', '.join(bad))
+          print('every agent gate job can read labels')
+          "
+
       # `track_progress` forces tag mode, and tag mode renders only three issue
       # actions. run-agent filters the rest out so a reopened issue runs instead
       # of failing in Create prompt. Wiring the raw input back would restore

@@ -266,6 +266,7 @@ token needs `pull-requests: read`.
 | Name | Meaning |
 |---|---|
 | input `bots` | `reject` (default): stop on any non-human author. `only`: proceed for dependency bots only. `allow`: ignore the author. |
+| input `number` | Override for the issue or PR number. The gate reads it from the event payload, so set it only where the payload has none (a `workflow_dispatch`). Before a run proceeds, the gate reads the item's current labels and stops on `agent:no-touch` added after the event. A failed read warns and proceeds. Needs `issues: read` or `pull-requests: read` on the gate job. |
 | input `events` | Space-separated `github.event_name` values the workflow handles, checked right after `agent:no-touch`. Any other event stops the run. Empty (default) allows every event. `issue-triage.yml` passes `issues issue_comment workflow_dispatch`, so a person's PR review never reaches it. |
 | output `author-kind` | `dependency` (Renovate, Dependabot), `agent` (`claude[bot]`), `automation` (any other `[bot]` or `app/` login) or `human`. Written before every rule, `agent:no-touch` included, so it is set on a stopped run too. A workflow that needs only the classification can call the gate for it and ignore `proceed`. |
 | output `dependency-bots` | The comma-separated dependency-bot logins, for `claude-code-action`'s `allowed_bots`. `deps-verify.yml` reads it. |

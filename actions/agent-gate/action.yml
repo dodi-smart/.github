@@ -13,6 +13,11 @@ inputs:
   labels:
     description: 'toJson(...labels.*.name) for the issue or PR. Required for the kill switch to work at all.'
     required: true
+  number:
+    description: >-
+      Override for the issue or PR number, which the gate reads from the event
+      payload. Set it only where the payload has none (a `workflow_dispatch`).
+    default: ''
   event-name:
     description: 'github.event_name'
     required: true
@@ -91,6 +96,9 @@ runs:
       shell: bash
       env:
         LABELS:   ${{ inputs.labels }}
+        NUMBER:   ${{ inputs.number }}
+        REPO:     ${{ github.repository }}
+        GH_TOKEN: ${{ github.token }}
         EVENT:    ${{ inputs.event-name }}
         ACTION:   ${{ inputs.event-action }}
         LABEL:    ${{ inputs.label }}

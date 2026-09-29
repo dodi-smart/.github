@@ -1,10 +1,6 @@
 #!/usr/bin/env bash
-# The gate, as a standalone script so it can be tested without a runner.
-#
-# Reads its inputs from the environment and writes proceed/reason/mode, plus
-# author-kind and dependency-bots, to $GITHUB_OUTPUT. action.yml is a thin
-# wrapper around this file; test.sh runs it directly. Keeping the logic out of YAML is what makes the kill switch
-# something we can actually assert on (see test.sh).
+# The gate as a standalone script, so test.sh can run it without a runner.
+# It reads its inputs from the environment and writes its outputs to $GITHUB_OUTPUT.
 set -euo pipefail
 
 stop() {
@@ -16,7 +12,24 @@ stop() {
   echo "gate: STOP: $1"
   exit 0
 }
+# A re-run replays the event payload, so an `agent:no-touch` added since is
+# missed. Before any run proceeds, read the item's labels once; a failed read only warns.
+live_no_touch() {
+  local live number="${NUMBER:-}"
+  if [ -z "$number" ] && [ -n "${GITHUB_EVENT_PATH:-}" ] && [ -f "$GITHUB_EVENT_PATH" ]; then
+    number="$(jq -r '.issue.number // .pull_request.number // empty' "$GITHUB_EVENT_PATH" 2>/dev/null || true)"
+  fi
+  [ -n "$number" ] || return 0
+  if live="$(gh api "/repos/${REPO:?REPO is required}/issues/$number/labels?per_page=100" --jq '[.[].name]' 2>/dev/null)"; then
+    if printf '%s' "$live" | grep -q '"agent:no-touch"'; then
+      stop "agent:no-touch (added after the event)"
+    fi
+  else
+    echo "::warning title=agent-gate::could not read the live labels of #$number, so agent:no-touch was judged from the event payload only"
+  fi
+}
 go() {
+  live_no_touch
   {
     echo "proceed=true"
     echo "reason=$1"
@@ -60,7 +73,7 @@ fi
 # maintainer. A kill switch that works on only some paths is not a
 # kill switch. Do not move this below anything.
 # ------------------------------------------------------------------
-if printf '%s' "$LABELS" | grep -q '"agent:no-touch"'; then
+if printf '%s' "${LABELS:-}" | grep -q '"agent:no-touch"'; then
   stop "agent:no-touch"
 fi
 

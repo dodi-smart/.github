@@ -322,11 +322,11 @@ jobs:
         env:
           ENV_FILE:       ${{ steps.setup.outputs.env-file }}
           BUILD_ENV_FILE: ${{ steps.setup.outputs.build-env-file }}
-          INSTALL:   ${{ steps.setup.outputs.install }}
-          BUILD:     ${{ steps.setup.outputs.build }}
-          TYPECHECK: ${{ steps.setup.outputs.typecheck }}
-          TEST:      ${{ steps.setup.outputs.test }}
-          SMOKE:     ${{ inputs.smoke }}
+          INSTALL:        ${{ steps.setup.outputs.install }}
+          BUILD:          ${{ steps.setup.outputs.build }}
+          TYPECHECK:      ${{ steps.setup.outputs.typecheck }}
+          TEST:           ${{ steps.setup.outputs.test }}
+          SMOKE:          ${{ inputs.smoke }}
         run: |
           set -uo pipefail
           LOGS="$RUNNER_TEMP/deps-logs"

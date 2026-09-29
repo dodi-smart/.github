@@ -1,3 +1,9 @@
+## [1.15.1](https://github.com/dodi-smart/.github/compare/v1.15.0...v1.15.1) (2026-09-29)
+
+### 🐛 Bug Fixes
+
+* **pr-checks:** run commitlint as a CLI on the light runner, not a Docker action ([915e794](https://github.com/dodi-smart/.github/commit/915e7947133e8a0e07845a94af7d40965d8be17f))
+
 ## [1.15.0](https://github.com/dodi-smart/.github/compare/v1.14.1...v1.15.0) (2026-09-29)
 
 ### ✨ Features

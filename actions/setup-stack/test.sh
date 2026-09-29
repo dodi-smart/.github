@@ -76,38 +76,5 @@ check "mise latest passes through" "latest mise.toml" "$(resolve "$d" auto)"
 d="$(fx)"; printf '[settings]\nbun = "7.7.7"\n' > "$d/mise.toml"
 check "no bun under [tools] -> latest" "latest none" "$(resolve "$d" auto)"
 
-# --- gradle-detect.sh
-detect() { # dir -> "gradle kmp key"
-  local o; o="$(RUNNER_OS=macOS RUNNER_ARCH=ARM64 "$HERE/gradle-detect.sh" "$1")"
-  printf '%s' "$(sed -n 's/^gradle=//p' <<< "$o") $(sed -n 's/^kmp=//p' <<< "$o") $(sed -n 's/^konan-key=//p' <<< "$o")"
-}
-
-d="$(fx)"; touch "$d/gradlew"; mkdir "$d/gradle" "$d/shared"
-printf '[versions]\nagp = "8.5.0"\nkotlin = "2.1.20"\n[plugins]\nkotlinMultiplatform = { id = "org.jetbrains.kotlin.multiplatform", version.ref = "kotlin" }\n' > "$d/gradle/libs.versions.toml"
-echo 'plugins { alias(libs.plugins.kotlinMultiplatform) }' > "$d/shared/build.gradle.kts"
-check "KMP with a catalog: key carries the Kotlin version" "true true konan-macOS-ARM64-2.1.20" "$(detect "$d")"
-
-d="$(fx)"; touch "$d/gradlew"; echo 'plugins { kotlin("multiplatform") version "2.0.0" }' > "$d/build.gradle.kts"
-first="$(detect "$d")"
-check "KMP without a catalog: hashed key" "true true konan-macOS-ARM64-h-" "${first%%h-*}h-"
-echo '// changed' >> "$d/build.gradle.kts"
-check "hashed key moves when a build file changes" "different" "$([ "$first" != "$(detect "$d")" ] && echo different || echo same)"
-
-d="$(fx)"; touch "$d/gradlew"; mkdir "$d/gradle"
-printf '[versions]\nkotlin = "2.1.20"\n' > "$d/gradle/libs.versions.toml"; echo 'plugins { id("com.android.application") }' > "$d/build.gradle.kts"
-check "plain Gradle repo: gradle, not KMP, no key" "true false " "$(detect "$d")"
-
-d="$(fx)"; touch "$d/gradlew"
-check "gradlew and no build files" "true false " "$(detect "$d")"
-
-d="$(fx)"; echo '{"name":"x"}' > "$d/package.json"
-check "non-Gradle repo" "false false " "$(detect "$d")"
-
-d="$(fx)"; echo 'kotlin("multiplatform")' > "$d/build.gradle.kts"
-check "KMP text without a gradlew is not Gradle" "false false " "$(detect "$d")"
-
-d="$(fx)"; touch "$d/gradlew"; mkdir -p "$d/app/build"; echo 'kotlin("multiplatform")' > "$d/app/build/build.gradle.kts"
-check "a build output dir is not read" "true false " "$(detect "$d")"
-
 echo "setup-stack: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

@@ -523,10 +523,9 @@ branch (it publishes no version tags), and Renovate can still move that pin.
   `flutter-action`. Never a package store, and never `restore-keys` on one, which
   is how a partial tarball comes back on every retry.
 - **Gradle repos with a cache on** get `setup-gradle`, including `stack: xcode`
-  when the repo has a root `gradlew`. A Kotlin Multiplatform repo (the plugin in
-  a root or one-level-down build file, or the version catalog) also caches
-  `~/.konan`, Kotlin/Native's toolchain, under an exact key of OS, arch and the
-  Kotlin version from `gradle/libs.versions.toml`. Both need the repo checked out
+  when the repo has a root `gradlew`. A repo whose `gradle/libs.versions.toml`
+  names the multiplatform plugin and a `kotlin` version also caches `~/.konan`,
+  Kotlin/Native's toolchain, keyed on OS, arch and that version. Both need the repo checked out
   before `setup-stack`.
 
 **Never cache a project build directory.** Not `build/`, not `*/build`, not

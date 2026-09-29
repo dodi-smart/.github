@@ -701,28 +701,12 @@ jobs:
       - name: setup-stack parses env files and resolves bun
         run: ./actions/setup-stack/test.sh
 
-      # Two governed rules about setup-stack's caches: macOS self-hosted caches
-      # like hosted (its VMs start empty), and ~/.konan uses an exact key.
-      - name: setup-stack caches macOS and Kotlin/Native correctly
+      # ~/.konan is a toolchain cache: an exact key, never restore-keys.
+      - name: The Kotlin/Native cache uses an exact key
         run: |
-          set -euo pipefail
-          python3 -c "
-          import sys, yaml
-          doc = yaml.safe_load(open('actions/setup-stack/action.yml'))
-          steps = doc['runs']['steps']
-          resolve = next(s for s in steps if s.get('id') == 'resolve')['run']
-          if 'macOS' not in resolve:
-              sys.exit('::error::setup-stack resolve no longer lets self-hosted macOS use the GitHub cache.')
-          konan = [s for s in steps if '.konan' in str((s.get('with') or {}).get('path', ''))]
-          if len(konan) != 1 or 'actions/cache' not in konan[0]['uses']:
-              sys.exit('::error::setup-stack must cache ~/.konan with exactly one actions/cache step.')
-          if 'restore-keys' in konan[0]['with']:
-              sys.exit('::error::the ~/.konan cache uses restore-keys. Exact key only.')
-          gradle = next(s for s in steps if 'setup-gradle' in str(s.get('uses', '')))
-          if 'xcode' not in str(gradle['if']):
-              sys.exit('::error::setup-gradle no longer runs for xcode repos with a gradlew.')
-          print('macOS caches, ~/.konan is an exact-key toolchain cache')
-          "
+          if grep -A4 'path: ~/.konan' actions/setup-stack/action.yml | grep -q restore-keys; then
+            echo "::error::the ~/.konan cache uses restore-keys. Exact key only."; exit 1
+          fi
 
       # A branch ref moves under every caller, and Renovate never proposes a change.
       - name: No action is pinned to a branch

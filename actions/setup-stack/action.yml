@@ -238,11 +238,17 @@ runs:
         # No cache: npm. Hosted cache is one mechanism per stack, and this
         # action never uploads a package store under restore-keys.
 
-    # Needs a checkout, like bun-version. Reads files only, never runs Gradle.
+    # Reads the checkout, never runs Gradle. The Kotlin version keys the
+    # Kotlin/Native cache, and only a multiplatform catalog has one to cache.
     - id: gradle
       if: inputs.stack == 'gradle' || inputs.stack == 'android' || inputs.stack == 'xcode'
       shell: bash
-      run: ${{ github.action_path }}/gradle-detect.sh >> "$GITHUB_OUTPUT"
+      run: |
+        [ -f gradlew ] && echo "gradle=true" >> "$GITHUB_OUTPUT"
+        cat=gradle/libs.versions.toml
+        if [ -f "$cat" ] && grep -q multiplatform "$cat"; then
+          sed -n 's/^[[:space:]]*kotlin[[:space:]]*=[[:space:]]*"\([^"]*\)".*/kotlin=\1/p' "$cat" | head -n 1 >> "$GITHUB_OUTPUT"
+        fi
 
     - if: (inputs.stack == 'gradle' || inputs.stack == 'android') || (inputs.stack == 'flutter' && inputs.java-version != '')
       uses: actions/setup-java@v6
@@ -251,13 +257,9 @@ runs:
         distribution: temurin
         # No cache: gradle. The hosted Gradle cache is setup-gradle's job.
 
-    # xcode joins only with a gradlew and a live cache: a KMP iOS job calls
-    # ./gradlew itself. setup-gradle only caches ~/.gradle and never runs Gradle,
-    # so it needs no JDK here; the job's own gradlew brings whichever it uses.
-    - if: >-
-        inputs.stack == 'gradle' || inputs.stack == 'android'
-        || (inputs.stack == 'xcode' && steps.gradle.outputs.gradle == 'true'
-            && steps.resolve.outputs.cache_enabled == 'true')
+    # xcode joins when the repo has a gradlew: a KMP iOS job calls it itself.
+    # setup-gradle only caches ~/.gradle here, so it needs no JDK.
+    - if: inputs.stack == 'gradle' || inputs.stack == 'android' || steps.gradle.outputs.gradle == 'true'
       uses: gradle/actions/setup-gradle@v6
       with:
         # Publishing a build scan from a verification job leaks the dependency
@@ -268,11 +270,11 @@ runs:
     # ~/.konan holds Kotlin/Native's LLVM and libffi, about a minute of download
     # per job. A toolchain, not a package store, so an exact key and no
     # restore-keys: a new Kotlin version is a new entry, never a partial one.
-    - if: steps.resolve.outputs.cache_enabled == 'true' && steps.gradle.outputs.kmp == 'true'
+    - if: steps.resolve.outputs.cache_enabled == 'true' && steps.gradle.outputs.kotlin != ''
       uses: actions/cache@v6
       with:
         path: ~/.konan
-        key: ${{ steps.gradle.outputs.konan-key }}
+        key: konan-${{ runner.os }}-${{ runner.arch }}-${{ steps.gradle.outputs.kotlin }}
 
     - if: inputs.stack == 'android'
       uses: android-actions/setup-android@v4

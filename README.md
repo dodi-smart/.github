@@ -69,8 +69,8 @@ exactly like a busy fleet.
 | `claude-assist.yml` | `@claude <anything else>` | The general assistant |
 | `release.yml` | push to a release branch | semantic-release, single or multi-module |
 | `supabase-deploy.yml` | called after `release.yml` | Pushes a Supabase project's schema and functions for the tag a release just cut |
-| `react-doctor.yml` | pull request, React repos | Static analysis of React/TS source. Advisory by default. |
-| `zavet-check.yml` | pull request | Knowledge-layer checks, for repos that have one. Report-only on dependency and automation bot PRs |
+| `react-doctor.yml` | pull request, React repos | Static analysis of React/TS source. Advisory by default. `pr-checks.yml` can run it as a job instead (`react-doctor: true`) |
+| `zavet-check.yml` | pull request | Knowledge-layer checks, for repos that have one. Report-only on dependency and automation bot PRs. `pr-checks.yml` can run it as a job instead (`zavet: true`) |
 | `supabase-checks.yml` | pull request, Supabase repos | Deno edge-function check, generated-types check, pgTAP tests. Hosted only. |
 | `pick-runner.yml` | called by the others | Chooses a runner and validates the choice |
 
@@ -237,6 +237,8 @@ The log shows the deployment id and commit before the routes are probed.
 | `actions/run-phases` | Runs a job's install, lint, design-lint, typecheck, test, build and smoke commands as timed phases, each in its own subshell, and writes a timing table to the job summary. `log-dir` also writes each phase's output to a file; `keep-going: true` runs every phase and the `failed` output lists the ones that failed. What `pr-checks.yml` and `deps-verify.yml` run their commands with |
 | `actions/wait-for-deployment` | Waits for the frontend host's successful GitHub Deployment of the checked-out commit, or for a route to report its sha. What `supabase-deploy.yml`'s health check calls |
 | `actions/supabase-start` | Starts the local Supabase database with the stack's Docker images restored from the cache, saved on a miss. What both jobs of `supabase-checks.yml` call |
+| `actions/zavet-check` | Verifies a repo's `.zavet/` knowledge layer: decision checks, guard trailers, an optional audit, and a comment only on failure. What `zavet-check.yml` and `pr-checks.yml`'s `zavet` job run. The caller checks out with full history first. |
+| `actions/react-doctor` | Checks out with full history and runs React Doctor. What `react-doctor.yml` and `pr-checks.yml`'s `react-doctor` job run. |
 | `actions/pick-runner` | Resolves a runner weight to a selector, validated against the live fleet. What `pick-runner.yml` calls, and what a job that already runs hosted (like `pr-checks.yml`'s `pick`) calls directly to pick more than once without a second hosted job. |
 
 `actions/changed-files` needs no checkout. It takes `patterns` (newline-separated
@@ -267,6 +269,7 @@ token needs `pull-requests: read`.
 | Name | Meaning |
 |---|---|
 | input `bots` | `reject` (default): stop on any non-human author. `only`: proceed for dependency bots only. `allow`: ignore the author. |
+| input `number` | Override for the issue or PR number. The gate reads it from the event payload, so set it only where the payload has none (a `workflow_dispatch`). Before a run proceeds, the gate reads the item's current labels and stops on `agent:no-touch` added after the event. A failed read warns and proceeds. Needs `issues: read` or `pull-requests: read` on the gate job. |
 | input `events` | Space-separated `github.event_name` values the workflow handles, checked right after `agent:no-touch`. Any other event stops the run. Empty (default) allows every event. `issue-triage.yml` passes `issues issue_comment workflow_dispatch`, so a person's PR review never reaches it. |
 | output `author-kind` | `dependency` (Renovate, Dependabot), `agent` (`claude[bot]`), `automation` (any other `[bot]` or `app/` login) or `human`. Written before every rule, `agent:no-touch` included, so it is set on a stopped run too. A workflow that needs only the classification can call the gate for it and ignore `proceed`. |
 | output `dependency-bots` | The comma-separated dependency-bot logins, for `claude-code-action`'s `allowed_bots`. `deps-verify.yml` reads it. |
@@ -445,7 +448,7 @@ reads the changed files through the API.
 
 `coverage` picks how a coverage comment is made. It is `none` by default, which
 posts nothing and adds no job. Otherwise `test` (or `all`) uploads the report as
-an artifact and a small hosted `coverage` job posts the comment from it. That
+an artifact and a small `coverage` job on the light pool posts the comment from it. That
 job holds the only `pull-requests: write` token and runs none of your code. It
 runs when the tests pass, so a red run keeps the previous comment.
 
@@ -513,8 +516,8 @@ phases after it are listed as `not run`. A phase with no command is left out.
 `pick` also decides whether the change is docs-only: every file the PR touches
 must match one of `docs-only-paths` (newline-separated globs, default `**.md`
 and `docs/**`), read from the pull request's file list through the API. When it is, `checks`, `test`, `build` and
-`all` all skip -- but `commitlint` still runs, because it checks the commit
-message, not the files. The default catches a Markdown-only change; widen it
+`all` all skip -- but `commitlint` and `zavet` still run, because they check the commit
+message and the knowledge layer, not the files. The default catches a Markdown-only change; widen it
 per caller for e.g. `docs/** design/**`.
 
 ```yaml
@@ -531,11 +534,12 @@ or more, where the API stops listing), `docs_only` is `false` and every job runs
 as normal.
 
 `pr-checks.yml` grants `contents: read` at the workflow level, so a job that
-needs more asks for it: `pick` and `commitlint` read pull requests, and only the
-`coverage` job writes them, for the coverage comment. `test` and `all` run your
-tests with no write token at all. A checkout in these workflows never keeps the
-job token in its git config, so a caller's install, test and build scripts
-cannot read it. Only `commitlint` clones full history.
+needs more asks for it: `pick` and `commitlint` read pull requests, `zavet` and
+`react-doctor` write them for their comments, and only the `coverage` job
+writes them for the coverage comment, so `test` and `all` run your tests with no
+write token. A checkout in these workflows never keeps the job
+token in its git config, so a caller's install, test and build scripts cannot
+read it. Only `zavet` and `react-doctor` clone full history.
 
 This is also why a caller should **not** add `paths-ignore: ['**.md']` to its
 own `on: pull_request:` trigger to get the same effect. `paths-ignore` skips
@@ -554,6 +558,51 @@ they were only skipped. It is the one job a branch ruleset should require:
 split mode, where `checks / checks` and `checks / all` do not -- exactly one
 of those two is always skipped depending on `single-job`, so neither can be
 named in a ruleset that has to work for every caller.
+
+### One workflow instead of three
+
+A repo that calls `pr-checks.yml`, `zavet-check.yml` and `react-doctor.yml`
+starts three workflow runs per push, and each of the last two pays for its own
+hosted runner picker. `pr-checks.yml` already has one hosted `pick` job, so
+`zavet` and `react-doctor` can be opt-in jobs beside `checks`, on the light
+pool. That saves about 2 billed hosted minutes per push, per repo that used
+both. `commitlint` no longer starts a hosted job either: it runs on the light
+pool, so a repo with it enabled saves a third.
+
+```yaml
+jobs:
+  checks:
+    uses: dodi-smart/.github/.github/workflows/pr-checks.yml@v1
+    with:
+      stack: bun
+      zavet: true
+      zavet-stack: bun            # the toolchain the decision checks run on
+      react-doctor: true
+      react-doctor-paths: |
+        src/**
+        **.tsx
+    secrets: inherit
+```
+
+Then delete the caller's `zavet-check` and `react-doctor` jobs, and their
+`paths:` filter if it existed only for React Doctor.
+
+`zavet-dir` sets where the layer lives and `react-doctor-directory` which project to scan. The React Doctor job uses React
+Doctor's defaults, so it stays advisory (`blocking: none`, `scope: changed`). A
+repo that needs to tune scope, blocking or version keeps `react-doctor.yml`.
+
+**Neither result is part of the `pr-checks` summary.** The `zavet` and
+`react-doctor` jobs are separate status contexts. Turning them on does not make
+`<caller job id> / pr-checks` wait for them or fail on them, so it never becomes
+a required check by accident. A repo that wants zavet required names
+`<caller job id> / Zavet Check` in its ruleset. React Doctor stays advisory: a
+pull request touching no matching file shows a skipped job, and a required
+context that is never created would wait forever.
+
+`commitlint` uses `wagoid/commitlint-github-action` as before. It reads the
+pull request's commits through the API and bundles `config-conventional` and the
+other configs it supports, so the checkout is one commit deep. A config that
+extends a package outside that bundle never worked and still does not.
 
 ### setup-stack inputs and outputs
 

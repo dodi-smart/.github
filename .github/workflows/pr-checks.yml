@@ -9,17 +9,12 @@
 #
 # Light work (lint, typecheck) goes to the light pool and heavy work (build,
 # tests) to the large one. Any step whose command resolves to empty is skipped.
-# `single-job: true` collapses the split onto the heavy runner; see that input.
+# `single-job: true` collapses the split onto the heavy runner.
 #
-# ONE hosted `pick` job resolves both runners (and whether the change is
-# docs-only), instead of two hosted picker jobs. Picking twice used to cost two
-# full hosted minutes before any real work started; picking once from inside a
-# job that already exists costs one. It reads the changed files through the API,
-# so it needs no checkout and no clone. `pr-checks` at the bottom is a summary job
-# that always runs: it is the one status-check context a branch ruleset should
-# require, because it exists in both single-job and split mode, and because a
-# docs-only change still produces it even though `checks`/`test`/`build`/`all`
-# are skipped.
+# ONE hosted `pick` job resolves both runners and whether the change is
+# docs-only, reading the changed files through the API with no checkout.
+# `pr-checks` at the bottom always runs and is the one context a ruleset
+# should require.
 name: PR Checks
 
 # This workflow runs the caller's own code (install scripts, tests, builds), so
@@ -78,6 +73,18 @@ on:
       commitlint:        { type: boolean, default: false }
       commitlint-config: { type: string,  default: ".commitlintrc.json" }
 
+      # Opt-in jobs that replace zavet-check.yml and react-doctor.yml. Neither
+      # feeds the `pr-checks` summary. `zavet-stack` is the toolchain the
+      # decision checks run on. `react-doctor-paths` are newline globs, empty
+      # meaning every change. A repo that tunes React Doctor keeps react-doctor.yml.
+      zavet:       { type: boolean, default: false }
+      zavet-dir:   { type: string,  default: ".zavet" }
+      zavet-stack: { type: string,  default: "none" }
+
+      react-doctor:           { type: boolean, default: false }
+      react-doctor-paths:     { type: string,  default: "" }
+      react-doctor-directory: { type: string,  default: "." }
+
       # none | vitest | kover | lcov. `lcov`: the test command writes an LCOV
       # file (bun test, cargo llvm-cov, c8, nyc) and `coverage-path` points at
       # it; the default is coverage/lcov.info.
@@ -129,6 +136,7 @@ jobs:
       light:     ${{ steps.light.outputs.runner }}
       heavy:     ${{ steps.heavy.outputs.runner }}
       docs_only: ${{ steps.docs.outputs.all-matched }}
+      react_doctor: ${{ inputs.react-doctor && steps.rd.outputs.matched == 'true' }}
     steps:
       # `all-matched` is a positive claim, never a fallback: it is `true` only
       # when the whole list was read and every file matches `docs-only-paths`.
@@ -139,11 +147,30 @@ jobs:
         with:
           patterns: ${{ inputs.docs-only-paths }}
 
-      # The picker carries the same `if:` as the job it feeds. In single-job
-      # mode nothing runs on the light pool; in a docs-only change neither
-      # pool is needed at all.
+      - id: rd
+        if: ${{ inputs.react-doctor }}
+        uses: dodi-smart/.github/actions/changed-files@v1
+        with:
+          patterns: ${{ inputs.react-doctor-paths }}
+
+      # Whether any light job will run, so the picker below skips otherwise.
+      - id: need
+        env:
+          SPLIT:      ${{ !inputs.single-job && steps.docs.outputs.all-matched != 'true' }}
+          COMMITLINT: ${{ inputs.commitlint }}
+          ZAVET:      ${{ inputs.zavet }}
+          RD:         ${{ steps.rd.outputs.matched }}
+          COVERAGE:   ${{ inputs.coverage != 'none' && steps.docs.outputs.all-matched != 'true' }}
+        run: |
+          set -euo pipefail
+          need=false
+          for v in "$SPLIT" "$COMMITLINT" "$ZAVET" "$RD" "$COVERAGE"; do
+            [ "$v" = "true" ] && need=true
+          done
+          echo "needs_light=$need" >> "$GITHUB_OUTPUT"
+
       - id: light
-        if: ${{ !inputs.single-job && steps.docs.outputs.all-matched != 'true' }}
+        if: ${{ steps.need.outputs.needs_light == 'true' }}
         uses: dodi-smart/.github/actions/pick-runner@v1
         with:
           weight:             ${{ inputs.light-weight }}
@@ -158,11 +185,10 @@ jobs:
           gh-app-client-id:   ${{ secrets.GH_APP_CLIENT_ID }}
           gh-app-private-key: ${{ secrets.GH_APP_PRIVATE_KEY }}
 
-  # Hosted on purpose: needs full history and no toolchain, so the large pool
-  # would be wasted on it. The only job here that keeps full history.
   commitlint:
     if: inputs.commitlint
-    runs-on: ubuntu-latest
+    needs: [pick]
+    runs-on: ${{ fromJson(needs.pick.outputs.light) }}
     timeout-minutes: 10
     permissions:
       contents: read
@@ -170,11 +196,50 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
-          fetch-depth: 0
           persist-credentials: false
       - uses: wagoid/commitlint-github-action@v6
         with:
           configFile: ${{ inputs.commitlint-config }}
+
+  # Full history, because guards walk the pull request's commits.
+  zavet:
+    name: Zavet Check
+    if: inputs.zavet
+    needs: [pick]
+    runs-on: ${{ fromJson(needs.pick.outputs.light) }}
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      pull-requests: write     # the failure comment
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: dodi-smart/.github/actions/zavet-check@v1
+        with:
+          zavet-dir:       ${{ inputs.zavet-dir }}
+          stack:           ${{ inputs.zavet-stack }}
+          install:         ${{ inputs.install }}
+          node-version:    ${{ inputs.node-version }}
+          bun-version:     ${{ inputs.bun-version }}
+          java-version:    ${{ inputs.java-version }}
+          flutter-version: ${{ inputs.flutter-version }}
+
+  react-doctor:
+    name: React Doctor
+    if: ${{ needs.pick.outputs.react_doctor == 'true' }}
+    needs: [pick]
+    runs-on: ${{ fromJson(needs.pick.outputs.light) }}
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      pull-requests: write     # the action posts its own sticky comment
+      statuses: write          # and a commit status carrying the score
+    steps:
+      - uses: dodi-smart/.github/actions/react-doctor@v1
+        with:
+          directory: ${{ inputs.react-doctor-directory }}
 
   # ---------------------------------------------------------------------------
   # Split shape: light work on the small pool, heavy work on the large one.
@@ -373,8 +438,10 @@ jobs:
   coverage:
     name: Coverage
     if: ${{ !cancelled() && inputs.coverage != 'none' && (needs.test.result == 'success' || needs.all.result == 'success') }}
-    needs: [test, all]
-    runs-on: ubuntu-latest
+    needs: [pick, test, all]
+    # The light pool, not a billed hosted start: this job runs none of the
+    # caller's code, it only reads the uploaded report and posts a comment.
+    runs-on: ${{ fromJson(needs.pick.outputs.light) }}
     timeout-minutes: 10
     permissions:
       contents: read
@@ -434,6 +501,8 @@ jobs:
   #
   # It needs `checks`, so a red lint fails the required context even though
   # `build` runs beside it.
+  #
+  # `zavet` and `react-doctor` stay out of `needs` and the loop below on purpose.
   pr-checks:
     name: PR Checks
     needs: [pick, commitlint, checks, test, build, all, coverage]

@@ -65,6 +65,9 @@ jobs:
   gate:
     runs-on: ubuntu-latest
     timeout-minutes: 10   # the picker calls the org API and may retry
+    permissions:
+      contents: read
+      issues: read
     outputs:
       proceed: ${{ steps.bots.outputs.proceed }}
       mode:    ${{ steps.bots.outputs.mode }}
@@ -78,6 +81,7 @@ jobs:
         uses: dodi-smart/.github/actions/agent-gate@v1
         with:
           labels:        ${{ toJson(github.event.issue.labels.*.name) }}
+          number:        ${{ inputs.issue-number }}
           event-name:    ${{ github.event_name }}
           event-action:  ${{ github.event.action }}
           label:         ${{ github.event.label.name }}

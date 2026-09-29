@@ -9,12 +9,12 @@
 # copied into the tool prefix, because commitlint resolves `extends` relative to
 # the config file, and the prefix is where the packages are.
 #
-# Env: CONFIG (path in the checkout), REPO, NUMBER, GH_TOKEN, PREFIX,
-#      HERE (this directory). Test hooks: COMMITLINT (the binary to run),
-#      SKIP_INSTALL=true.
+# Env: CONFIG (path in the checkout), REPO, NUMBER, GH_TOKEN, PREFIX.
+# test.sh sets COMMITLINT and SKIP_INSTALL=true.
 set -euo pipefail
 
-: "${REPO:?}" "${NUMBER:?}" "${PREFIX:?}" "${HERE:?}"
+HERE="$(cd "$(dirname "$0")" && pwd)"
+: "${REPO:?}" "${NUMBER:?}" "${PREFIX:?}"
 config="${CONFIG:-.commitlintrc.json}"
 
 mkdir -p "$PREFIX"
@@ -29,7 +29,7 @@ fi
 
 if [ "${SKIP_INSTALL:-false}" != true ]; then
   cp "$HERE/package.json" "$HERE/package-lock.json" "$PREFIX/"
-  (cd "$PREFIX" && npm ci --ignore-scripts --no-audit --no-fund >/dev/null)
+  (cd "$PREFIX" && npm ci --prefer-offline --ignore-scripts --no-audit --no-fund >/dev/null)
   # A JSON config may extend a package the pinned set does not carry.
   extra=$(jq -r '(.extends // []) | if type == "string" then [.] else . end | .[]
                  | select(startswith(".") | not)

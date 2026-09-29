@@ -202,9 +202,7 @@ jobs:
           gh-app-client-id:   ${{ secrets.GH_APP_CLIENT_ID }}
           gh-app-private-key: ${{ secrets.GH_APP_PRIVATE_KEY }}
 
-  # The commitlint CLI on the light pool, not the Docker action: a container
-  # action cannot see the workspace on the self-hosted fleet, where the runner
-  # is itself a container on the host's daemon. See actions/commitlint.
+  # A CLI, not a Docker action: see actions/commitlint.
   commitlint:
     if: inputs.commitlint
     needs: [pick]

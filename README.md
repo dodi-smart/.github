@@ -601,9 +601,7 @@ context that is never created would wait forever.
 `commitlint` runs the commitlint CLI (`actions/commitlint`, pinned by lockfile)
 on the light runner. It reads the pull request's commit messages through the
 API and checks out only the config file. `config-conventional` is always there,
-and any other package a JSON config extends is installed beside it. It is not a
-Docker action: on the self-hosted fleet a container action cannot see the
-workspace.
+and any other package a JSON config extends is installed beside it.
 
 ### setup-stack inputs and outputs
 

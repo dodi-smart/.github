@@ -26,6 +26,5 @@ runs:
         REPO:        ${{ github.repository }}
         GH_TOKEN:    ${{ github.token }}
         PREFIX:      ${{ runner.temp }}/commitlint
-        HERE:        ${{ github.action_path }}
         ACTION_PATH: ${{ github.action_path }}
       run: '"$ACTION_PATH/lint.sh"'

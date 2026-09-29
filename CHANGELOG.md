@@ -1,3 +1,10 @@
+## [1.15.0](https://github.com/dodi-smart/.github/compare/v1.14.1...v1.15.0) (2026-09-29)
+
+### ✨ Features
+
+* **pr-checks:** default react-doctor-paths to web source and package.json ([0ac40fe](https://github.com/dodi-smart/.github/commit/0ac40feee7e4931de918f0acf9de2b953fc19151))
+* **pr-checks:** zavet-audit and zavet-install inputs for the folded knowledge-layer job ([ae4dd29](https://github.com/dodi-smart/.github/commit/ae4dd2974239d194882cb29f5b61af8bdf9a1116))
+
 ## [1.14.1](https://github.com/dodi-smart/.github/compare/v1.14.0...v1.14.1) (2026-09-29)
 
 ### 🐛 Bug Fixes

@@ -85,6 +85,10 @@ on:
       zavet:       { type: boolean, default: false }
       zavet-dir:   { type: string,  default: ".zavet" }
       zavet-stack: { type: string,  default: "none" }
+      zavet-audit: { type: boolean, default: false }   # report-only health sweep
+      # The zavet job's install. Empty reuses `install`; set it when the decision
+      # checks need more, e.g. a build whose output a check reads.
+      zavet-install: { type: string, default: "" }
 
       react-doctor:           { type: boolean, default: false }
       react-doctor-paths:     { type: string,  default: "" }
@@ -225,7 +229,8 @@ jobs:
         with:
           zavet-dir:       ${{ inputs.zavet-dir }}
           stack:           ${{ inputs.zavet-stack }}
-          install:         ${{ inputs.install }}
+          audit:           ${{ inputs.zavet-audit }}
+          install:         ${{ inputs.zavet-install || inputs.install }}
           node-version:    ${{ inputs.node-version }}
           bun-version:     ${{ inputs.bun-version }}
           java-version:    ${{ inputs.java-version }}

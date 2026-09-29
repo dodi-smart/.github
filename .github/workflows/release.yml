@@ -34,19 +34,14 @@ on:
         default: "@stack"
 
       # Installed only when `release-command` is empty, i.e. when this workflow
-      # drives semantic-release itself.
+      # drives semantic-release itself. Empty installs the set pinned in
+      # actions/release-tooling: semantic-release, the git, github, changelog
+      # and exec plugins, replace-plugin, scope-filter, backmerge, and
+      # conventionalcommits@9. A list here replaces that set entirely, and is
+      # installed unpinned as a space-separated list of package specs.
       semantic-release-packages:
         type: string
-        default: >-
-          semantic-release
-          @semantic-release/git
-          @semantic-release/github
-          @semantic-release/changelog
-          @semantic-release/exec
-          semantic-release-replace-plugin
-          conventional-changelog-conventionalcommits@9
-          @kilianpaquier/semantic-release-backmerge
-          semantic-release-scope-filter
+        default: ""
 
       # Link @dodi-smart/semantic-release-config into node_modules before the
       # release. Costs one registry install, so a caller whose
@@ -181,23 +176,16 @@ jobs:
           set -euo pipefail
           eval "$INSTALL"
 
+      # Into a private prefix, never the checkout. An install there also
+      # resolves and installs the caller's whole dependency tree, which this
+      # path never uses, and writing the tooling into the caller's manifest
+      # made Renovate maintain the wrong lockfile. The prefix puts
+      # `semantic-release` on PATH.
       - if: inputs.release-command == ''
         name: Install semantic-release
-        env:
-          PACKAGES: ${{ inputs.semantic-release-packages }}
-        run: |
-          set -euo pipefail
-          # Unquoted on purpose: PACKAGES is a space-separated list of package
-          # specs, and word-splitting is exactly what is wanted here.
-          #
-          # --no-save, never -D. -D wrote this tooling into the caller's
-          # package.json and created a package-lock.json, even in a bun repo,
-          # and the release commit then committed both. Renovate went on to
-          # update that npm lockfile instead of the real one, so every
-          # dependency PR failed its frozen install, and it opened PRs for
-          # tooling the repo never chose.
-          # shellcheck disable=SC2086
-          npm install --no-save --no-audit --no-fund $PACKAGES
+        uses: dodi-smart/.github/actions/release-tooling@v1
+        with:
+          packages: ${{ inputs.semantic-release-packages }}
 
       # The shared config, linked by name into node_modules with its plugins
       # installed in a private prefix. Nothing is published and nothing is
@@ -229,7 +217,9 @@ jobs:
 
           count=$(jq 'length' <<<"$MODULES")
           if [ "$count" = "0" ]; then
-            npx semantic-release
+            # Not npx: it looks only in the checkout's node_modules, and would
+            # fetch its own copy from the registry instead of using the prefix.
+            semantic-release
             exit 0
           fi
 
@@ -237,7 +227,7 @@ jobs:
           # version that failed to publish is worse than stopping.
           for cfg in $(jq -r '.[]' <<<"$MODULES"); do
             echo "::group::semantic-release $cfg"
-            npx semantic-release --extends "$cfg"
+            semantic-release --extends "$cfg"
             echo "::endgroup::"
           done
 
@@ -290,44 +280,17 @@ jobs:
             echo "tags=$(jq -Rnc '[inputs]' <<<"$version_tags")"
           } >> "$GITHUB_OUTPUT"
 
-  # A real merge commit, never a force-push. The release commit must stay
-  # reachable from both branches, or the next run recomputes versions from a
-  # history that no longer matches the tags.
-  backmerge:
-    needs: [release]
-    if: inputs.backmerge && github.ref == format('refs/heads/{0}', inputs.backmerge-from)
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      # Same App token as the release job, minted again: a token never crosses
-      # jobs. checkout persists it in the remote URL, so the push at the end of
-      # the merge step goes out as the App and past the same ruleset.
-      - id: have-app
+      # A real merge commit, never a force-push. The release commit must stay
+      # reachable from both branches, or the next run recomputes versions from a
+      # history that no longer matches the tags.
+      #
+      # The last step of the release job, not a job of its own: a second job
+      # minted another App token and made another full clone right after this
+      # one did both. The checkout already carries the App token, so the push
+      # at the end goes out as the App and past the same ruleset.
+      - if: inputs.backmerge && github.ref == format('refs/heads/{0}', inputs.backmerge-from)
+        name: Backmerge
         env:
-          CLIENT_ID: ${{ secrets.GH_APP_CLIENT_ID }}
-        run: |
-          if [ -n "${CLIENT_ID:-}" ]; then
-            echo "yes=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "yes=false" >> "$GITHUB_OUTPUT"
-            echo "::warning title=Backmerging with GITHUB_TOKEN::GH_APP_CLIENT_ID is not set on this repository, so the backmerge is pushed as github-actions[bot]. A branch protected by the org rulesets rejects that push (GH013)."
-          fi
-
-      - id: app-token
-        if: steps.have-app.outputs.yes == 'true'
-        uses: actions/create-github-app-token@v3
-        with:
-          client-id:    ${{ secrets.GH_APP_CLIENT_ID }}
-          private-key:  ${{ secrets.GH_APP_PRIVATE_KEY }}
-          owner:        ${{ github.repository_owner }}
-          repositories: ${{ github.event.repository.name }}
-
-      - uses: actions/checkout@v7
-        with:
-          fetch-depth: 0
-          ref: ${{ inputs.backmerge-from }}
-          token: ${{ steps.app-token.outputs.token || secrets.GITHUB_TOKEN || github.token }}
-      - env:
           FROM: ${{ inputs.backmerge-from }}
           TO:   ${{ inputs.backmerge-to }}
           RESOLVE_EXTRA: ${{ inputs.backmerge-resolve-paths }}
@@ -335,8 +298,11 @@ jobs:
           set -euo pipefail
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git fetch origin "$TO:$TO"
-          git checkout "$TO"
+          # semantic-release just pushed a commit to $FROM, and another push may
+          # have landed since the checkout, so merge what the remote has now.
+          # --force drops release output that was never committed.
+          git fetch origin "$FROM" "$TO"
+          git checkout --force -B "$TO" "origin/$TO"
           # [skip ci] so the merge does not trigger the release workflow again.
           #
           # A stable release after a prerelease ALWAYS conflicts on the version
@@ -348,7 +314,7 @@ jobs:
           # fails the job. The shared semantic-release git plugin's default
           # assets cover the rest of the lockfile family; backmerge-resolve-
           # paths adds a caller's own, e.g. a subdirectory manifest.
-          if ! git merge "$FROM" --no-ff -m "chore(release): merge $FROM into $TO [skip ci]"; then
+          if ! git merge "origin/$FROM" --no-ff -m "chore(release): merge $FROM into $TO [skip ci]"; then
             for f in package.json package-lock.json bun.lock pnpm-lock.yaml yarn.lock CHANGELOG.md $RESOLVE_EXTRA; do
               if git status --porcelain=v1 -- "$f" | grep -q '^UU'; then
                 git checkout --theirs -- "$f"

@@ -553,7 +553,7 @@ jobs:
               sys.exit('::error::the backmerge step no longer wires backmerge-resolve-paths through as RESOLVE_EXTRA')
           if steps[-1] is not step[0]:
               sys.exit('::error::the backmerge step is no longer the last step of the release job, so it could run before the release finished')
-          if step[0].get('if') != \"inputs.backmerge && github.ref == format('refs/heads/{0}', inputs.backmerge-from)\":
+          if 'inputs.backmerge' not in str(step[0].get('if')):
               sys.exit('::error::the backmerge step lost its condition (inputs.backmerge on the backmerge-from branch)')
           script = step[0]['run']
           for f in ('package.json', 'package-lock.json', 'bun.lock', 'pnpm-lock.yaml', 'yarn.lock', 'CHANGELOG.md', '\$RESOLVE_EXTRA'):

@@ -12,7 +12,7 @@
 # installs exactly those, unpinned, as it always did.
 #
 # Usage: install.sh <this-directory> <prefix> [packages]
-# Env:   GITHUB_PATH, GITHUB_ENV  written when set, so later steps find the
+# Env:   GITHUB_PATH, GITHUB_ENV  written, so later steps find the
 #        `semantic-release` binary and a CommonJS release config can still
 #        `require()` a plugin by name.
 set -euo pipefail
@@ -39,7 +39,7 @@ if [ ! -f "$prefix/.ready" ]; then
   touch "$prefix/.ready"
 fi
 
-echo "$prefix/node_modules/.bin" >> "${GITHUB_PATH:-/dev/null}"
+echo "$prefix/node_modules/.bin" >> "$GITHUB_PATH"
 # semantic-release finds its own plugins from its own directory, so this is
 # only for a config that require()s one. NODE_PATH covers CommonJS, not ESM.
-echo "NODE_PATH=$prefix/node_modules${NODE_PATH:+:$NODE_PATH}" >> "${GITHUB_ENV:-/dev/null}"
+echo "NODE_PATH=$prefix/node_modules${NODE_PATH:+:$NODE_PATH}" >> "$GITHUB_ENV"

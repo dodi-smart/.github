@@ -33,12 +33,9 @@ on:
         type: string
         default: "@stack"
 
-      # Installed only when `release-command` is empty, i.e. when this workflow
-      # drives semantic-release itself. Empty installs the set pinned in
-      # actions/release-tooling: semantic-release, the git, github, changelog
-      # and exec plugins, replace-plugin, scope-filter, backmerge, and
-      # conventionalcommits@9. A list here replaces that set entirely, and is
-      # installed unpinned as a space-separated list of package specs.
+      # Installed only when `release-command` is empty. Empty installs the set
+      # pinned in actions/release-tooling. A list replaces that set entirely and
+      # is installed unpinned, as space-separated package specs.
       semantic-release-packages:
         type: string
         default: ""

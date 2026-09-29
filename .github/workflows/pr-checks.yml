@@ -174,14 +174,13 @@ jobs:
       - id: need
         env:
           SPLIT:      ${{ !inputs.single-job && steps.docs.outputs.all-matched != 'true' }}
-          COMMITLINT: ${{ inputs.commitlint }}
           ZAVET:      ${{ inputs.zavet }}
           RD:         ${{ steps.rd.outputs.matched }}
           COVERAGE:   ${{ inputs.coverage != 'none' && steps.docs.outputs.all-matched != 'true' }}
         run: |
           set -euo pipefail
           need=false
-          for v in "$SPLIT" "$COMMITLINT" "$ZAVET" "$RD" "$COVERAGE"; do
+          for v in "$SPLIT" "$ZAVET" "$RD" "$COVERAGE"; do
             [ "$v" = "true" ] && need=true
           done
           echo "needs_light=$need" >> "$GITHUB_OUTPUT"
@@ -202,10 +201,13 @@ jobs:
           gh-app-client-id:   ${{ secrets.GH_APP_CLIENT_ID }}
           gh-app-private-key: ${{ secrets.GH_APP_PRIVATE_KEY }}
 
+  # Hosted on purpose: the action is a Docker container action, and on the
+  # self-hosted fleet the runner itself runs in a container on a shared daemon,
+  # so the workspace it mounts does not exist on the host and the action sees
+  # no config and no commits. Same trap as supabase-checks.
   commitlint:
     if: inputs.commitlint
-    needs: [pick]
-    runs-on: ${{ fromJson(needs.pick.outputs.light) }}
+    runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
       contents: read

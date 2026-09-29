@@ -565,8 +565,7 @@ starts three workflow runs per push, and each of the last two pays for its own
 hosted runner picker. `pr-checks.yml` already has one hosted `pick` job, so
 `zavet` and `react-doctor` can be opt-in jobs beside `checks`, on the light
 pool. That saves about 2 billed hosted minutes per push, per repo that used
-both. `commitlint` no longer starts a hosted job either: it runs on the light
-pool, so a repo with it enabled saves a third.
+both.
 
 ```yaml
 jobs:
@@ -601,7 +600,9 @@ context that is never created would wait forever.
 `commitlint` uses `wagoid/commitlint-github-action` as before. It reads the
 pull request's commits through the API and bundles `config-conventional` and the
 other configs it supports, so the checkout is one commit deep. A config that
-extends a package outside that bundle never worked and still does not.
+extends a package outside that bundle never worked and still does not. It stays
+on `ubuntu-latest`: it is a Docker container action, and the self-hosted
+runners cannot mount a workspace into it.
 
 ### setup-stack inputs and outputs
 

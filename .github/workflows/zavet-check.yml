@@ -48,7 +48,7 @@ on:
       # tooling resolves on demand.
       install: { type: string, default: "@stack" }
       node-version:    { type: string, default: "24" }
-      bun-version:     { type: string, default: "latest" }
+      bun-version:     { type: string, default: "auto" }
       java-version:    { type: string, default: "21" }
       flutter-version: { type: string, default: "" }
     secrets:

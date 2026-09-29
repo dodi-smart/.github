@@ -659,6 +659,17 @@ jobs:
       - name: Shared config links into a consumer
         run: ./actions/semantic-release-config/test.sh
 
+      # env and build-env parsing, and bun version resolution.
+      - name: setup-stack parses env files and resolves bun
+        run: ./actions/setup-stack/test.sh
+
+      # A branch ref moves under every caller, and Renovate never proposes a change.
+      - name: No action is pinned to a branch
+        run: |
+          if grep -nE '^\s*-?\s*uses:\s*\S+@(stable|main|master)\s*(#.*)?$' .github/workflows/*.yml actions/*/action.yml; then
+            echo "::error::pin a tag or a full SHA, never a branch"; exit 1
+          fi
+
       - name: Shell scripts pass shellcheck
         run: |
           sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck

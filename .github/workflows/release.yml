@@ -73,7 +73,7 @@ on:
         default: ""
 
       node-version:    { type: string, default: "lts/*" }
-      bun-version:     { type: string, default: "latest" }
+      bun-version:     { type: string, default: "auto" }
       timeout-minutes: { type: number, default: 30 }
     outputs:
       released:

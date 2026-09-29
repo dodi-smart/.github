@@ -60,6 +60,9 @@ jobs:
       - name: Sticky comment picks the right comment
         run: ./actions/sticky-comment/test.sh
 
+      - name: commitlint lints every PR commit without Docker
+        run: ./actions/commitlint/test.sh
+
       # A skip built on changed-files is a positive claim, so every doubt has to
       # come out as `matched=true`, the 3000-file cap included.
       - name: Changed files count every doubt as a match

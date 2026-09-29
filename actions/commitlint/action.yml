@@ -1,0 +1,30 @@
+# Lint a pull request's commit messages with the commitlint CLI.
+# Thin wrapper; the reasoning is in lint.sh.
+name: Commitlint
+description: Lint a pull request's commit messages with a pinned commitlint CLI, without Docker.
+
+inputs:
+  config:
+    description: 'Path of the commitlint config in the checkout. Missing means config-conventional.'
+    default: '.commitlintrc.json'
+  number:
+    description: 'Pull request number'
+    required: true
+
+runs:
+  using: composite
+  steps:
+    # @commitlint/cli 21 needs Node 22.12 or later.
+    - uses: actions/setup-node@v7
+      with:
+        node-version: 24
+
+    - shell: bash
+      env:
+        CONFIG:      ${{ inputs.config }}
+        NUMBER:      ${{ inputs.number }}
+        REPO:        ${{ github.repository }}
+        GH_TOKEN:    ${{ github.token }}
+        PREFIX:      ${{ runner.temp }}/commitlint
+        ACTION_PATH: ${{ github.action_path }}
+      run: '"$ACTION_PATH/lint.sh"'

@@ -922,6 +922,18 @@ jobs:
             echo "::error::the ~/.konan cache uses restore-keys. Exact key only."; exit 1
           fi
 
+      # A self-hosted runner's tool cache belongs to another user; without this
+      # every flutter command dies on git's ownership check.
+      - name: The Flutter SDK directory is trusted, and only that one
+        run: |
+          # shellcheck disable=SC2016  # the literal ${...} is what is searched for
+          if ! grep -qF 'GIT_CONFIG_VALUE_${n}=${FLUTTER_ROOT}' actions/setup-stack/action.yml; then
+            echo "::error::setup-stack no longer trusts FLUTTER_ROOT for git; flutter fails on self-hosted runners"; exit 1
+          fi
+          if grep -nE 'safe\.directory[= ]+\*' actions/setup-stack/action.yml; then
+            echo "::error::safe.directory=* disables git's ownership check for every repository"; exit 1
+          fi
+
       # A branch ref moves under every caller, and Renovate never proposes a change.
       - name: No action is pinned to a branch
         run: |

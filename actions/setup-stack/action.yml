@@ -321,6 +321,26 @@ runs:
         channel: ${{ inputs.flutter-channel }}
         cache: ${{ steps.resolve.outputs.cache_enabled == 'true' }}
 
+    # The Flutter SDK is a git checkout, and the flutter tool runs git on every
+    # invocation. On a self-hosted runner the tool cache belongs to another user,
+    # so git refuses it ("dubious ownership") and every phase exits 128 before
+    # doing anything. Trust exactly FLUTTER_ROOT for the rest of the job, through
+    # GIT_CONFIG_* env (command scope, which safe.directory honours), appended
+    # after any pair already set. Never the wildcard, which trusts every
+    # repository, and never `git config --global`, which would outlive the job
+    # on a persistent runner.
+    - if: inputs.stack == 'flutter'
+      shell: bash
+      run: |
+        set -euo pipefail
+        [ -n "${FLUTTER_ROOT:-}" ] || { echo "::error::flutter-action set no FLUTTER_ROOT"; exit 1; }
+        n="${GIT_CONFIG_COUNT:-0}"
+        {
+          echo "GIT_CONFIG_KEY_${n}=safe.directory"
+          echo "GIT_CONFIG_VALUE_${n}=${FLUTTER_ROOT}"
+          echo "GIT_CONFIG_COUNT=$((n + 1))"
+        } >> "$GITHUB_ENV"
+
     # A SHA of master: the action has no version tags. See AGENTS.md.
     - if: inputs.stack == 'rust'
       uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # master

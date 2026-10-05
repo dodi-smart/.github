@@ -1,3 +1,9 @@
+## [1.16.4](https://github.com/dodi-smart/.github/compare/v1.16.3...v1.16.4) (2026-10-05)
+
+### ⬆️ Dependencies
+
+* **deps:** update dtolnay/rust-toolchain digest to 7e38f4b ([7ec47b3](https://github.com/dodi-smart/.github/commit/7ec47b3625a1dd7268d68f7f5f96cc314c0fbfde))
+
 ## [1.16.3](https://github.com/dodi-smart/.github/compare/v1.16.2...v1.16.3) (2026-09-29)
 
 ### 🐛 Bug Fixes

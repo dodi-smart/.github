@@ -1,3 +1,13 @@
+## [1.16.5](https://github.com/dodi-smart/.github/compare/v1.16.4...v1.16.5) (2026-10-05)
+
+### 🐛 Bug Fixes
+
+* **release-tooling:** pin beta analyzer and notes generator for conventionalcommits v10 ([f39ae1f](https://github.com/dodi-smart/.github/commit/f39ae1f326f8f4cd7d78541ca428a02628bdd161))
+
+### ⬆️ Dependencies
+
+* **deps:** update dependency conventional-changelog-conventionalcommits to v10 ([c328ec2](https://github.com/dodi-smart/.github/commit/c328ec23426b163ee51145892f1325866b67eb2c))
+
 ## [1.16.4](https://github.com/dodi-smart/.github/compare/v1.16.3...v1.16.4) (2026-10-05)
 
 ### ⬆️ Dependencies

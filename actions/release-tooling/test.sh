@@ -38,9 +38,11 @@ cat > package.json <<'JSON'
 { "name": "consumer", "version": "1.0.0", "private": true, "dependencies": { "left-pad": "1.3.0" } }
 JSON
 # A CommonJS config that require()s a plugin package by name, as some callers'
-# configs do. It resolves through NODE_PATH, and only there.
+# configs do. It resolves through NODE_PATH, and only there. Not the preset:
+# conventional-changelog-conventionalcommits v10 exports an `import` condition
+# only, so no CommonJS config can require() it however it is resolved.
 cat > .releaserc.js <<'JS'
-require("conventional-changelog-conventionalcommits");
+require("semantic-release-scope-filter");
 module.exports = {
   branches: ["main"],
   plugins: [

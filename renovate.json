@@ -6,6 +6,7 @@
   "baseBranchPatterns": [
     "main"
   ],
+  "npmrc": "allow-remote=all",
   "customManagers": [
     {
       "description": "The hk schema hk.pkl amends, pinned in its package URL. Grouped with the hk binary in mise.toml so both move together",

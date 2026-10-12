@@ -1,3 +1,10 @@
+## [1.16.6](https://github.com/dodi-smart/.github/compare/v1.16.5...v1.16.6) (2026-10-12)
+
+### ⬆️ Dependencies
+
+* **deps:** update dependency conventional-changelog-conventionalcommits to v10.4.1 ([263c1a9](https://github.com/dodi-smart/.github/commit/263c1a993b51de53cbc1c12930b37113f026ac7e))
+* **deps:** update dtolnay/rust-toolchain digest to e2a55d2 ([f9e6307](https://github.com/dodi-smart/.github/commit/f9e63078f71fe1570672b3708088894d6da0df82))
+
 ## [1.16.5](https://github.com/dodi-smart/.github/compare/v1.16.4...v1.16.5) (2026-10-05)
 
 ### 🐛 Bug Fixes

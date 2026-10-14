@@ -1,52 +1,94 @@
-# Start the local Supabase database, with the stack's Docker images cached.
+# Start the local Supabase database, with what the stack downloads cached.
 #
-# `supabase db start` spends about 65 of its 85 seconds pulling images, and two
-# jobs of one workflow pull the same ones. Loading a saved tar costs about half
-# of that, and takes the registry's rate limits out of the path.
+# Two runtimes:
+#
+# - `docker` (the default): the CLI's classic `supabase db start`. It spends about
+#   65 of its 85 seconds pulling images, and two jobs of one workflow pull the
+#   same ones. Loading a saved tar costs about half of that, and takes the
+#   registry's rate limits out of the path.
+# - `native`: the CLI's stack mode on its native runtime. Every service runs as a
+#   host process, with no container engine, so it works on a runner that has no
+#   Docker daemon, or only a shared one it cannot publish ports through. Postgres
+#   starts at once and other services on first request. The downloads land in
+#   one directory, which is what gets cached. Stack mode rejects some settings in
+#   the local sections of `supabase/config.toml` (auth email `content_path` is
+#   the usual one; it is accepted under `[remotes.*]`). It needs CLI 2.119 or
+#   later; generated types depend on the CLI version, not the runtime, so a repo
+#   whose committed types came from an older CLI regenerates them when it bumps.
 #
 # Run it after `supabase/setup-cli`: the key names the CLI, which is what picks
-# the image tags.
+# the image tags and the native service versions.
 #
-# The key is exact, with no `restore-keys`. A near miss would load images the CLI
-# no longer asks for, and a cache that quietly serves stale images is worse than
-# a cold pull. What picks the tags: the CLI version, `supabase/config.toml` (the
-# postgres major version, and which services are on), and the pins `supabase
-# link` writes to `supabase/.temp/*-version`.
+# The key is exact, with no `restore-keys`. A near miss would load images or
+# services the CLI no longer asks for, and a cache that quietly serves stale ones
+# is worse than a cold download. What picks them: the CLI version, the runtime,
+# `supabase/config.toml` (the postgres major version, and which services are on),
+# and the pins `supabase link` writes to `supabase/.temp/*-version`.
 #
-# Only the images of the containers `db start` launched are saved. Anything a
-# later step pulls, such as the type generator's image, is pulled as before.
+# With `docker`, only the images of the containers `db start` launched are saved;
+# anything a later step pulls is pulled as before. With `native`, everything the
+# job downloaded is saved when the job ends.
 name: Supabase start
-description: Start the local Supabase database, restoring the stack's Docker images from the cache and saving them on a miss.
+description: Start the local Supabase database, on Docker (classic) or the native runtime (stack mode), restoring its downloads from the cache and saving them on a miss.
+
+inputs:
+  runtime:
+    description: >-
+      `docker` runs the classic `supabase db start`. `native` runs stack mode on
+      the native runtime: no container engine, Linux amd64/arm64, needs the CLI at
+      2.119 or later, `tar`, and `github.com` plus
+      `release-assets.githubusercontent.com` reachable.
+    default: docker
+
+outputs:
+  db-url:
+    description: Connection URL of the local database, whichever runtime started it.
+    value: ${{ steps.url.outputs.db-url }}
 
 runs:
   using: composite
   steps:
     - id: key
       shell: bash
+      env:
+        RUNTIME: ${{ inputs.runtime }}
       run: |
         set -euo pipefail
+        case "$RUNTIME" in
+          docker|native) ;;
+          *) echo "::error::runtime must be docker or native, got: $RUNTIME"; exit 1 ;;
+        esac
         cli="$(supabase --version)"
         pins="$({ cat supabase/config.toml supabase/.temp/*-version 2>/dev/null || true; } | sha256sum | cut -c1-16)"
-        echo "key=supabase-images-v1-${RUNNER_OS}-${RUNNER_ARCH}-${cli}-${pins}" >> "$GITHUB_OUTPUT"
+        # Native downloads services on first use, so jobs that use different
+        # services fill different caches; the job name keeps them apart.
+        if [ "$RUNTIME" = native ]; then
+          kind="native-${GITHUB_JOB}" path="${HOME}/.supabase/cache/stack"
+        else
+          kind="images" path="${RUNNER_TEMP}/supabase-images.tar"
+        fi
+        echo "key=supabase-${kind}-v1-${RUNNER_OS}-${RUNNER_ARCH}-${cli}-${pins}" >> "$GITHUB_OUTPUT"
+        echo "path=${path}" >> "$GITHUB_OUTPUT"
 
     - id: cache
       uses: actions/cache@v6
       with:
-        path: ${{ runner.temp }}/supabase-images.tar
+        path: ${{ steps.key.outputs.path }}
         key: ${{ steps.key.outputs.key }}
 
     - name: Load cached images
-      if: steps.cache.outputs.cache-hit == 'true'
+      if: inputs.runtime == 'docker' && steps.cache.outputs.cache-hit == 'true'
       shell: bash
       env:
-        TAR: ${{ runner.temp }}/supabase-images.tar
+        TAR: ${{ steps.key.outputs.path }}
       run: docker load --input "$TAR" || echo "::warning::could not load the cached images; \`db start\` will pull them"
 
     # On failure, dump every container's state and logs: `db start` reports only
     # "connection refused", which says the postgres container died but not why.
     # The real error is in that container's log on the runner, unreachable except
     # through this step's own output.
-    - name: Start Supabase (local)
+    - name: Start Supabase (local, Docker)
+      if: inputs.runtime == 'docker'
       shell: bash
       run: |
         if ! supabase db start --debug; then
@@ -61,12 +103,48 @@ runs:
           exit 1
         fi
 
+    # Stack mode stays on for the rest of the job, so `test db`, `gen types
+    # --local` and the other local targets reach this stack. Postgres `initdb`
+    # refuses to run as root, which is how a job inside a container usually runs,
+    # so a root job gets an unprivileged account for it.
+    - name: Start Supabase (local, native)
+      if: inputs.runtime == 'native'
+      shell: bash
+      run: |
+        set -euo pipefail
+        echo "SUPABASE_EXPERIMENTAL_STACK=1" >> "$GITHUB_ENV"
+        export SUPABASE_EXPERIMENTAL_STACK=1
+        if [ "$(id -u)" = 0 ] && [ -z "${SUPABASE_NATIVE_POSTGRES_USER:-}" ]; then
+          id supabase >/dev/null 2>&1 || useradd --create-home supabase
+          echo "SUPABASE_NATIVE_POSTGRES_USER=supabase" >> "$GITHUB_ENV"
+          export SUPABASE_NATIVE_POSTGRES_USER=supabase
+        fi
+        supabase start --runtime native --preparation on-demand
+
+    # A repo whose config sets `[experimental] stack = true` gets a stack-mode
+    # project from `db start` too, on ports the CLI picks, so nothing below may
+    # assume 54322. Stack mode reports through `--output-format json`; the classic
+    # backend through `-o env`.
+    - id: url
+      shell: bash
+      run: |
+        set -euo pipefail
+        url="$(supabase status --output-format json 2>/dev/null | jq -r '.env.DB_URL // empty' 2>/dev/null || true)"
+        if [ -z "$url" ]; then
+          url="$(supabase status -o env 2>/dev/null | sed -n 's/^DB_URL="\{0,1\}\([^"]*\)"\{0,1\}$/\1/p' | head -1)"
+        fi
+        if [ -z "$url" ]; then
+          echo "::error::could not read the local database URL from supabase status"
+          exit 1
+        fi
+        echo "db-url=${url}" >> "$GITHUB_OUTPUT"
+
     # The cache action saves this file when the job ends, and only on a miss.
     - name: Save images for the cache
-      if: steps.cache.outputs.cache-hit != 'true'
+      if: inputs.runtime == 'docker' && steps.cache.outputs.cache-hit != 'true'
       shell: bash
       env:
-        TAR: ${{ runner.temp }}/supabase-images.tar
+        TAR: ${{ steps.key.outputs.path }}
       run: |
         set -euo pipefail
         images="$(docker ps --format '{{.Image}}' | grep -E '(public\.ecr\.aws|ghcr\.io)/supabase/' | sort -u || true)"

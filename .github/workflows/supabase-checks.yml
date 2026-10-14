@@ -15,6 +15,8 @@
 # publishes postgres's ports on the HOST's localhost while the CLI polls the
 # CONTAINER's own 127.0.0.1, where nothing listens. `ubuntu-latest` is the only
 # runner class here where the CLI's own localhost is the one postgres bound.
+# `runtime: native` runs no containers at all, which removes that reason; moving
+# native jobs onto the fleet is a separate change, once a native run is proven.
 #
 # Each job's `if:` is written so a disabled feature reports `skipped`, never
 # `failure`. A caller can require `types` / `deno` / `pgtap` as status checks
@@ -68,6 +70,19 @@ on:
         description: "Run `supabase test db` (pgTAP suite in supabase/tests/) in its own job."
         type: boolean
         default: false
+      runtime:
+        description: >-
+          How the `types` and `pgtap` jobs run the local stack. `docker` (the
+          default) is the CLI's `supabase db start` on the runner's Docker.
+          `native` is the CLI's stack mode on its native runtime: every service
+          is a host process, with no container engine, Postgres starts at once
+          and the rest on first request, and the downloads are cached as one
+          directory. It needs `cli-version` 2.119 or later and a config stack
+          mode accepts (no auth email `content_path` outside `[remotes.*]`).
+          Generated types depend on `cli-version`, not on the runtime: bumping
+          the CLI to reach 2.119 can change the committed types file.
+        type: string
+        default: docker
       deno-version:
         type: string
         default: "v2.x"
@@ -105,18 +120,24 @@ jobs:
           version: ${{ inputs.cli-version }}
 
       - name: Start Supabase (local)
+        id: start
         if: steps.changes.outputs.matched == 'true'
         uses: dodi-smart/.github/actions/supabase-start@v1
+        with:
+          runtime: ${{ inputs.runtime }}
 
       # `db start` applies the seed once, so a fresh reset can never catch an
       # insert that is not re-runnable. A staging `db push --include-seed`
       # applies the same file again on every merge, where the second
       # application is the one that fails. Reproduce that here.
+      # The URL comes from the start step: a stack-mode project (either runtime,
+      # or a config with `stack = true`) listens on a port the CLI picked.
       - name: Verify the seed is re-runnable
         if: steps.changes.outputs.matched == 'true' && inputs.seed-check
+        env:
+          DB_URL: ${{ steps.start.outputs.db-url }}
         run: |
-          psql "postgresql://postgres:postgres@127.0.0.1:54322/postgres" \
-            -v ON_ERROR_STOP=1 -f supabase/seed.sql
+          psql "$DB_URL" -v ON_ERROR_STOP=1 -f supabase/seed.sql
           echo "Seed re-applied cleanly."
 
       - name: Verify types (local)
@@ -207,6 +228,8 @@ jobs:
       - name: Start Supabase (local)
         if: steps.changes.outputs.matched == 'true'
         uses: dodi-smart/.github/actions/supabase-start@v1
+        with:
+          runtime: ${{ inputs.runtime }}
 
       # `supabase test db` runs pg_prove over supabase/tests/*.sql against the
       # local database. Every file is expected to be self-contained (begin ...

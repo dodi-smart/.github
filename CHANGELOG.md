@@ -1,3 +1,9 @@
+## [1.17.1](https://github.com/dodi-smart/.github/compare/v1.17.0...v1.17.1) (2026-10-14)
+
+### 🐛 Bug Fixes
+
+* **supabase-start:** save only image references docker can resolve, and never fail the job on the cache ([6900298](https://github.com/dodi-smart/.github/commit/690029881dc2e7d702a6b1b1e0a1277fedd65235))
+
 ## [1.17.0](https://github.com/dodi-smart/.github/compare/v1.16.6...v1.17.0) (2026-10-14)
 
 ### ✨ Features

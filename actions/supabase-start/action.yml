@@ -147,10 +147,22 @@ runs:
         TAR: ${{ steps.key.outputs.path }}
       run: |
         set -euo pipefail
-        images="$(docker ps --format '{{.Image}}' | grep -E '(public\.ecr\.aws|ghcr\.io)/supabase/' | sort -u || true)"
+        # A stack-mode project (a config with `[experimental] stack = true` on CLI
+        # 2.119+) runs containers whose image reference `docker save` cannot
+        # resolve, so only references that resolve are saved. The cache is an
+        # optimisation: a save that still fails warns and never fails the job.
+        images=""
+        for ref in $(docker ps --format '{{.Image}}' | grep -E '(public\.ecr\.aws|ghcr\.io)/supabase/' | sort -u || true); do
+          docker image inspect "$ref" >/dev/null 2>&1 && images="$images $ref"
+        done
         if [ -z "$images" ]; then
           echo "::notice::no Supabase images found to cache"
           exit 0
         fi
-        printf '%s\n' "$images" | xargs docker save --output "$TAR"
-        du -h "$TAR"
+        # shellcheck disable=SC2086 # word splitting is the point: one argument per image
+        if docker save --output "$TAR" $images; then
+          du -h "$TAR"
+        else
+          rm -f "$TAR"
+          echo "::warning::could not save the Supabase images; the next run pulls them"
+        fi

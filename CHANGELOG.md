@@ -1,3 +1,9 @@
+## [1.17.0](https://github.com/dodi-smart/.github/compare/v1.16.6...v1.17.0) (2026-10-14)
+
+### ✨ Features
+
+* **supabase:** add an opt-in native runtime to supabase-checks and take the database URL from the start step ([a4e80ab](https://github.com/dodi-smart/.github/commit/a4e80ab9eec807e9ce2b07b5e87c535407fc0982))
+
 ## [1.16.6](https://github.com/dodi-smart/.github/compare/v1.16.5...v1.16.6) (2026-10-12)
 
 ### ⬆️ Dependencies

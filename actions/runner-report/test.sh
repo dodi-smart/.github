@@ -164,7 +164,7 @@ has summary.md '| Pool | m4pro |' "pool from the name when the job is not found"
 
 echo "no gh on PATH: curl fallback"
 CASE_PATH="$T/curlbin" run_case "$T/selfhosted.json" RUNNER_NAME=hetzner-linux-03 RUNNER_OS=Linux RUNNER_ARCH=X64
-exit0 "curl, unparseable page"
+exit0 "curl, unparsable page"
 has summary.md '| Queued | n/a (needs actions: read) |' "a bad curl response degrades, never fails"
 # The two-object fixture is gh's --paginate shape, not one curl page; use page 2.
 CASE_PATH="$T/curlbin" run_case "$T/page2.json" RUNNER_NAME=hetzner-linux-03 RUNNER_OS=Linux RUNNER_ARCH=X64

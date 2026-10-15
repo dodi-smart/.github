@@ -1,0 +1,59 @@
+# Which runner did this job get, and how long did it wait for one? Thin wrapper;
+# the mechanics and the reasoning are in report.sh.
+name: Runner report
+description: >-
+  Write the runner a job landed on (name, pool, labels, OS, image, queue time)
+  to the job summary and a notice. Never fails the job.
+
+inputs:
+  mode:
+    description: >-
+      `job` writes this job's runner. `run` writes a "Where it ran" table for
+      every job of the current run attempt, for the last job of a workflow.
+    default: job
+  selector:
+    description: 'The runner selector the job asked for, shown as-is. Optional.'
+    default: ''
+  token:
+    description: >-
+      Token for the jobs API. Queue time and labels need `actions: read`; without
+      it the report still names the runner and says why the rest is missing.
+    default: ${{ github.token }}
+  repository:
+    description: 'owner/repo'
+    default: ${{ github.repository }}
+  run-id:
+    description: 'Workflow run id'
+    default: ${{ github.run_id }}
+  run-attempt:
+    description: 'Workflow run attempt'
+    default: ${{ github.run_attempt }}
+
+outputs:
+  runner:
+    description: 'Name of the runner this job is on'
+    value: ${{ steps.report.outputs.runner }}
+  pool:
+    description: '`hetzner`, `beelink`, `rpi5`, `m4pro`, `self-hosted` (no pool label) or `hosted`'
+    value: ${{ steps.report.outputs.pool }}
+  queued-seconds:
+    description: 'Seconds this job waited for a runner, or empty when it could not be read'
+    value: ${{ steps.report.outputs.queued-seconds }}
+  markdown:
+    description: 'The table written to the summary, for reuse in a comment footer'
+    value: ${{ steps.report.outputs.markdown }}
+
+runs:
+  using: composite
+  steps:
+    - id: report
+      shell: bash
+      env:
+        MODE:        ${{ inputs.mode }}
+        SELECTOR:    ${{ inputs.selector }}
+        GH_TOKEN:    ${{ inputs.token }}
+        REPO:        ${{ inputs.repository }}
+        RUN_ID:      ${{ inputs.run-id }}
+        RUN_ATTEMPT: ${{ inputs.run-attempt }}
+        ACTION_PATH: ${{ github.action_path }}
+      run: '"$ACTION_PATH/report.sh"'

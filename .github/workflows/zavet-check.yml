@@ -64,6 +64,9 @@ jobs:
       contents: read
       pull-requests: write
     steps:
+      - uses: dodi-smart/.github/actions/runner-report@v1
+        with:
+          selector: ${{ needs.pick-runner.outputs.selector }}
       - uses: actions/checkout@v7
         with: { fetch-depth: 0, persist-credentials: false }
 

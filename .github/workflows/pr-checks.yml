@@ -11,10 +11,15 @@
 # tests) to the large one. Any step whose command resolves to empty is skipped.
 # `single-job: true` collapses the split onto the heavy runner.
 #
-# ONE hosted `pick` job resolves both runners and whether the change is
-# docs-only, reading the changed files through the API with no checkout.
-# `pr-checks` at the bottom always runs and is the one context a ruleset
-# should require.
+# ONE `pick` job resolves both runners and whether the change is docs-only,
+# reading the changed files through the API with no checkout. `pr-checks` at the
+# bottom always runs and is the one context a ruleset should require.
+#
+# `pick` and `pr-checks` are helper jobs that run no caller code, so in a private
+# repo they run on the light pool and cost no GitHub-hosted minutes. A public
+# repo or a fork PR keeps ubuntu-latest, and `vars.DODI_RUNS_ON_LIGHT` repoints
+# both at once (the emergency switch to hosted). The expression is written out in
+# each job because `runs-on` cannot read `env`.
 name: PR Checks
 
 # This workflow runs the caller's own code (install scripts, tests, builds), so
@@ -146,13 +151,17 @@ on:
       GH_APP_PRIVATE_KEY: { required: false }
 
 jobs:
-  # ONE hosted job resolves both runners and whether the diff is docs-only.
-  # It always runs, unlike the jobs it feeds -- it is the job a docs-only skip
-  # and single-job mode both still need, and its own two picks are what let
+  # ONE job resolves both runners and whether the diff is docs-only. It always
+  # runs, unlike the jobs it feeds -- it is the job a docs-only skip and
+  # single-job mode both still need, and its own two picks are what let
   # `checks`/`test`/`build`/`all` skip cleanly through `needs.pick.outputs`.
+  #
+  # It needs bash, git, gh, jq and python3 (`changed-files` matches globs with
+  # Python's fnmatch). A missing one degrades to "not docs-only, run everything"
+  # and silently skips React Doctor, so the tool check below says so out loud.
   pick:
     name: Pick runner
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON((github.event.repository.private && !github.event.pull_request.head.repo.fork) && (vars.DODI_RUNS_ON_LIGHT || '["self-hosted","Linux","light"]') || '"ubuntu-latest"') }}
     timeout-minutes: 10
     permissions:
       contents: read
@@ -163,6 +172,13 @@ jobs:
       docs_only: ${{ steps.docs.outputs.all-matched }}
       react_doctor: ${{ inputs.react-doctor && steps.rd.outputs.matched == 'true' }}
     steps:
+      - uses: dodi-smart/.github/actions/runner-report@v1
+      - name: Check the tools changed-files needs
+        run: |
+          for t in gh jq python3; do
+            command -v "$t" >/dev/null || echo "::warning title=Runner is missing $t::changed-files needs $t, so docs-only detection and the React Doctor path filter will not work on this runner."
+          done
+
       # `all-matched` is a positive claim, never a fallback: it is `true` only
       # when the whole list was read and every file matches `docs-only-paths`.
       # A `workflow_dispatch` (no PR), an API error, an empty list and the
@@ -198,17 +214,17 @@ jobs:
         if: ${{ steps.need.outputs.needs_light == 'true' }}
         uses: dodi-smart/.github/actions/pick-runner@v1
         with:
-          weight:             ${{ inputs.light-weight }}
-          gh-app-client-id:   ${{ secrets.GH_APP_CLIENT_ID }}
-          gh-app-private-key: ${{ secrets.GH_APP_PRIVATE_KEY }}
+          weight:        ${{ inputs.light-weight }}
+          runs-on-light: ${{ vars.DODI_RUNS_ON_LIGHT }}
+          runs-on-heavy: ${{ vars.DODI_RUNS_ON_HEAVY }}
 
       - id: heavy
         if: ${{ steps.docs.outputs.all-matched != 'true' }}
         uses: dodi-smart/.github/actions/pick-runner@v1
         with:
-          weight:             ${{ inputs.heavy-weight }}
-          gh-app-client-id:   ${{ secrets.GH_APP_CLIENT_ID }}
-          gh-app-private-key: ${{ secrets.GH_APP_PRIVATE_KEY }}
+          weight:        ${{ inputs.heavy-weight }}
+          runs-on-light: ${{ vars.DODI_RUNS_ON_LIGHT }}
+          runs-on-heavy: ${{ vars.DODI_RUNS_ON_HEAVY }}
 
   # A CLI, not a Docker action: see actions/commitlint.
   commitlint:
@@ -220,6 +236,9 @@ jobs:
       contents: read
       pull-requests: read
     steps:
+      - uses: dodi-smart/.github/actions/runner-report@v1
+        with:
+          selector: ${{ needs.pick.outputs.light }}
       - uses: dodi-smart/.github/actions/commitlint@v1
         with:
           config: ${{ inputs.commitlint-config }}
@@ -236,6 +255,9 @@ jobs:
       contents: read
       pull-requests: write     # the failure comment
     steps:
+      - uses: dodi-smart/.github/actions/runner-report@v1
+        with:
+          selector: ${{ needs.pick.outputs.light }}
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
@@ -262,6 +284,9 @@ jobs:
       pull-requests: write     # the action posts its own sticky comment
       statuses: write          # and a commit status carrying the score
     steps:
+      - uses: dodi-smart/.github/actions/runner-report@v1
+        with:
+          selector: ${{ needs.pick.outputs.light }}
       - uses: dodi-smart/.github/actions/react-doctor@v1
         with:
           directory: ${{ inputs.react-doctor-directory }}
@@ -281,6 +306,9 @@ jobs:
     runs-on: ${{ fromJson(needs.pick.outputs.light) }}
     timeout-minutes: ${{ inputs.timeout-minutes }}
     steps:
+      - uses: dodi-smart/.github/actions/runner-report@v1
+        with:
+          selector: ${{ needs.pick.outputs.light }}
       - uses: actions/checkout@v7
         with: { persist-credentials: false }
       - id: setup
@@ -358,6 +386,9 @@ jobs:
     outputs:
       workspace: ${{ github.workspace }}    # the coverage job maps report paths with it
     steps:
+      - uses: dodi-smart/.github/actions/runner-report@v1
+        with:
+          selector: ${{ needs.pick.outputs.heavy }}
       # Default depth: no reporter needs history; they list changed files
       # through the API.
       - uses: actions/checkout@v7
@@ -408,6 +439,9 @@ jobs:
     runs-on: ${{ fromJson(needs.pick.outputs.heavy) }}
     timeout-minutes: ${{ inputs.timeout-minutes }}
     steps:
+      - uses: dodi-smart/.github/actions/runner-report@v1
+        with:
+          selector: ${{ needs.pick.outputs.heavy }}
       - uses: actions/checkout@v7
         with: { persist-credentials: false }
       - id: setup
@@ -446,6 +480,9 @@ jobs:
     outputs:
       workspace: ${{ github.workspace }}    # the coverage job maps report paths with it
     steps:
+      - uses: dodi-smart/.github/actions/runner-report@v1
+        with:
+          selector: ${{ needs.pick.outputs.heavy }}
       - uses: actions/checkout@v7
         with: { persist-credentials: false }
       - id: setup
@@ -558,6 +595,9 @@ jobs:
       # `test` or `all`, whichever ran: the workspace the report was written in.
       WRITER_WORKSPACE: ${{ needs.test.outputs.workspace || needs.all.outputs.workspace }}
     steps:
+      - uses: dodi-smart/.github/actions/runner-report@v1
+        with:
+          selector: ${{ needs.pick.outputs.light }}
       # The artifact holds one file, or vitest's two, named by basename, so the
       # reporters read `coverage/*` whatever `coverage-path` was.
       - if: inputs.coverage == 'vitest'
@@ -627,13 +667,25 @@ jobs:
   # `build` runs beside it.
   #
   # `zavet` and `react-doctor` stay out of `needs` and the loop below on purpose.
+  #
+  # Its name is the required status context (`<caller job> / PR Checks`), so it
+  # never changes. It runs no caller code, so it runs on the light pool of a
+  # private repo; the fallback to ubuntu-latest and the `vars` switch are the
+  # same as `pick`'s.
   pr-checks:
     name: PR Checks
     needs: [pick, commitlint, checks, test, build, all, coverage]
     if: always()
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON((github.event.repository.private && !github.event.pull_request.head.repo.fork) && (vars.DODI_RUNS_ON_LIGHT || '["self-hosted","Linux","light"]') || '"ubuntu-latest"') }}
     timeout-minutes: 2
     steps:
+      - uses: dodi-smart/.github/actions/runner-report@v1
+      # The "Where it ran" table for every job of this run attempt. Before
+      # Summarize, which exits non-zero on a red run. `actions: read` is not
+      # granted here, so queue times read "n/a" and the runner names still show.
+      - uses: dodi-smart/.github/actions/runner-report@v1
+        with:
+          mode: run
       - name: Summarize
         env:
           PICK:          ${{ needs.pick.result }}

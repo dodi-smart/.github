@@ -8,8 +8,8 @@
 #
 # The action already runs its own setup-node, posts its own sticky pull request
 # comment, publishes its own commit status, and skips the comment when a pull
-# request changes no React-eligible files. This workflow adds a validated
-# runner, a timeout and permissions, and otherwise gets out of the way.
+# request changes no React-eligible files. This workflow adds a runner, a
+# timeout and permissions, and otherwise gets out of the way.
 name: React Doctor
 
 on:
@@ -77,6 +77,9 @@ jobs:
       pull-requests: write   # the action posts its own sticky comment
       statuses: write        # and a commit status carrying the score
     steps:
+      - uses: dodi-smart/.github/actions/runner-report@v1
+        with:
+          selector: ${{ needs.pick.outputs.selector }}
       # Checkout and scan live in the action, shared with pr-checks.yml.
       - uses: dodi-smart/.github/actions/react-doctor@v1
         with:

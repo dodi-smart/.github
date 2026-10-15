@@ -1,0 +1,28 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/jdx/jactionlint/main/schema/jactionlint-config.json
+#
+# Config for jactionlint, the workflow linter that hk runs here and in Self test.
+profile: default
+
+rules:
+  # Actions are pinned by a readable tag (`@v7`), not a commit SHA, on purpose.
+  # The shared Renovate preset sets `pinDigests: false` and holds a bump back for
+  # a release-age delay instead, so a SHA pin would only make every update
+  # unreadable. A bare `uses: owner/repo` with no ref still fails.
+  unpinned-uses:
+    policies:
+      "*": ref-pin
+  # The one `./` call is Publish release running this repo's own Self test.
+  self-repository: off
+
+# Capability labels the runner picker hands out. Jobs here get them through
+# `fromJson(...)`, which is not checked, but a literal `runs-on:` must match.
+self-hosted-runner:
+  labels: [light, large, gpu]
+
+ignores:
+  # The job tests the shared release config and runs no release, so nothing it
+  # restores from the cache can reach a published artifact.
+  - rule: cache-poisoning
+    file: .github/workflows/self-test.yml
+    uses: jdx/mise-action
+    reason: self test checks the release config, it never publishes

@@ -51,7 +51,8 @@ jobs:
       # Full history, or the commit analyser cannot see what changed since the
       # last tag and every run looks like the first one.
       # semantic-release pushes the changelog commit and the tags with these credentials.
-      - uses: actions/checkout@v7 # zizmor: ignore[artipacked]
+      # jactionlint ignore=artipacked
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
           persist-credentials: true

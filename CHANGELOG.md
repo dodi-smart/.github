@@ -1,3 +1,9 @@
+## [1.18.0](https://github.com/dodi-smart/.github/compare/v1.17.3...v1.18.0) (2026-10-15)
+
+### ✨ Features
+
+* **release:** add a next channel with pinned internal refs and a promote workflow ([765a834](https://github.com/dodi-smart/.github/commit/765a8347cfd5ea9283ff516d29aef546e5c703ab))
+
 ## [1.17.3](https://github.com/dodi-smart/.github/compare/v1.17.2...v1.17.3) (2026-10-15)
 
 ### 🐛 Bug Fixes

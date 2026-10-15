@@ -78,12 +78,9 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: npx semantic-release
 
-      # The channel commit rewrites files under .github/workflows, and GitHub
-      # refuses a push that changes a workflow file when the token is
-      # GITHUB_TOKEN, which can never hold the `workflows` permission. The org
-      # App can, so it is used for the channel push whenever its secrets are
-      # present. Without them the push below is attempted with GITHUB_TOKEN and
-      # fails loudly instead of leaving `next` half-moved.
+      # The channel commit rewrites workflow files, which GITHUB_TOKEN can never
+      # push. The org App can, so it is used whenever its secrets are present;
+      # without them the push is attempted with GITHUB_TOKEN and fails loudly.
       - id: have-app
         env:
           CLIENT_ID: ${{ secrets.GH_APP_CLIENT_ID }}
@@ -111,12 +108,7 @@ jobs:
       # semantic-release itself never would (it sees nothing new to release).
       - name: Move the next channel
         env:
-          APP_TOKEN: ${{ steps.app-token.outputs.token }}
-          REPO: ${{ github.repository }}
+          CHANNEL_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
           set -euo pipefail
-          args=()
-          if [ -n "${APP_TOKEN:-}" ]; then
-            args+=(--remote "https://x-access-token:${APP_TOKEN}@github.com/${REPO}.git")
-          fi
-          ./scripts/channel-tag.sh pin "${args[@]}" | tee -a "$GITHUB_STEP_SUMMARY"
+          ./scripts/channel-tag.sh pin | tee -a "$GITHUB_STEP_SUMMARY"

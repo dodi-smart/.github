@@ -21,7 +21,9 @@
 #
 # Both are idempotent: running one twice leaves the same tags in the same place.
 # Progress goes to stderr; stdout carries key=value lines a workflow can append
-# to its step summary or output.
+# to its step summary or output. With CHANNEL_TOKEN set the pushes go to
+# github.com/$GITHUB_REPOSITORY with that token, which is how a workflow pushes
+# workflow files (GITHUB_TOKEN may not); --remote overrides it.
 set -euo pipefail
 
 usage() { sed -n '2,/^set -e/p' "$0" | sed '$d;s/^# \{0,1\}//' >&2; exit 2; }
@@ -30,7 +32,10 @@ note() { echo "channel-tag: $*" >&2; }
 
 cmd="${1:-}"; [ -n "$cmd" ] || usage
 shift
-version="" remote="${CHANNEL_REMOTE:-origin}" push=1 force=0 auto=0 min_age=24
+version="" remote=origin push=1 force=0 auto=0 min_age=24
+if [ -n "${CHANNEL_TOKEN:-}" ]; then
+  remote="https://x-access-token:${CHANNEL_TOKEN}@github.com/${GITHUB_REPOSITORY:?CHANNEL_TOKEN needs GITHUB_REPOSITORY}.git"
+fi
 while [ $# -gt 0 ]; do
   case "$1" in
     --version) version="${2:?--version needs a value}"; shift 2 ;;
@@ -63,10 +68,14 @@ version_at() {
   return 0
 }
 
-push_tag() { # push_tag <tag> <force>
+push_tag() { # push_tag <tag> [--force]
   [ "$push" = 1 ] || return 0
-  if [ "$2" = 1 ]; then git push --force "$remote" "refs/tags/$1:refs/tags/$1"
-  else git push "$remote" "refs/tags/$1:refs/tags/$1"; fi
+  git push ${2:+"$2"} "$remote" "refs/tags/$1:refs/tags/$1"
+}
+
+move_tag() { # move_tag <tag> <commit>
+  git tag -f "$1" "$2" >/dev/null
+  push_tag "$1" --force
 }
 
 # Tags may exist on the remote only (a fresh checkout, a rerun elsewhere).
@@ -103,26 +112,20 @@ pin() {
     [ "$(git rev-parse "$pinned^")" = "$commit" ] || die "$pinned_tag exists but is not a child of $tag"
     note "$pinned_tag already exists ($pinned)"
   else
-    local idx files f blob
-    idx="$(mktemp "${TMPDIR:-/tmp}/channel-tag-index.XXXXXX")"
-    trap 'rm -f "$idx"' RETURN
-    rm -f "$idx"
-    export GIT_INDEX_FILE="$idx"
+    local idx mode path old new changed=0 tree
+    idx="$(mktemp -d "${TMPDIR:-/tmp}/channel-tag.XXXXXX")"
+    export GIT_INDEX_FILE="$idx/index"
     git read-tree "$commit"
-    files="$(git ls-tree -r --name-only "$commit" | grep -E '^(\.github/workflows/[^/]+\.ya?ml|actions/.+/action\.ya?ml)$' || true)"
-    local changed=0
-    while IFS= read -r f; do
-      [ -n "$f" ] || continue
-      blob="$(git show "$commit:$f" | rewrite "$version" | git hash-object -w --stdin)"
-      if [ "$blob" != "$(git rev-parse "$commit:$f")" ]; then
-        mode="$(git ls-tree "$commit" -- "$f" | cut -d' ' -f1)"
-        git update-index --cacheinfo "$mode,$blob,$f"
-        changed=$((changed + 1))
-      fi
-    done <<<"$files"
-    local tree
+    while IFS=$' \t' read -r mode _ old path; do
+      [[ "$path" =~ ^(\.github/workflows/[^/]+\.ya?ml|actions/.+/action\.ya?ml)$ ]] || continue
+      new="$(git cat-file blob "$old" | rewrite "$version" | git hash-object -w --stdin)"
+      [ "$new" != "$old" ] || continue
+      git update-index --cacheinfo "$mode,$new,$path"
+      changed=$((changed + 1))
+    done < <(git ls-tree -r "$commit" -- .github/workflows actions)
     tree="$(git write-tree)"
     unset GIT_INDEX_FILE
+    rm -rf "$idx"
     pinned="$(
       GIT_AUTHOR_NAME="${GIT_AUTHOR_NAME:-github-actions[bot]}" \
       GIT_AUTHOR_EMAIL="${GIT_AUTHOR_EMAIL:-41898282+github-actions[bot]@users.noreply.github.com}" \
@@ -134,7 +137,7 @@ pin() {
     git tag "$pinned_tag" "$pinned"
     note "created $pinned_tag ($pinned), $changed file(s) rewritten"
   fi
-  push_tag "$pinned_tag" 0
+  push_tag "$pinned_tag"
 
   # `next` never goes backwards on its own: a rerun of an older release must not
   # undo a newer one. --force is the deliberate way back.
@@ -147,8 +150,7 @@ pin() {
       return 0
     fi
   fi
-  git tag -f next "$pinned" >/dev/null
-  push_tag next 1
+  move_tag next "$pinned"
   note "next -> $pinned_tag"
   echo "moved=true"
   echo "version=$version"
@@ -185,8 +187,7 @@ promote() {
     fi
   fi
 
-  git tag -f "$major" "$target" >/dev/null
-  push_tag "$major" 1
+  move_tag "$major" "$target"
   note "$major -> $target_tag ($target), was ${curc:-unset}"
   echo "promoted=true"
   echo "version=$version"

@@ -81,17 +81,13 @@ jobs:
 
       - name: Promote
         env:
-          APP_TOKEN: ${{ steps.app-token.outputs.token }}
-          REPO: ${{ github.repository }}
+          CHANNEL_TOKEN: ${{ steps.app-token.outputs.token }}
           VERSION: ${{ inputs.version }}
           AUTO: ${{ github.event_name == 'schedule' }}
           MIN_AGE_HOURS: ${{ vars.AUTO_PROMOTE_MIN_AGE_HOURS || '24' }}
         run: |
           set -euo pipefail
           args=()
-          if [ -n "${APP_TOKEN:-}" ]; then
-            args+=(--remote "https://x-access-token:${APP_TOKEN}@github.com/${REPO}.git")
-          fi
           if [ -n "${VERSION:-}" ]; then args+=(--version "$VERSION"); fi
           if [ "$AUTO" = "true" ]; then args+=(--auto --min-age-hours "$MIN_AGE_HOURS"); fi
           {

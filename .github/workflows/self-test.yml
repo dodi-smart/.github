@@ -713,9 +713,9 @@ jobs:
           print('supabase cache key exact')
           SUPABASE
 
-      # v1 moves the moment semantic-release succeeds, so the only thing between
-      # a broken merge and every caller is this `needs`. Without it the two
-      # workflows race, and v1 has already moved when Self test reports.
+      # The release is cut the moment semantic-release succeeds, so the only thing
+      # between a broken merge and `next` is this `needs`. Without it the two
+      # workflows race, and `next` has already moved when Self test reports.
       - name: Publish release waits for Self test
         run: |
           set -euo pipefail
@@ -725,13 +725,13 @@ jobs:
           jobs = doc['jobs']
           gate = [n for n, j in jobs.items() if j.get('uses') == './.github/workflows/self-test.yml']
           if not gate:
-              print('::error::publish-release.yml no longer calls self-test.yml, so v1 can move before Self test passes')
+              print('::error::publish-release.yml no longer calls self-test.yml, so next can move before Self test passes')
               sys.exit(1)
           needs = jobs['release'].get('needs') or []
           if isinstance(needs, str):
               needs = [needs]
           if not set(gate) <= set(needs):
-              print('::error::the release job does not need ' + ', '.join(gate) + ', so v1 can move before Self test passes')
+              print('::error::the release job does not need ' + ', '.join(gate) + ', so next can move before Self test passes')
               sys.exit(1)
           print('release needs ' + ', '.join(gate))
           "

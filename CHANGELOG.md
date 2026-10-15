@@ -1,3 +1,9 @@
+## [1.22.1](https://github.com/dodi-smart/.github/compare/v1.22.0...v1.22.1) (2026-10-15)
+
+### 🐛 Bug Fixes
+
+* **deps-verify:** re-verify our own fix rounds and push fixes only where Renovate ignores the fix author ([de2c662](https://github.com/dodi-smart/.github/commit/de2c6625082e2cdbb38ef00cd556e91f84dde685))
+
 ## [1.22.0](https://github.com/dodi-smart/.github/compare/v1.21.0...v1.22.0) (2026-10-15)
 
 ### ✨ Features

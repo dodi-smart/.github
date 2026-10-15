@@ -145,7 +145,7 @@ jobs:
           token: ${{ steps.app-token.outputs.token || secrets.GITHUB_TOKEN || github.token }}
 
       - id: setup
-        uses: dodi-smart/.github/actions/setup-stack@v1
+        uses: dodi-smart/.github/actions/setup-stack@v1.21.0
         with:
           stack:        ${{ inputs.stack }}
           node-version: ${{ inputs.node-version }}
@@ -187,7 +187,7 @@ jobs:
       # `semantic-release` on PATH.
       - if: inputs.release-command == ''
         name: Install semantic-release
-        uses: dodi-smart/.github/actions/release-tooling@v1
+        uses: dodi-smart/.github/actions/release-tooling@v1.21.0
         with:
           packages: ${{ inputs.semantic-release-packages }}
 
@@ -197,7 +197,7 @@ jobs:
       # release config, and a caller that does not is unaffected: the link
       # sits unused.
       - if: inputs.shared-config
-        uses: dodi-smart/.github/actions/semantic-release-config@v1
+        uses: dodi-smart/.github/actions/semantic-release-config@v1.21.0
 
       # Tag-diff is the only stack-agnostic way to know what released: it works
       # for `modules`, for a custom `release-command`, and needs no cooperation

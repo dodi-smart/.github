@@ -57,6 +57,9 @@ concurrency:
   group: review-${{ github.repository }}-${{ github.event.pull_request.number }}
   cancel-in-progress: true
 
+# Every job grants its own, so one added later starts with nothing.
+permissions: {}
+
 jobs:
   # The picker runs INSIDE this job, after the last step that can still say
   # no. It is itself a hosted job, so it must never run for an event that will
@@ -219,7 +222,8 @@ jobs:
     steps:
       # Credentials persist here on purpose: the review agent works in this
       # checkout and may fetch from it.
-      - uses: actions/checkout@v7 # zizmor: ignore[artipacked]
+      # jactionlint ignore=artipacked
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
 

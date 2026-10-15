@@ -186,7 +186,8 @@ runs:
         RUNNER_ARCH: ${{ runner.arch }}
         RUNNER_OS: ${{ runner.os }}
       # The values written to GITHUB_ENV are cache paths under RUNNER_TEMP, never input.
-      run: | # zizmor: ignore[github-env]
+      # jactionlint ignore=github-env
+      run: |
         set -euo pipefail
         case "$STACK" in
           bun|node|gradle|android|flutter|rust|xcode|none) : ;;

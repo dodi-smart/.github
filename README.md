@@ -1095,8 +1095,9 @@ everything else, so nothing in the log will hint at it.
 or the Renovate preset. It asserts the kill switch across every workflow shape,
 checks the runner presets against the table above, parses every YAML file,
 validates the Renovate preset, and runs `hk check --all`. That runs shellcheck,
-actionlint, zizmor (workflow security, config in `zizmor.yml`), typos and the
-whitespace and merge-marker checks defined in `hk.pkl`.
+jactionlint (workflow correctness and security, config in
+`.github/jactionlint.yaml`), typos and the whitespace and merge-marker checks
+defined in `hk.pkl`.
 
 ### Git hooks
 

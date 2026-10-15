@@ -51,6 +51,9 @@ on:
       GH_APP_CLIENT_ID:   { required: false }
       GH_APP_PRIVATE_KEY: { required: false }
 
+# Every job grants its own, so one added later starts with nothing.
+permissions: {}
+
 jobs:
   # No `if:` here. A skipped caller job instantiates neither of these, so the
   # picker costs nothing for a pull request that will not be scanned.

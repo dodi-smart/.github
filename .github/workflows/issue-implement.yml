@@ -49,6 +49,9 @@ concurrency:
   group: implement-${{ github.repository }}-${{ github.event.issue.number }}
   cancel-in-progress: false      # never kill a run that may have pushed a branch
 
+# Every job grants its own, so one added later starts with nothing.
+permissions: {}
+
 jobs:
   # The picker runs INSIDE this job, after the last step that can still say
   # no. It is itself a hosted job, so it must never run for an event that will
@@ -171,7 +174,8 @@ jobs:
       id-token: write
     steps:
       # Credentials persist on purpose: the agent pushes its branch from this checkout.
-      - uses: actions/checkout@v7 # zizmor: ignore[artipacked]
+      # jactionlint ignore=artipacked
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
           ref: ${{ inputs.base-branch }}

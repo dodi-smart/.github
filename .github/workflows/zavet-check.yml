@@ -42,6 +42,9 @@ on:
       GH_APP_CLIENT_ID:   { required: false }
       GH_APP_PRIVATE_KEY: { required: false }
 
+# Every job grants its own, so one added later starts with nothing.
+permissions: {}
+
 jobs:
   pick-runner:
     permissions: {}   # the picker reads no GITHUB_TOKEN

@@ -341,7 +341,7 @@ jobs:
           "
 
       # This workflow runs the caller's own code, so no job holds a write token
-      # it does not use. zizmor covers checkouts and script expressions.
+      # it does not use. jactionlint covers checkouts and script expressions.
       - name: pr-checks keeps a read-only token and clones nothing to list files
         run: |
           set -euo pipefail
@@ -929,10 +929,10 @@ jobs:
             echo "::error::pin a tag or a full SHA, never a branch"; exit 1
           fi
 
-      # shellcheck, actionlint, zizmor, typos and the whitespace checks all run
+      # shellcheck, jactionlint, typos and the whitespace checks all run
       # from hk.pkl, the same definition the local git hooks use. mise.toml
-      # pins every tool, and Renovate bumps the pins. The actionlint ignores
-      # and the offline zizmor run are explained in hk.pkl.
+      # pins every tool, and Renovate bumps the pins. .github/jactionlint.yaml
+      # holds the linter's policy, with the reason for each exception.
       - uses: jdx/mise-action@v5
       - name: Lint (hk check --all)
         run: hk check --all

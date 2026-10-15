@@ -2,11 +2,11 @@
 # The aqua: backends are explicit so Renovate's mise manager resolves every pin
 # to a GitHub release. Keep hk in step with the Config.pkl version in hk.pkl.
 [tools]
-"aqua:jdx/hk" = "2.5.0"
-"aqua:rhysd/actionlint" = "1.7.12"
+"aqua:jdx/hk" = "2.6.0"
 "aqua:koalaman/shellcheck" = "0.11.0"
 "aqua:crate-ci/typos" = "1.51.1"
-"aqua:zizmorcore/zizmor" = "1.30.1"
+# Not in the aqua registry yet, so the github: backend, which Renovate also reads.
+"github:jdx/jactionlint" = "2.2.0"
 
 # Turn the hk git hooks on for this clone after every `mise install`
 # (it runs even when nothing needed installing). CI skips it.

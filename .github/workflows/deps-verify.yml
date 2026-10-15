@@ -51,7 +51,13 @@ on:
       # Where the build verdict comes from. When one of the repo's own workflows
       # calls this path, its run on the PR's head commit is read instead of
       # building here. Empty means always build here.
+      #
+      # The caller must also listen for that run to finish, or nothing starts the
+      # verification once it does:
+      #   workflow_run: { workflows: [PR Checks], types: [completed] }
       ci-workflow:        { type: string, default: "dodi-smart/.github/.github/workflows/pr-checks.yml" }
+      # DEPRECATED and ignored: nothing waits for pr-checks any more. Kept so a
+      # caller that still passes it does not fail. Remove once none does.
       ci-timeout-minutes: { type: number, default: 45 }
 
       java-version:    { type: string, default: "21" }
@@ -65,41 +71,115 @@ on:
       GH_APP_CLIENT_ID:        { required: false }
       GH_APP_PRIVATE_KEY:      { required: false }
 
+# Keyed by branch, the one thing both events carry. A workflow_run has no
+# pull_request, and keying on its number would put every PR in one group.
 concurrency:
-  group: deps-${{ github.repository }}-${{ github.event.pull_request.number }}
+  group: deps-${{ github.repository }}-${{ github.event.pull_request.head.ref || github.event.workflow_run.head_branch }}
   cancel-in-progress: true
 
 jobs:
-  # The picker runs INSIDE this job, after the last step that can still say
-  # no. It is itself a hosted job, so it must never run for an event that will
-  # not proceed, and folding it in here means a proceeding run costs one
-  # hosted start instead of two.
+  # Everything before the build, in ONE short hosted job: which pull request,
+  # whether to proceed, the build verdict, whether anything is left to judge, and
+  # the runners. The picker runs after the last step that can still say no, so
+  # a run that will not proceed never pays for it.
+  #
+  # Nothing here waits. Two events reach it:
+  #   pull_request  opened, synchronize, reopened, or labeled `agent:review`.
+  #                 A repo whose pr-checks has not finished on the head commit
+  #                 stops here; that run's completion starts this again.
+  #   workflow_run  the caller's PR Checks run completed. The verdict is read
+  #                 from the finished run, once.
+  # A job that polled pr-checks used to hold a runner for up to 45 minutes, and
+  # with as many open dependency PRs as runners in the pool pr-checks needs,
+  # every slot held a waiting job and no pr-checks job could ever start.
   gate:
     runs-on: ubuntu-latest
     timeout-minutes: 10   # the picker calls the org API and may retry
     permissions:
-      contents: read
-      pull-requests: read
+      contents: read        # workflow files and the compare API
+      pull-requests: read   # the pull request and the verdict comment
+      actions: write        # read the pr-checks run, and re-run it once after an infra failure
     outputs:
-      proceed: ${{ steps.gate.outputs.proceed }}
+      proceed: ${{ steps.go.outputs.proceed }}
       dependency-bots: ${{ steps.gate.outputs.dependency-bots }}
-      stack:   ${{ steps.stack.outputs.stack }}
-      light:   ${{ steps.pick-light.outputs.runner }}
-      heavy:   ${{ steps.pick-heavy.outputs.runner }}
+      stack:    ${{ steps.stack.outputs.stack }}
+      light:    ${{ steps.pick-light.outputs.runner }}
+      heavy:    ${{ steps.pick-heavy.outputs.runner }}
+      number:   ${{ steps.pr.outputs.number }}
+      head-ref: ${{ steps.pr.outputs.head-ref }}
+      head-sha: ${{ steps.pr.outputs.head-sha }}
+      base-ref: ${{ steps.pr.outputs.base-ref }}
+      mode:     ${{ steps.ci.outputs.mode }}        # own | ci
+      verdict:  ${{ steps.ci.outputs.verdict }}     # ci mode only; own mode is decided by the build
+      url:      ${{ steps.ci.outputs.url }}
+      run-id:   ${{ steps.ci.outputs.run-id }}
+      judge:    ${{ steps.judge.outputs.judge }}    # skip | lockfile | agent
+      intent:   ${{ steps.judge.outputs.intent }}
+      update:   ${{ steps.judge.outputs.update }}   # major | lockfile | other
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPO:     ${{ github.repository }}
     steps:
+      # The pull request, read from the API for either event, so every later
+      # step sees one shape and live labels. A workflow_run names its PR in the
+      # payload for a same-repo branch; the branch lookup is the fallback.
+      # Forks, closed PRs and a run for a commit the PR has since moved past
+      # stop here.
+      - id: pr
+        env:
+          EVENT:     ${{ github.event_name }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          WR_EVENT:  ${{ github.event.workflow_run.event }}
+          WR_BRANCH: ${{ github.event.workflow_run.head_branch }}
+          WR_SHA:    ${{ github.event.workflow_run.head_sha }}
+        run: |
+          set -euo pipefail
+          out() { echo "$1" >> "$GITHUB_OUTPUT"; }
+          none() { echo "$1"; out found=false; exit 0; }
+          case "$EVENT" in
+            pull_request) n="$PR_NUMBER" ;;
+            workflow_run)
+              [ "$WR_EVENT" = pull_request ] || none "the PR Checks run was for a $WR_EVENT event, not a pull request"
+              n=$(jq -r '.workflow_run.pull_requests[0].number // empty' "$GITHUB_EVENT_PATH")
+              [ -n "$n" ] || n=$(gh api "/repos/$REPO/pulls?state=open&head=${REPO%%/*}:$WR_BRANCH" --jq '.[0].number // empty')
+              ;;
+            *) none "event $EVENT is not one this workflow handles" ;;
+          esac
+          [ -n "$n" ] || none "no open pull request for this run"
+          gh api "/repos/$REPO/pulls/$n" > "$RUNNER_TEMP/pr.json"
+          f() { jq -r "$1" "$RUNNER_TEMP/pr.json" | tr -d '\r\n'; }
+          [ "$(f .state)" = open ] || none "#$n is not open"
+          [ "$(f .head.repo.full_name)" = "$REPO" ] || none "#$n comes from a fork"
+          head_sha=$(f .head.sha)
+          if [ "$EVENT" = workflow_run ] && [ "$WR_SHA" != "$head_sha" ]; then
+            none "the PR Checks run was for $WR_SHA, and #$n has moved on to $head_sha"
+          fi
+          out found=true
+          out "number=$n"
+          out "head-ref=$(f .head.ref)"
+          out "head-sha=$head_sha"
+          out "base-ref=$(f .base.ref)"
+          out "title=$(f .title)"
+          out "author=$(f .user.login)"
+          out "draft=$(f .draft)"
+          out "labels=$(jq -c '[.labels[].name]' "$RUNNER_TEMP/pr.json")"
+          echo "pull request #$n at $head_sha"
+
       # `bots: only` is the inverse of every other agent workflow: this one runs
       # for Renovate and Dependabot and nothing else. It also absorbs the author
       # check every caller used to carry in its own `if:`, byte-identically.
       - id: gate
+        if: steps.pr.outputs.found == 'true'
         uses: dodi-smart/.github/actions/agent-gate@v1
         with:
-          labels:        ${{ toJson(github.event.pull_request.labels.*.name) }}
+          labels:        ${{ steps.pr.outputs.labels }}
+          number:        ${{ steps.pr.outputs.number }}
           event-name:    ${{ github.event_name }}
           event-action:  ${{ github.event.action }}
           label:         ${{ github.event.label.name }}
           request-label: 'agent:review'
-          author:        ${{ github.event.pull_request.user.login }}
-          draft:         ${{ github.event.pull_request.draft }}
+          author:        ${{ steps.pr.outputs.author }}
+          draft:         ${{ steps.pr.outputs.draft }}
           bots:          'only'
 
       - id: stack
@@ -120,68 +200,18 @@ jobs:
           echo "stack=$s" >> "$GITHUB_OUTPUT"
           echo "stack: $s"
 
-      # Only when the run above is still proceeding: a human-authored PR (this
-      # workflow runs for bots only) must never pay for a hosted picker.
-      #
-      # Both pools are picked here, because the verify job runs on light for a
-      # green verdict and takes heavy only when there is something to build. The
-      # action caches the fleet listing, so the second call costs no API calls.
-      # An `apple` or `hosted` weight, or an explicit selector, has no lighter
-      # pool (the light pool cannot run Xcode), so light follows it. The wait
-      # job picks nothing: it runs hosted, see below.
-      - id: pick-light
-        if: steps.gate.outputs.proceed == 'true'
-        uses: dodi-smart/.github/actions/pick-runner@v1
-        with:
-          weight:             ${{ (inputs.runner-weight == 'apple' || inputs.runner-weight == 'hosted') && inputs.runner-weight || 'light' }}
-          labels:             ${{ inputs.runner-labels }}
-          gh-app-client-id:   ${{ secrets.GH_APP_CLIENT_ID }}
-          gh-app-private-key: ${{ secrets.GH_APP_PRIVATE_KEY }}
-
-      - id: pick-heavy
-        if: steps.gate.outputs.proceed == 'true'
-        uses: dodi-smart/.github/actions/pick-runner@v1
-        with:
-          weight:             ${{ inputs.runner-weight }}
-          labels:             ${{ inputs.runner-labels }}
-          gh-app-client-id:   ${{ secrets.GH_APP_CLIENT_ID }}
-          gh-app-private-key: ${{ secrets.GH_APP_PRIVATE_KEY }}
-
-  # Waits for the caller's pr-checks run, decides the build verdict, and decides
-  # whether `verify` runs at all (actions/deps-intent). A run that died of the
-  # runner is re-run ONCE, failed jobs only.
-  #
-  # Hosted, never self-hosted. It only calls the API and sleeps, for up to
-  # ci-timeout-minutes, while the pr-checks run it waits on needs the light pool
-  # too. With as many open dependency PRs as there are light runners, every
-  # light slot held a waiting job and no pr-checks job could ever start: a
-  # deadlock that only cancelling the runs cleared.
-  wait:
-    needs: [gate]
-    if: needs.gate.outputs.proceed == 'true'
-    runs-on: ubuntu-latest
-    timeout-minutes: 120
-    permissions:
-      contents: read        # the compare API
-      pull-requests: read   # the verdict comment
-      actions: write        # read the pr-checks run, and re-run it once after an infra failure
-    outputs:
-      mode:    ${{ steps.ci.outputs.mode }}        # own | ci
-      verdict: ${{ steps.ci.outputs.verdict }}     # ci mode only; own mode is decided by the build
-      url:     ${{ steps.ci.outputs.url }}
-      run-id:  ${{ steps.ci.outputs.run-id }}
-      judge:   ${{ steps.judge.outputs.judge }}    # skip | lockfile | agent
-      intent:  ${{ steps.judge.outputs.intent }}
-      update:  ${{ steps.judge.outputs.update }}   # major | lockfile | other
-    env:
-      GH_TOKEN: ${{ github.token }}
-      REPO:     ${{ github.repository }}
-    steps:
+      # The build verdict, from the caller's pr-checks run on the head commit,
+      # read once. `ready=false` ends this run without a verdict: pr-checks has
+      # not finished, or was cancelled for a newer push, or was just re-run. Its
+      # completion starts this workflow again through the caller's workflow_run
+      # trigger. A run that died of the runner is re-run ONCE, failed jobs only.
       - id: ci
+        if: steps.gate.outputs.proceed == 'true'
         env:
-          SHA:         ${{ github.event.pull_request.head.sha }}
-          CI_WORKFLOW: ${{ inputs.ci-workflow }}
-          TIMEOUT:     ${{ inputs.ci-timeout-minutes }}
+          EVENT:        ${{ github.event_name }}
+          SHA:          ${{ steps.pr.outputs.head-sha }}
+          CI_WORKFLOW:  ${{ inputs.ci-workflow }}
+          WORKFLOW_REF: ${{ github.workflow_ref }}
         run: |
           set -euo pipefail
           LOGS="$RUNNER_TEMP/deps-logs"
@@ -195,72 +225,67 @@ jobs:
           }
           if [ -z "$CI_WORKFLOW" ] || ! callers 2>/dev/null | grep -F "$CI_WORKFLOW@" >/dev/null; then
             out mode=own
-            echo "no workflow here calls ${CI_WORKFLOW:-a CI workflow}, so this job builds the PR itself"
+            out ready=true
+            echo "no workflow here calls ${CI_WORKFLOW:-a CI workflow}, so the verify job builds the PR itself"
             exit 0
           fi
           out mode=ci
 
-          # The newest run on this commit whose workflow calls CI_WORKFLOW. A
-          # skipped run (a draft, a filtered event) is not one. Listed only
-          # until it is found; after that the run itself is polled.
-          find_run() {
-            gh api "/repos/$REPO/actions/runs?head_sha=$SHA&per_page=100" \
-              | jq -r --arg w "$CI_WORKFLOW" '
-                  [.workflow_runs[]
-                   | select(any(.referenced_workflows[]?; .path | startswith($w)))
-                   | select(.conclusion != "skipped")]
-                  | sort_by(.id) | last | .id // empty'
+          # Stops this run without a verdict. On a pull_request event it also
+          # checks that the caller listens for the PR Checks run to finish, or
+          # nothing would ever start the verification.
+          later() {
+            out ready=false
+            echo "$1. The PR Checks run's completion starts verification."
+            if [ "$EVENT" = pull_request ]; then
+              local path="${WORKFLOW_REF#"$REPO/"}"
+              path="${path%%@*}"
+              if ! gh api -H "Accept: application/vnd.github.raw" "/repos/$REPO/contents/$path?ref=$SHA" 2>/dev/null \
+                   | grep -qE '^[[:space:]]*workflow_run:'; then
+                echo "::warning title=Dependency verification will not run::$path has no workflow_run trigger, so nothing starts verification when PR Checks finishes. Add 'workflow_run: { workflows: [PR Checks], types: [completed] }' to its 'on:' block (see the deps-verify caller in the README)."
+              fi
+            fi
+            exit 0
           }
+
+          # The newest run on this commit whose workflow calls CI_WORKFLOW. A
+          # skipped run (a draft, a filtered event) is not one.
+          id=$(gh api "/repos/$REPO/actions/runs?head_sha=$SHA&per_page=100" \
+                | jq -r --arg w "$CI_WORKFLOW" '
+                    [.workflow_runs[]
+                     | select(any(.referenced_workflows[]?; .path | startswith($w)))
+                     | select(.conclusion != "skipped")]
+                    | sort_by(.id) | last | .id // empty')
+          [ -n "$id" ] || later "No PR Checks run on $SHA yet"
           # `|`, not a tab: read collapses adjacent tabs, and an in-progress
           # run has an empty conclusion between two.
-          poll_run() {
-            IFS='|' read -r status conclusion attempt url < <(gh api "/repos/$REPO/actions/runs/$id" \
-              --jq '[.status, (.conclusion // ""), .run_attempt, .html_url] | map(tostring) | join("|")')
-          }
-          # Returns 1 on timeout. After a re-run the API can still show the
-          # finished first attempt for a moment, so it waits for the attempt
-          # number to move as well.
-          wait_ci() {
-            local deadline=$(( $(date +%s) + TIMEOUT * 60 ))
-            while [ "$(date +%s)" -lt "$deadline" ]; do
-              [ -n "$id" ] || id=$(find_run || true)
-              if [ -n "$id" ]; then
-                poll_run || true
-                [ "$status" = completed ] && [ "$attempt" -ge "$min_attempt" ] && return 0
-              fi
-              sleep 30
-            done
-            return 1
-          }
+          IFS='|' read -r status conclusion attempt url < <(gh api "/repos/$REPO/actions/runs/$id" \
+            --jq '[.status, (.conclusion // ""), .run_attempt, .html_url] | map(tostring) | join("|")')
+          [ "$status" = completed ] || later "PR Checks is $status on $SHA ($url)"
+          [ "$conclusion" != cancelled ] || later "PR Checks was cancelled on $SHA, so a newer run replaces it"
+
           fetch_log() { gh run view "$id" --repo "$REPO" --log-failed > "$LOGS/ci.log" 2>&1 || true; }
           infra() {
             grep -qE 'exit code 137|signal SIGKILL|daemon disappeared unexpectedly|received a shutdown signal|lost communication with the server|No space left on device|ENOSPC|JavaScript heap out of memory' "$LOGS/ci.log"
           }
-
-          id="" status="" conclusion="" attempt=0 url="" min_attempt=1
-          wait_ci || conclusion=timeout
-          if [ "$conclusion" != success ] && [ "$conclusion" != timeout ] && [ "$attempt" = 1 ] \
-             && { fetch_log; infra; }; then
+          if [ "$conclusion" != success ] && [ "$attempt" = 1 ] && { fetch_log; infra; }; then
             echo "::notice title=Re-running CI::The pr-checks run failed on the runner, not the code. Re-running its failed jobs once."
             gh run rerun "$id" --repo "$REPO" --failed
-            min_attempt=2
-            wait_ci || conclusion=timeout
+            later "Re-ran the failed PR Checks jobs"
           fi
+          out ready=true
 
           # One verdict string: green | red:<failed jobs> | red:infra (the runner
           # failed twice). Decided here so `verify` can pick its runner from it.
           v=green
           if [ "$conclusion" != success ]; then
-            v="red:$conclusion"
-            if [ -n "$id" ]; then
-              fetch_log
-              if infra; then
-                v=red:infra
-              else
-                failed=$(gh api "/repos/$REPO/actions/runs/$id/jobs" \
-                         --jq '[.jobs[] | select(.conclusion == "failure") | .name] | join(", ")' || true)
-                v="red:${failed:-$conclusion}"
-              fi
+            fetch_log
+            if infra; then
+              v=red:infra
+            else
+              failed=$(gh api "/repos/$REPO/actions/runs/$id/attempts/$attempt/jobs" \
+                       --jq '[.jobs[] | select(.conclusion == "failure") | .name] | join(", ")' || true)
+              v="red:${failed:-$conclusion}"
             fi
           fi
           out "verdict=$v"
@@ -272,22 +297,54 @@ jobs:
       # Ends the run here when nothing new is left to judge. With no verdict yet
       # (a repo that builds in `verify`) the answer is always the agent.
       - id: judge
+        if: steps.ci.outputs.ready == 'true'
         uses: dodi-smart/.github/actions/deps-intent@v1
         with:
-          base-ref: ${{ github.event.pull_request.base.ref }}
-          head-sha: ${{ github.event.pull_request.head.sha }}
-          number:   ${{ github.event.pull_request.number }}
-          title:    ${{ github.event.pull_request.title }}
-          labels:   ${{ toJson(github.event.pull_request.labels.*.name) }}
+          base-ref: ${{ steps.pr.outputs.base-ref }}
+          head-sha: ${{ steps.pr.outputs.head-sha }}
+          number:   ${{ steps.pr.outputs.number }}
+          title:    ${{ steps.pr.outputs.title }}
+          labels:   ${{ steps.pr.outputs.labels }}
           verdict:  ${{ steps.ci.outputs.verdict }}
+
+      - id: go
+        env:
+          PROCEED: ${{ steps.ci.outputs.ready == 'true' && steps.judge.outputs.judge != 'skip' }}
+        run: echo "proceed=$PROCEED" >> "$GITHUB_OUTPUT"
+
+      # Only when the run above is still proceeding: a human-authored PR (this
+      # workflow runs for bots only) must never pay for a hosted picker.
+      #
+      # Both pools are picked here, because the verify job runs on light for a
+      # green verdict and takes heavy only when there is something to build. The
+      # action caches the fleet listing, so the second call costs no API calls.
+      # An `apple` or `hosted` weight, or an explicit selector, has no lighter
+      # pool (the light pool cannot run Xcode), so light follows it.
+      - id: pick-light
+        if: steps.go.outputs.proceed == 'true'
+        uses: dodi-smart/.github/actions/pick-runner@v1
+        with:
+          weight:             ${{ (inputs.runner-weight == 'apple' || inputs.runner-weight == 'hosted') && inputs.runner-weight || 'light' }}
+          labels:             ${{ inputs.runner-labels }}
+          gh-app-client-id:   ${{ secrets.GH_APP_CLIENT_ID }}
+          gh-app-private-key: ${{ secrets.GH_APP_PRIVATE_KEY }}
+
+      - id: pick-heavy
+        if: steps.go.outputs.proceed == 'true'
+        uses: dodi-smart/.github/actions/pick-runner@v1
+        with:
+          weight:             ${{ inputs.runner-weight }}
+          labels:             ${{ inputs.runner-labels }}
+          gh-app-client-id:   ${{ secrets.GH_APP_CLIENT_ID }}
+          gh-app-private-key: ${{ secrets.GH_APP_PRIVATE_KEY }}
 
   # The build (here, when the repo has no pr-checks), the agent, then a
   # deterministic push and publish. A green verdict stays on the light pool;
   # anything that needs a build or a fix takes the heavy one.
   verify:
-    needs: [gate, wait]
-    if: needs.gate.outputs.proceed == 'true' && needs.wait.outputs.judge != 'skip'
-    runs-on: ${{ fromJson(needs.wait.outputs.verdict == 'green' && needs.gate.outputs.light || needs.gate.outputs.heavy) }}
+    needs: [gate]
+    if: needs.gate.outputs.proceed == 'true'
+    runs-on: ${{ fromJson(needs.gate.outputs.verdict == 'green' && needs.gate.outputs.light || needs.gate.outputs.heavy) }}
     timeout-minutes: 120
     permissions:
       contents: read
@@ -297,9 +354,9 @@ jobs:
     env:
       GH_TOKEN: ${{ github.token }}
       REPO:     ${{ github.repository }}
-      PR:       ${{ github.event.pull_request.number }}
-      HEAD_REF: ${{ github.event.pull_request.head.ref }}
-      BASE_REF: ${{ github.event.pull_request.base.ref }}
+      PR:       ${{ needs.gate.outputs.number }}
+      HEAD_REF: ${{ needs.gate.outputs.head-ref }}
+      BASE_REF: ${{ needs.gate.outputs.base-ref }}
       # The identity every fix commit carries. It is also the author the shared
       # Renovate preset lists under gitIgnoredAuthors, so Renovate keeps owning
       # a branch this job has committed to. Change both together.
@@ -314,7 +371,7 @@ jobs:
       # is minted after the agent, for one step.
       - uses: actions/checkout@v7
         with:
-          ref: ${{ github.event.pull_request.head.ref }}
+          ref: ${{ needs.gate.outputs.head-ref }}
           fetch-depth: 0
           filter: blob:none   # history for the range below, blobs on demand
           persist-credentials: false
@@ -369,9 +426,9 @@ jobs:
 
       # Logs do not cross jobs, so a red pr-checks verdict fetches the failed
       # jobs' logs here, where the agent reads them.
-      - if: needs.wait.outputs.mode == 'ci' && needs.wait.outputs.verdict != 'green' && needs.wait.outputs.run-id != ''
+      - if: needs.gate.outputs.mode == 'ci' && needs.gate.outputs.verdict != 'green' && needs.gate.outputs.run-id != ''
         env:
-          RUN_ID: ${{ needs.wait.outputs.run-id }}
+          RUN_ID: ${{ needs.gate.outputs.run-id }}
         run: |
           set -euo pipefail
           mkdir -p "$RUNNER_TEMP/deps-logs"
@@ -382,7 +439,7 @@ jobs:
       # phase's full output to a log, because the agent diagnoses from the log,
       # not from a phase name.
       - id: steps
-        if: needs.wait.outputs.mode == 'own'
+        if: needs.gate.outputs.mode == 'own'
         continue-on-error: true
         uses: dodi-smart/.github/actions/run-phases@v1
         with:
@@ -398,12 +455,12 @@ jobs:
 
       # One verdict string, whichever source produced it:
       #   green | red:<steps or jobs> | red:infra (the runner failed twice)
-      # The wait job decided it from the pr-checks run. Only a repo with no
+      # The gate decided it from the pr-checks run. Only a repo with no
       # pr-checks is decided here, from its own build.
       - id: result
         env:
-          MODE:        ${{ needs.wait.outputs.mode }}
-          WAIT_RESULT: ${{ needs.wait.outputs.verdict }}
+          MODE:        ${{ needs.gate.outputs.mode }}
+          WAIT_RESULT: ${{ needs.gate.outputs.verdict }}
           OWN_FAILED:  ${{ steps.steps.outputs.failed }}
         run: |
           set -euo pipefail
@@ -428,27 +485,27 @@ jobs:
       # "Workflow initiated by non-human actor", and every run here is
       # bot-initiated. Named explicitly rather than '*', from the gate's list.
       - id: agent
-        if: needs.wait.outputs.judge == 'agent'
+        if: needs.gate.outputs.judge == 'agent'
         uses: dodi-smart/.github/actions/run-agent@v1
         with:
           oauth-token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          model: ${{ (steps.result.outputs.verdict != 'green' || needs.wait.outputs.update == 'major') && 'claude-opus-5' || 'claude-sonnet-5' }}
+          model: ${{ (steps.result.outputs.verdict != 'green' || needs.gate.outputs.update == 'major') && 'claude-opus-5' || 'claude-sonnet-5' }}
           max-turns: ${{ steps.result.outputs.verdict != 'green' && '60' || '25' }}
           allowed-bots: ${{ needs.gate.outputs.dependency-bots }}
           allowed-tools: 'Bash "Bash(gh:*)" Read Write Edit Grep Glob WebFetch'
           prompt: |
-            Verify dependency PR #${{ github.event.pull_request.number }} in
+            Verify dependency PR #${{ needs.gate.outputs.number }} in
             ${{ github.repository }}, and fix it when the update broke something.
 
-            You are on the PR branch `${{ github.event.pull_request.head.ref }}`,
-            base `${{ github.event.pull_request.base.ref }}`.
+            You are on the PR branch `${{ needs.gate.outputs.head-ref }}`,
+            base `${{ needs.gate.outputs.base-ref }}`.
 
             Facts already established. Do not re-derive them:
             - Build result: `${{ steps.result.outputs.verdict }}`.
               `green`, `red:<failed jobs or steps>`, or `red:infra` when the
               runner itself failed twice (out of memory, killed daemon).
-            - Source: ${{ needs.wait.outputs.mode == 'ci' && format('the repo''s own PR checks run, {0}. The failed jobs'' logs are in `{1}/deps-logs/ci.log`.', needs.wait.outputs.url, runner.temp) || format('this job''s own build. Each step''s output is in `{0}/deps-logs/<step>.log`.', runner.temp) }}
-            - Update kind: `${{ needs.wait.outputs.update }}`.
+            - Source: ${{ needs.gate.outputs.mode == 'ci' && format('the repo''s own PR checks run, {0}. The failed jobs'' logs are in `{1}/deps-logs/ci.log`.', needs.gate.outputs.url, runner.temp) || format('this job''s own build. Each step''s output is in `{0}/deps-logs/<step>.log`.', runner.temp) }}
+            - Update kind: `${{ needs.gate.outputs.update }}`.
             - Fix rounds already pushed: ${{ steps.facts.outputs.fix-rounds }} of 2.
             - Fix commits already on this branch:
               ${{ steps.facts.outputs.fixes }}
@@ -467,7 +524,7 @@ jobs:
             ## Work
 
             1. List every direct dependency whose version changed, from the
-               manifest diff against `origin/${{ github.event.pull_request.base.ref }}`.
+               manifest diff against `origin/${{ needs.gate.outputs.base-ref }}`.
                Count lockfile-only transitive changes, do not list them.
             2. For a major, and for any package whose notes mention a deprecation
                or removal, read the release notes or the compare view between
@@ -479,7 +536,7 @@ jobs:
                job or step: caused by this update, caused by the runner
                (`red:infra`, exit 137, a killed process: never try to fix
                those), or already failing on the base branch (check the base
-               branch's latest CI with `gh run list --branch ${{ github.event.pull_request.base.ref }}`
+               branch's latest CI with `gh run list --branch ${{ needs.gate.outputs.base-ref }}`
                before reproducing anything).
             5. Fix when the update caused the failure, or when this repo calls
                an API the notes deprecate and name a replacement for, and only
@@ -523,7 +580,7 @@ jobs:
       # Lock file maintenance has no agent report. A green build is `verified`
       # with this fixed verdict, written where the agent's would be, so publish
       # has one path.
-      - if: needs.wait.outputs.judge == 'lockfile'
+      - if: needs.gate.outputs.judge == 'lockfile'
         run: |
           set -euo pipefail
           reason="Lock file maintenance; the repo's checks passed."
@@ -550,7 +607,7 @@ jobs:
       # A push with GITHUB_TOKEN would not start the checks on the new commit
       # and is rejected by the rulesets, so no App means no push.
       - id: push
-        if: ${{ !cancelled() && needs.wait.outputs.judge == 'agent' }}
+        if: ${{ !cancelled() && needs.gate.outputs.judge == 'agent' }}
         env:
           BASE_SHA: ${{ steps.facts.outputs.base-sha }}
           ROUNDS:   ${{ steps.facts.outputs.fix-rounds }}
@@ -605,7 +662,7 @@ jobs:
         if: ${{ !cancelled() && steps.push.outputs.pushed != 'true' }}
         env:
           VERDICT:  ${{ steps.result.outputs.verdict }}
-          INTENT:   ${{ needs.wait.outputs.intent }}
+          INTENT:   ${{ needs.gate.outputs.intent }}
           ROUNDS:   ${{ steps.facts.outputs.fix-rounds }}
           REFUSED:  ${{ steps.push.outputs.refused }}
           JSON:     ${{ runner.temp }}/deps-verdict.json
@@ -662,7 +719,7 @@ jobs:
         uses: dodi-smart/.github/actions/sticky-comment@v1
         with:
           key:       deps-verify
-          number:    ${{ github.event.pull_request.number }}
+          number:    ${{ needs.gate.outputs.number }}
           body-file: ${{ runner.temp }}/deps-comment.md
 
       - if: ${{ !cancelled() && steps.publish.outputs.failed == 'true' }}

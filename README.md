@@ -1027,16 +1027,20 @@ the base branch. The comment says so in one line.
 
 Which runner it takes:
 
-- **A green build waits hosted and reads on a light runner.** A `wait` job starts
-  on `ubuntu-latest`, polls the `pr-checks` run and decides the verdict. It never
-  holds a self-hosted slot, because the `pr-checks` run it waits on needs those
-  same runners: enough open dependency PRs at once would take every slot and
-  nothing could finish. The `verify` job runs on the light pool when the verdict
-  is green, so a green PR never holds a heavy slot. It takes the heavy pool only to build or fix: a red or
-  infra verdict, or a repo with no `pr-checks` that builds here. With an `apple`
-  or `hosted` `runner-weight`, or explicit `runner-labels`, there is no lighter
-  pool, so `verify` uses that selector either way.
-- **A rebase of an unchanged update runs nothing.** `wait` hashes the changed lines
+- **Nothing waits for `pr-checks`.** The caller triggers on `pull_request` and
+  on `workflow_run` for its PR Checks workflow. The short hosted `gate` reads the
+  `pr-checks` run on the head commit once. While it has not finished, the run
+  stops there, and the run's completion starts verification again with the
+  verdict ready. A runner failure is re-run the same way, once. No job holds a
+  runner while CI runs: a job that waited used to hold one for up to 45 minutes,
+  and with enough open dependency PRs it took every slot `pr-checks` needed.
+- **A green build reads on a light runner.** The `verify` job runs on the light
+  pool when the verdict is green, so a green PR never holds a heavy slot. It
+  takes the heavy pool only to build or fix: a red or infra verdict, or a repo
+  with no `pr-checks` that builds here. With an `apple` or `hosted`
+  `runner-weight`, or explicit `runner-labels`, there is no lighter pool, so
+  `verify` uses that selector either way.
+- **A rebase of an unchanged update runs nothing.** The gate hashes the changed lines
   of every file except lockfiles and records the hash in the comment. When the
   build is green, the PR already carries `deps:verified` (or `deps:fixed` with its
   fix commits still on the branch) and the hash is the same, `verify` does not
@@ -1046,6 +1050,42 @@ Which runner it takes:
 - **Lock file maintenance is judged by the build.** A green build with only
   lockfiles changed gets `deps:verified` and a one-line comment, with no agent.
   A red one goes to the agent as before.
+
+The caller listens for both events. `workflows:` names the caller's own PR
+Checks workflow by its `name:`. Without the `workflow_run` trigger nothing starts
+verification once `pr-checks` finishes, and the gate warns on every PR:
+
+```yaml
+name: Dependency Verification
+on:
+  pull_request:
+    # `labeled` is the safe manual re-run: apply `agent:review` to a Renovate PR.
+    types: [opened, synchronize, reopened, labeled]
+  workflow_run:
+    workflows: [PR Checks]
+    types: [completed]
+jobs:
+  verify:
+    # Cheap pre-filter, so a human PR never starts a hosted job. The shared
+    # workflow gates again on the resolved pull request.
+    if: >-
+      (github.event_name == 'pull_request'
+        && contains(fromJson('["renovate[bot]","app/renovate","dependabot[bot]"]'), github.event.pull_request.user.login)
+        && (github.event.action != 'labeled' || github.event.label.name == 'agent:review'))
+      || (github.event_name == 'workflow_run'
+        && github.event.workflow_run.event == 'pull_request'
+        && (startsWith(github.event.workflow_run.head_branch, 'renovate/')
+            || startsWith(github.event.workflow_run.head_branch, 'dependabot/')))
+    uses: dodi-smart/.github/.github/workflows/deps-verify.yml@v1
+    secrets: inherit
+    permissions:
+      contents: read
+      pull-requests: write
+      actions: write
+      id-token: write
+    with:
+      stack: bun
+```
 
 `env` and `build-env` mean what they mean in `pr-checks`: same format, same
 parser, and `build-env` reaches the build command only. They matter when the

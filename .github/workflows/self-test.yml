@@ -507,35 +507,40 @@ jobs:
       - name: deps-verify decides when a run is skipped
         run: ./actions/deps-intent/test.sh
 
-      # The wait job must not hold a self-hosted runner: it polls a pr-checks run
-      # that needs those same runners, and enough open dependency PRs at once
-      # took every slot and deadlocked. It runs hosted and decides the verdict;
-      # verify takes heavy only when the verdict is not green, and the agent runs
-      # only when the judge says so.
-      - name: deps-verify waits hosted and takes heavy only to build
+      # Nothing in deps-verify waits for pr-checks. A job that polled it held a
+      # runner for up to 45 minutes while the pr-checks run it waited on needed
+      # that same pool, and enough open dependency PRs at once took every slot
+      # and deadlocked. The verdict is read once, in the gate, from a finished
+      # run; the caller's workflow_run trigger starts it. verify takes heavy only
+      # when the verdict is not green, and the agent runs only when the judge
+      # says so.
+      - name: deps-verify never waits, and takes heavy only to build
         run: |
           set -euo pipefail
           python3 -c "
           import sys, yaml
-          doc = yaml.safe_load(open('.github/workflows/deps-verify.yml'))
-          jobs = doc['jobs']
+          src = open('.github/workflows/deps-verify.yml').read()
+          jobs = yaml.safe_load(src)['jobs']
           bad = []
-          wait, verify = jobs.get('wait'), jobs.get('verify')
-          if not wait or not verify:
-              sys.exit('::error::deps-verify needs a wait job and a verify job')
-          if str(wait.get('runs-on')) != 'ubuntu-latest':
-              bad.append('wait must run on ubuntu-latest, never on a self-hosted pool its pr-checks run needs')
+          if sorted(jobs) != ['gate', 'verify']:
+              bad.append('deps-verify must have exactly the gate and verify jobs, found %s: a third job is how a waiting job comes back' % sorted(jobs))
+          if 'sleep ' in src:
+              bad.append('deps-verify must not sleep: it reads a finished pr-checks run, it never polls one')
+          gate, verify = jobs.get('gate') or {}, jobs.get('verify') or {}
+          go = [s for s in gate.get('steps', []) if s.get('id') == 'go']
+          if not go or \"steps.judge.outputs.judge != 'skip'\" not in str(go[0]) or \"steps.ci.outputs.ready == 'true'\" not in str(go[0]):
+              bad.append('the gate must proceed only with a ready verdict and a judge that is not skip')
+          if \"needs.gate.outputs.proceed == 'true'\" not in str(verify.get('if')):
+              bad.append('verify must run only when the gate proceeds')
           ro = str(verify.get('runs-on'))
-          if 'needs.wait.outputs.verdict' not in ro or 'green' not in ro or 'needs.gate.outputs.light' not in ro or 'needs.gate.outputs.heavy' not in ro:
+          if 'needs.gate.outputs.verdict' not in ro or 'green' not in ro or 'needs.gate.outputs.light' not in ro or 'needs.gate.outputs.heavy' not in ro:
               bad.append('verify runs-on must choose light for a green verdict and heavy otherwise')
-          if \"needs.wait.outputs.judge != 'skip'\" not in str(verify.get('if')):
-              bad.append('verify must not run when the judge says skip')
-          agent = [s for s in verify['steps'] if s.get('id') == 'agent'][0]
-          if \"needs.wait.outputs.judge == 'agent'\" not in str(agent.get('if', '')):
+          agent = [s for s in verify.get('steps', []) if s.get('id') == 'agent']
+          if not agent or \"needs.gate.outputs.judge == 'agent'\" not in str(agent[0].get('if', '')):
               bad.append('the agent step must run only when the judge says agent')
           if bad:
               sys.exit('::error::' + '; '.join(bad))
-          print('deps-verify waits hosted and takes heavy only when there is something to build')
+          print('deps-verify never waits, and takes heavy only when there is something to build')
           "
 
       # deps-verify may push fix commits, so where the push happens is the

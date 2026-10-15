@@ -1,3 +1,10 @@
+## [1.22.4](https://github.com/dodi-smart/.github/compare/v1.22.3...v1.22.4) (2026-10-15)
+
+### 🐛 Bug Fixes
+
+* **run-agent:** name agent branches with a conventional prefix, never claude/ ([8dbacb6](https://github.com/dodi-smart/.github/commit/8dbacb68251cc6a82ca7f888fb1a296f3ec0b5ed))
+* **runner-report:** say in the notice why the queue time is missing ([3c5836c](https://github.com/dodi-smart/.github/commit/3c5836ca2eebfd46ad1278058920996a8bf8546e))
+
 ## [1.22.3](https://github.com/dodi-smart/.github/compare/v1.22.2...v1.22.3) (2026-10-15)
 
 ### 🐛 Bug Fixes

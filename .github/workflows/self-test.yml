@@ -60,6 +60,11 @@ jobs:
       - name: Sticky comment picks the right comment
         run: ./actions/sticky-comment/test.sh
 
+      # The report must never fail a job: a 403 from the jobs API (a caller with
+      # `contents: read` only) still names the runner. Also run under bash 3.2.
+      - name: Runner report degrades without failing
+        run: ./actions/runner-report/test.sh
+
       - name: commitlint lints every PR commit without Docker
         run: ./actions/commitlint/test.sh
 

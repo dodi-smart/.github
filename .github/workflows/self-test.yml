@@ -517,6 +517,60 @@ jobs:
           print('every agent workflow picks its runner inside the gate job, guarded on proceed')
           "
 
+      # The agent workflows' gates ran on a billed hosted runner before every
+      # agent job. They now take the light pool of a private repo and stay hosted
+      # for a public repo or a fork PR, through one expression, and every job
+      # reports the runner it got. Three claims keep that from drifting: no
+      # hosted literal is left behind, runner-report is the first step of every
+      # job, and the kill switch is still the first rule the gate evaluates.
+      - name: Agent workflow gates are off hosted minutes and keep the kill switch first
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import re, sys, yaml
+
+          files = ['pr-review', 'claude-assist', 'issue-triage', 'issue-implement']
+          # Written as two pieces so the workflow linter does not read it as an expression.
+          expr = ('$' + '{{ fromJSON((github.event.repository.private && !github.event.pull_request.head.repo.fork) '
+                  '&& (vars.DODI_RUNS_ON_LIGHT || \'["self-hosted","Linux","light"]\') || \'"ubuntu-latest"\') }}')
+          bad = []
+          for f in files:
+              text = open('.github/workflows/' + f + '.yml').read()
+              jobs = yaml.safe_load(text)['jobs']
+              # The only hosted literal allowed is the one inside the expression.
+              if 'ubuntu-latest' in text.replace(expr, ''):
+                  bad.append(f + ': a hosted runner literal outside the gate expression')
+              gate = jobs['gate']
+              if gate.get('runs-on') != expr:
+                  bad.append(f + ': gate runs-on is not the shared light-or-hosted expression')
+              cond = str(gate.get('if', '')).strip()
+              if not cond:
+                  bad.append(f + ': gate has no job-level if for the payload-only filters')
+              if 'agent:no-touch' in cond:
+                  bad.append(f + ': the kill switch belongs to the gate action, not the job if')
+              if gate.get('permissions', {}).get('actions') and f != 'pr-review':
+                  bad.append(f + ': gate gained an actions permission')
+              for name, job in jobs.items():
+                  first = (job.get('steps') or [{}])[0]
+                  if 'actions/runner-report@' not in str(first.get('uses', '')):
+                      bad.append(f + ': job ' + name + ' does not start with runner-report')
+                  elif (first.get('with') or {}).get('selector') is None:
+                      bad.append(f + ': job ' + name + ' runner-report passes no selector')
+              # The gate action is the step straight after the report, so
+              # nothing evaluates ahead of agent:no-touch.
+              if 'agent-gate@' not in str(gate['steps'][1].get('uses', '')):
+                  bad.append(f + ': agent-gate is not the first step after runner-report')
+          # Inside the gate, agent:no-touch precedes every other rule.
+          sh = open('actions/agent-gate/gate.sh').read()
+          nt = sh.index('RULE 0, the kill switch')
+          for rule in ['RULE 0b', 'RULE 1,', 'RULE 2,', 'RULE 3,', 'RULE 4,', 'RULE 5,', 'RULE 6,']:
+              if sh.index(rule) < nt:
+                  bad.append('gate.sh evaluates ' + rule + ' before the kill switch')
+          if bad:
+              sys.exit('::error::' + '; '.join(bad))
+          print('agent gates use the shared runner expression, report first and check agent:no-touch first')
+          PY
+
       # A skip that should not have happened is the costly mistake here, above
       # all a `verified` label on a red build. test.sh asserts those cases first.
       - name: deps-verify decides when a run is skipped

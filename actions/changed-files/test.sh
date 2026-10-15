@@ -114,5 +114,8 @@ else
   bad "files output lists both names of a rename" "$(cat "$out")"
 fi
 
+# The gate jobs run on an image that guarantees bash, gh and jq only.
+if grep -q 'python' "$SCRIPT"; then bad "no python3 dependency" "changed-files.sh mentions python"; else ok "no python3 dependency"; fi
+
 echo "pass=$pass fail=$fail"
 [ "$fail" -eq 0 ]

@@ -167,7 +167,7 @@ jobs:
       # check every caller used to carry in its own `if:`, byte-identically.
       - id: gate
         if: steps.pr.outputs.found == 'true'
-        uses: dodi-smart/.github/actions/agent-gate@v1
+        uses: dodi-smart/.github/actions/agent-gate@v1.18.1
         with:
           labels:        ${{ steps.pr.outputs.labels }}
           number:        ${{ steps.pr.outputs.number }}
@@ -290,7 +290,7 @@ jobs:
       # (a repo that builds in `verify`) the answer is always the agent.
       - id: judge
         if: steps.ci.outputs.ready == 'true'
-        uses: dodi-smart/.github/actions/deps-intent@v1
+        uses: dodi-smart/.github/actions/deps-intent@v1.18.1
         with:
           base-ref: ${{ steps.pr.outputs.base-ref }}
           head-sha: ${{ steps.pr.outputs.head-sha }}
@@ -309,7 +309,7 @@ jobs:
       # pool (the light pool cannot run Xcode), so light follows it.
       - id: pick-light
         if: steps.gate.outputs.proceed == 'true' && steps.ci.outputs.ready == 'true' && steps.judge.outputs.judge != 'skip'
-        uses: dodi-smart/.github/actions/pick-runner@v1
+        uses: dodi-smart/.github/actions/pick-runner@v1.18.1
         with:
           weight:             ${{ (inputs.runner-weight == 'apple' || inputs.runner-weight == 'hosted') && inputs.runner-weight || 'light' }}
           labels:             ${{ inputs.runner-labels }}
@@ -318,7 +318,7 @@ jobs:
 
       - id: pick-heavy
         if: steps.gate.outputs.proceed == 'true' && steps.ci.outputs.ready == 'true' && steps.judge.outputs.judge != 'skip'
-        uses: dodi-smart/.github/actions/pick-runner@v1
+        uses: dodi-smart/.github/actions/pick-runner@v1.18.1
         with:
           weight:             ${{ inputs.runner-weight }}
           labels:             ${{ inputs.runner-labels }}
@@ -368,7 +368,7 @@ jobs:
       # hard-coded, never a caller input: a verification job that can see
       # yesterday's tree is not verifying.
       - id: setup
-        uses: dodi-smart/.github/actions/setup-stack@v1
+        uses: dodi-smart/.github/actions/setup-stack@v1.18.1
         with:
           stack:           ${{ needs.gate.outputs.stack }}
           isolate:         true
@@ -428,7 +428,7 @@ jobs:
       - id: steps
         if: needs.gate.outputs.mode == 'own'
         continue-on-error: true
-        uses: dodi-smart/.github/actions/run-phases@v1
+        uses: dodi-smart/.github/actions/run-phases@v1.18.1
         with:
           env-file:       ${{ steps.setup.outputs.env-file }}
           build-env-file: ${{ steps.setup.outputs.build-env-file }}
@@ -473,7 +473,7 @@ jobs:
       # bot-initiated. Named explicitly rather than '*', from the gate's list.
       - id: agent
         if: needs.gate.outputs.judge == 'agent'
-        uses: dodi-smart/.github/actions/run-agent@v1
+        uses: dodi-smart/.github/actions/run-agent@v1.18.1
         with:
           oauth-token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           model: ${{ (steps.result.outputs.verdict != 'green' || needs.gate.outputs.update == 'major') && 'claude-opus-5' || 'claude-sonnet-5' }}
@@ -704,7 +704,7 @@ jobs:
       # rebases a long-lived PR repeatedly, and stacked verdict tables are how a
       # report stops being read.
       - if: ${{ !cancelled() && steps.publish.outcome == 'success' }}
-        uses: dodi-smart/.github/actions/sticky-comment@v1
+        uses: dodi-smart/.github/actions/sticky-comment@v1.18.1
         with:
           key:       deps-verify
           number:    ${{ needs.gate.outputs.number }}

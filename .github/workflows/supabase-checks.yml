@@ -105,7 +105,7 @@ jobs:
       # checks, not a filter. So does a diff the API could not return.
       - name: Check for migration or seed changes
         id: changes
-        uses: dodi-smart/.github/actions/changed-files@v1
+        uses: dodi-smart/.github/actions/changed-files@v1.18.1
         with:
           patterns: ${{ inputs.migrations-paths }}
 
@@ -122,7 +122,7 @@ jobs:
       - name: Start Supabase (local)
         id: start
         if: steps.changes.outputs.matched == 'true'
-        uses: dodi-smart/.github/actions/supabase-start@v1
+        uses: dodi-smart/.github/actions/supabase-start@v1.18.1
         with:
           runtime: ${{ inputs.runtime }}
 
@@ -208,7 +208,7 @@ jobs:
       # `types` job does, so a caller can require it on every pull request.
       - name: Check for migration, seed or test changes
         id: changes
-        uses: dodi-smart/.github/actions/changed-files@v1
+        uses: dodi-smart/.github/actions/changed-files@v1.18.1
         with:
           # The same paths as the `types` job, plus the tests themselves. A blank
           # `migrations-paths` means no filter, so the tests path is left out then:
@@ -227,7 +227,7 @@ jobs:
 
       - name: Start Supabase (local)
         if: steps.changes.outputs.matched == 'true'
-        uses: dodi-smart/.github/actions/supabase-start@v1
+        uses: dodi-smart/.github/actions/supabase-start@v1.18.1
         with:
           runtime: ${{ inputs.runtime }}
 

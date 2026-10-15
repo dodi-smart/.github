@@ -152,13 +152,12 @@ repo; agent_commit "$CLAUDE_EMAIL" yarn.lock
 push
 expect "a lockfile is still refused" grep -q 'versions Renovate owns: yarn.lock' "$WORK/out"
 
-# 7. Publish. `gh` is a stub: it records the call and answers the two reads.
+# 7. Publish. `gh` is a stub: it records the call and answers the events read.
 mkdir -p "$WORK/bin"
 cat > "$WORK/bin/gh" <<'EOF'
 #!/usr/bin/env bash
 echo "$*" >> "$STUB_CALLS"
 case "$*" in
-  *"/pulls/"*)  echo "${STUB_AUTHOR:-renovate[bot]}" ;;
   *"/events"*)  [ -n "${STUB_SETTER:-}" ] && echo "$STUB_SETTER" ;;
 esac
 exit 0
@@ -174,7 +173,7 @@ publish() {
     echo "{\"verdict\": \"$REPORT\", \"reason\": \"r\"}" > "$WORK/deps-verdict.json"; echo body > "$WORK/deps-verdict.md"
   fi
   ( cd "$WORK" && env -i PATH="$WORK/bin:$PATH" HOME="$WORK" GH_TOKEN=t STUB_CALLS="$WORK/calls" \
-      STUB_AUTHOR="${STUB_AUTHOR:-renovate[bot]}" STUB_SETTER="${STUB_SETTER:-}" \
+      STUB_SETTER="${STUB_SETTER:-}" PR_AUTHOR='renovate[bot]' \
       REPO=o/r PR=7 VERDICT="$1" INTENT='' ROUNDS=0 REFUSED='' AGENT_OUTCOME="$2" AGENT_CONCLUSION="$3" \
       JSON="$WORK/deps-verdict.json" MD="$WORK/deps-verdict.md" COMMENT="$WORK/comment.md" APP_TOKEN='' \
       GITHUB_OUTPUT="$WORK/out" bash "$WORK/publish.sh" ) > "$WORK/log" 2>&1
@@ -193,8 +192,11 @@ expect "a needs-manual label this job applied is removed as before" removed deps
 REPORT=verified STUB_SETTER='' publish green success success
 expect "an unreadable event history is treated as this job's own label" removed deps:needs-manual
 
-REPORT=verified STUB_SETTER='someone' STUB_AUTHOR='renovate[bot]' publish green success success
+REPORT=verified STUB_SETTER='someone' publish green success success
 expect "a label a person applied is not Renovate's, so it is removed" removed deps:needs-manual
+
+REPORT=needs-manual STUB_SETTER='renovate[bot]' publish red:build success success
+expect "the label history is not read when this job labels needs-manual itself" bash -c '! grep -qF /events "$1"' _ "$WORK/calls"
 
 # 8. The no-report comment says something even when the build result is empty.
 publish '' skipped ''

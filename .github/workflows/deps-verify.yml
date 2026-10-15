@@ -106,6 +106,7 @@ jobs:
       number:   ${{ steps.pr.outputs.number }}
       head-ref: ${{ steps.pr.outputs.head-ref }}
       base-ref: ${{ steps.pr.outputs.base-ref }}
+      author:   ${{ steps.pr.outputs.author }}
       mode:     ${{ steps.ci.outputs.mode }}        # own | ci
       verdict:  ${{ steps.ci.outputs.verdict }}     # ci mode only; own mode is decided by the build
       url:      ${{ steps.ci.outputs.url }}
@@ -682,6 +683,7 @@ jobs:
           # skipped itself. Both are empty or `skipped` and say nothing alone.
           AGENT_OUTCOME:    ${{ steps.agent.outcome }}
           AGENT_CONCLUSION: ${{ steps.agent.outputs.conclusion }}
+          PR_AUTHOR: ${{ needs.gate.outputs.author }}
           JSON:     ${{ runner.temp }}/deps-verdict.json
           MD:       ${{ runner.temp }}/deps-verdict.md
           COMMENT:  ${{ runner.temp }}/deps-comment.md
@@ -735,13 +737,14 @@ jobs:
           # from the App or GITHUB_TOKEN, never from the PR author. If the
           # events cannot be read, the label is treated as this job's own.
           keep=''
-          author=$(gh api "/repos/$REPO/pulls/$PR" --jq .user.login 2>/dev/null || true)
-          setter=$(gh api --paginate "/repos/$REPO/issues/$PR/events?per_page=100" \
-                     --jq '.[] | select(.event == "labeled" and .label.name == "deps:needs-manual") | .actor.login' \
-                     2>/dev/null | tail -n 1 || true)
-          if [ -n "$author" ] && [ "$setter" = "$author" ]; then
-            keep=deps:needs-manual
-            echo "keeping deps:needs-manual: $author applied it"
+          if [ "$label" != needs-manual ]; then
+            setter=$(gh api --paginate "/repos/$REPO/issues/$PR/events?per_page=100" \
+                       --jq '.[] | select(.event == "labeled" and .label.name == "deps:needs-manual") | .actor.login' \
+                       2>/dev/null | tail -n 1 || true)
+            if [ -n "$PR_AUTHOR" ] && [ "$setter" = "$PR_AUTHOR" ]; then
+              keep=deps:needs-manual
+              echo "keeping deps:needs-manual: $PR_AUTHOR applied it"
+            fi
           fi
           for old in deps:verified deps:fixed deps:breaking deps:needs-manual; do
             [ "$old" = "deps:$label" ] && continue

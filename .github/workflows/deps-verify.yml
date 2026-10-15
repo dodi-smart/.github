@@ -78,10 +78,30 @@ concurrency:
 permissions: {}
 
 jobs:
-  # Everything before the build, in ONE short hosted job: which pull request,
+  # Everything before the build, in ONE short job: which pull request,
   # whether to proceed, the build verdict, whether anything is left to judge, and
   # the runners. The picker runs after the last step that can still say no, so
   # a run that will not proceed never pays for it.
+  #
+  # It runs on the light pool of a private repository and on a hosted runner
+  # for a public one or a fork pull request. It only reads the API and re-runs
+  # a failed run once; it checks nothing out, and it never waits.
+  #
+  # The job-level `if:` below skips a run before it takes a runner at all. It
+  # reads only the event payload, and every case it drops is one the steps
+  # below already end with `proceed=false` and no side effect:
+  #   pull_request  the author is not a bot at all (the agent-gate rule
+  #                 `bots: only` stops it, a `labeled agent:review` included),
+  #                 or the label is not `agent:review` (rule 4 stops it), or
+  #                 the head is a fork (the pr step stops it).
+  #   workflow_run  the finished run was not for a pull request, or was for a
+  #                 fork, or was cancelled or skipped (the ci step ends those
+  #                 with ready=false before it re-runs anything).
+  # A workflow_run payload carries no PR author, so a human's pull request
+  # still starts this job once per PR Checks completion, and ends in the pr
+  # or gate step. The filter knows only the SHAPE of a bot login (the `[bot]`
+  # suffix the API always uses), a superset of the dependency bots; the list of
+  # which bots count stays in actions/agent-gate/gate.sh and nowhere else.
   #
   # Nothing here waits. Two events reach it:
   #   pull_request  opened, synchronize, reopened, or labeled `agent:review`.
@@ -91,8 +111,18 @@ jobs:
   #                 from the finished run, once.
   # Why nothing may wait here: see deps-verify in AGENTS.md.
   gate:
-    runs-on: ubuntu-latest
-    timeout-minutes: 10   # the picker calls the org API and may retry
+    if: >-
+      (github.event_name == 'pull_request'
+        && github.event.pull_request.head.repo.full_name == github.repository
+        && endsWith(github.event.pull_request.user.login, '[bot]')
+        && (github.event.action != 'labeled' || github.event.label.name == 'agent:review'))
+      || (github.event_name == 'workflow_run'
+        && github.event.workflow_run.event == 'pull_request'
+        && github.event.workflow_run.head_repository.full_name == github.repository
+        && github.event.workflow_run.conclusion != 'cancelled'
+        && github.event.workflow_run.conclusion != 'skipped')
+    runs-on: ${{ fromJSON((github.event.repository.private && !github.event.pull_request.head.repo.fork) && (vars.DODI_RUNS_ON_LIGHT || '["self-hosted","Linux","light"]') || '"ubuntu-latest"') }}
+    timeout-minutes: 10   # the picker may retry
     permissions:
       contents: read        # workflow files and the compare API
       pull-requests: read   # the pull request and the verdict comment
@@ -118,6 +148,10 @@ jobs:
       GH_TOKEN: ${{ github.token }}
       REPO:     ${{ github.repository }}
     steps:
+      - uses: dodi-smart/.github/actions/runner-report@v1
+        with:
+          selector: ${{ vars.DODI_RUNS_ON_LIGHT || '["self-hosted","Linux","light"]' }}
+
       # The pull request, read from the API for either event, so every later
       # step sees one shape and live labels. A workflow_run names its PR in the
       # payload for a same-repo branch; the branch lookup is the fallback.
@@ -357,6 +391,10 @@ jobs:
       # Hoisted: the secrets context is not available in a step-level `if:`.
       HAS_APP: ${{ secrets.GH_APP_CLIENT_ID != '' }}
     steps:
+      - uses: dodi-smart/.github/actions/runner-report@v1
+        with:
+          selector: ${{ needs.gate.outputs.verdict == 'green' && needs.gate.outputs.light || needs.gate.outputs.heavy }}
+
       # The PR BRANCH, not the merge ref: a fix is committed on top of it.
       # No credentials persist. Dependency install scripts run below, and a
       # token they could read is a token they could push with. The push token

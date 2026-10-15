@@ -1051,6 +1051,60 @@ jobs:
             echo "::error::pin a tag or a full SHA, never a branch"; exit 1
           fi
 
+      # deps-verify's gate and release.yml run on the light pool of a private
+      # repository and on a hosted runner otherwise. The expression is the only
+      # place `ubuntu-latest` may appear, the runner report is each job's first
+      # step, and the gate's pre-filter may only test the SHAPE of a bot login, never
+      # name one (a pre-filter stricter than agent-gate would skip a real PR).
+      - name: deps-verify gate and release.yml select their runner by expression
+        run: |
+          set -euo pipefail
+          python3 -c "
+          import re, sys, yaml
+          # No literal dollar-brace in this script: Actions would evaluate it before bash runs.
+          D = chr(36) + '{' + '{'
+          EXPR = D + ' fromJSON((github.event.repository.private && !github.event.pull_request.head.repo.fork) && (vars.DODI_RUNS_ON_LIGHT || \'[\"self-hosted\",\"Linux\",\"light\"]\') || \'\"ubuntu-latest\"\') }}'
+          bad = []
+          for f, job in (('deps-verify.yml', 'gate'), ('release.yml', 'release')):
+              path = '.github/workflows/' + f
+              src = open(path).read()
+              doc = yaml.safe_load(src)
+              j = doc['jobs'][job]
+              if j.get('runs-on') != EXPR:
+                  bad.append(f + ': ' + job + ' runs-on is not the shared light-or-hosted expression')
+              rest = src.replace(EXPR, '')
+              if re.search(r'^\s*runs-on:\s*ubuntu-latest', rest, re.M):
+                  bad.append(f + ': a runs-on: ubuntu-latest literal remains')
+              first = j['steps'][0]
+              if first.get('uses') != 'dodi-smart/.github/actions/runner-report@v1':
+                  bad.append(f + ': first step of ' + job + ' is not runner-report')
+          dv = yaml.safe_load(open('.github/workflows/deps-verify.yml'))['jobs']
+          if dv['verify']['steps'][0].get('uses') != 'dodi-smart/.github/actions/runner-report@v1':
+              bad.append('deps-verify.yml: first step of verify is not runner-report')
+          # The gate keeps exactly the permissions it had, actions: write included.
+          if dv['gate']['permissions'] != {'contents': 'read', 'pull-requests': 'read', 'actions': 'write'}:
+              bad.append('deps-verify.yml: the gate permissions changed')
+          cond = str(dv['gate'].get('if'))
+          # Shape only: the list of dependency bots lives in agent-gate alone.
+          for need in (\"endsWith(github.event.pull_request.user.login, '[bot]')\", \"workflow_run.conclusion != 'cancelled'\", \"workflow_run.conclusion != 'skipped'\", \"label.name == 'agent:review'\"):
+              if need not in cond:
+                  bad.append('deps-verify.yml: the gate if: lost ' + need)
+          # release outputs are the contract every caller reads.
+          rel = yaml.safe_load(open('.github/workflows/release.yml'))
+          outs = rel[True]['workflow_call']['outputs']
+          job_outs = rel['jobs']['release']['outputs']
+          for o in ('released', 'version', 'tag', 'tags'):
+              if outs.get(o, {}).get('value') != D + ' jobs.release.outputs.' + o + ' }}':
+                  bad.append('release.yml: workflow output ' + o + ' no longer reads jobs.release.outputs.' + o)
+              if job_outs.get(o) != D + ' steps.detect.outputs.' + o + ' }}':
+                  bad.append('release.yml: job output ' + o + ' no longer reads steps.detect.outputs.' + o)
+          if rel['jobs']['release']['permissions'] != {'contents': 'write', 'issues': 'write', 'pull-requests': 'write'}:
+              bad.append('release.yml: the release job permissions changed')
+          if bad:
+              sys.exit('::error::' + '; '.join(bad))
+          print('gate and release select their runner by expression, report it first, and keep their contracts')
+          "
+
       # shellcheck, jactionlint, typos and the whitespace checks all run
       # from hk.pkl, the same definition the local git hooks use. mise.toml
       # pins every tool, and Renovate bumps the pins. .github/jactionlint.yaml

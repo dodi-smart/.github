@@ -1077,7 +1077,8 @@ the base branch. The comment says so in one line.
 Which runner it takes:
 
 - **Nothing waits for `pr-checks`.** The caller triggers on `pull_request` and
-  on `workflow_run` for its PR Checks workflow. The short hosted `gate` reads the
+  on `workflow_run` for its PR Checks workflow. The short `gate` (light pool in a
+  private repo, hosted in a public one) reads the
   `pr-checks` run on the head commit once. While it has not finished, the run
   stops there, and the run's completion starts verification again with the
   verdict ready. A runner failure is re-run the same way, once. No job holds a

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Assert what the runner report writes, against recorded jobs-API shapes and a
-# stubbed `gh` / `curl`. The cases that matter most are the ones where the API
+# stubbed `curl`. The cases that matter most are the ones where the API
 # says no: the report must still name the runner and must never exit non-zero.
 # BASH_BIN=/bin/bash runs report.sh under the macOS bash 3.2.
 # shellcheck disable=SC2016  # the backticks are markdown, not command substitution
@@ -10,7 +10,7 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BASH_BIN="${BASH_BIN:-bash}"
 T="$(mktemp -d "${TMPDIR:-/tmp}/runner-report.XXXXXX")"; trap 'rm -rf "$T"' EXIT
 pass=0; fail=0
-mkdir -p "$T/bin" "$T/curlbin"
+mkdir -p "$T/bin"
 
 # --- Recorded shapes (trimmed; ids, names and times are synthetic) -----------
 # Page 1 of a paginated listing: another runner's job, and an earlier finished
@@ -36,7 +36,10 @@ cat > "$T/page2.json" <<'JSON'
   "labels":["self-hosted","Linux","X64","hetzner","light"],"workflow_name":"PR Checks"}
 ]}
 JSON
-cat "$T/page1.json" "$T/page2.json" > "$T/selfhosted.json"
+# A full page (100 jobs) so the script has to ask for page 2.
+jq -c '.jobs += [range(0; 98) as $i | .jobs[0]]' "$T/page1.json" > "$T/full1.json"
+# Page 1 that already holds this job: job mode must not ask for page 2.
+jq -c '.jobs += [range(0; 98) as $i | .jobs[0]] | .jobs[0] = (.jobs[0] + {status: "in_progress", runner_name: "hetzner-linux-03"})' "$T/page1.json" > "$T/hit1.json"
 
 cat > "$T/hosted.json" <<'JSON'
 {"total_count":1,"jobs":[
@@ -67,30 +70,26 @@ cat > "$T/run.json" <<'JSON'
 JSON
 
 # --- Stubs --------------------------------------------------------------------
-cat > "$T/bin/gh" <<'STUB'
-#!/usr/bin/env bash
-echo "gh $*" >> "$STUB_LOG"
-if [ -n "${GH_FAIL:-}" ]; then echo "gh: Resource not accessible by integration (HTTP 403)" >&2; exit 1; fi
-cat "$FIXTURE"
-STUB
-cat > "$T/curlbin/curl" <<'STUB'
+# FIXTURE answers page=1, FIXTURE2 (when set) page=2, anything later is empty.
+cat > "$T/bin/curl" <<'STUB'
 #!/usr/bin/env bash
 echo "curl $*" >> "$STUB_LOG"
 cat > /dev/null   # the config on stdin carries the token
-url="${*: -1}"
-case "$url" in *page=1) cat "$FIXTURE" ;; *) echo '{"total_count":0,"jobs":[]}' ;; esac
+if [ -n "${CURL_FAIL:-}" ]; then echo "curl: (22) The requested URL returned error: 403" >&2; exit 22; fi
+case "${*: -1}" in
+  *page=1) cat "$FIXTURE" ;;
+  *page=2) if [ -n "${FIXTURE2:-}" ]; then cat "$FIXTURE2"; else echo '{"jobs":[]}'; fi ;;
+  *) echo '{"jobs":[]}' ;;
+esac
 STUB
-chmod +x "$T/bin/gh" "$T/curlbin/curl"
-# A PATH with curl and jq but no gh, for the fallback.
-ln -s "$(command -v jq)" "$T/curlbin/jq"
-for t in tr sed cat printf bash env; do p="$(command -v "$t")"; [ -n "$p" ] && ln -sf "$p" "$T/curlbin/$t" 2>/dev/null; done
+chmod +x "$T/bin/curl"
 
 # --- Harness ------------------------------------------------------------------
-# run_case <fixture> [VAR=value ...]; leaves stdout, summary, outputs, log, exit code.
+# run_case <fixture> [VAR=value ...]  (FIXTURE2=<file> for page 2); leaves stdout, summary, outputs, log, exit code.
 run_case() {
   local fixture="$1"; shift
   : > "$T/summary.md"; : > "$T/out.txt"; : > "$T/log.txt"
-  env -i HOME="$T" PATH="${CASE_PATH:-$T/bin:$PATH}" TMPDIR="$T" \
+  env -i HOME="$T" PATH="$T/bin:$PATH" TMPDIR="$T" \
     GITHUB_STEP_SUMMARY="$T/summary.md" GITHUB_OUTPUT="$T/out.txt" STUB_LOG="$T/log.txt" \
     FIXTURE="$fixture" REPO=example-org/example-repo RUN_ID=900 RUN_ATTEMPT=1 GH_TOKEN=t0ken \
     "$@" "$BASH_BIN" "$HERE/report.sh" > "$T/stdout.txt" 2>"$T/stderr.txt"
@@ -108,7 +107,7 @@ lacks() {
 exit0() { if [ "$rc" = 0 ]; then ok "$1: exits 0"; else no "$1: exit $rc"; fi; }
 
 echo "self-hosted job, jobs on two pages"
-run_case "$T/selfhosted.json" RUNNER_NAME=hetzner-linux-03 RUNNER_OS=Linux RUNNER_ARCH=X64 \
+run_case "$T/full1.json" FIXTURE2="$T/page2.json" RUNNER_NAME=hetzner-linux-03 RUNNER_OS=Linux RUNNER_ARCH=X64 \
   RUNNER_ENVIRONMENT=self-hosted SELECTOR=light RUNNER_IMAGE_TAG=2026.10.1 RUNNER_IMAGE_REVISION=abc1234 MODE=job
 exit0 "self-hosted"
 has stdout.txt '::notice title=Runner::hetzner-linux-03 (hetzner) queued 12s' "notice names runner, pool, queue"
@@ -124,8 +123,15 @@ has out.txt 'pool=hetzner' "output: pool"
 has out.txt 'queued-seconds=12' "output: queued-seconds"
 has out.txt 'markdown<<' "output: markdown block"
 has out.txt '| Pool | hetzner |' "output: markdown holds the table"
-has log.txt 'attempts/1/jobs?per_page=100' "asks for the attempt's jobs, 100 per page"
-has log.txt '--paginate' "paginates"
+has log.txt 'attempts/1/jobs?per_page=100&page=1' "asks for the attempt's jobs, 100 per page"
+has log.txt 'page=2' "asks for page 2 when page 1 is full and lacks the job"
+lacks log.txt 't0ken' "token not on curl's command line"
+
+echo "job on a full first page: one request"
+run_case "$T/hit1.json" FIXTURE2="$T/page2.json" RUNNER_NAME=hetzner-linux-03 RUNNER_OS=Linux RUNNER_ARCH=X64
+exit0 "page-1 hit"
+lacks log.txt 'page=2' "job mode stops paging once it has the job"
+has summary.md '| Pool | hetzner |' "job found on page 1"
 
 echo "hosted job, nothing optional set"
 run_case "$T/hosted.json" RUNNER_NAME="GitHub Actions 1000000042" RUNNER_OS=Linux RUNNER_ARCH=X64 \
@@ -136,7 +142,7 @@ has summary.md '| Image | n/a |' "image is n/a without the env"
 lacks summary.md 'Selector' "no selector row when none was asked for"
 
 echo "API says no (403)"
-run_case "$T/hosted.json" GH_FAIL=1 RUNNER_NAME=beelink-2 RUNNER_OS=Linux RUNNER_ARCH=ARM64 RUNNER_ENVIRONMENT=self-hosted
+run_case "$T/hosted.json" CURL_FAIL=1 RUNNER_NAME=beelink-2 RUNNER_OS=Linux RUNNER_ARCH=ARM64 RUNNER_ENVIRONMENT=self-hosted
 exit0 "403"
 has stdout.txt '::notice title=Runner::beelink-2 (beelink) queued n/a' "notice still written, pool from the runner name"
 has summary.md '| Runner | `beelink-2` |' "summary still names the runner"
@@ -162,15 +168,12 @@ run_case "$T/run.json" RUNNER_NAME=m4pro-vm-2 RUNNER_OS=macOS RUNNER_ARCH=ARM64 
 exit0 "macOS (finished job is not in progress)"
 has summary.md '| Pool | m4pro |' "pool from the name when the job is not found"
 
-echo "no gh on PATH: curl fallback"
-CASE_PATH="$T/curlbin" run_case "$T/selfhosted.json" RUNNER_NAME=hetzner-linux-03 RUNNER_OS=Linux RUNNER_ARCH=X64
-exit0 "curl, unparsable page"
-has summary.md '| Queued | n/a (needs actions: read) |' "a bad curl response degrades, never fails"
-# The two-object fixture is gh's --paginate shape, not one curl page; use page 2.
-CASE_PATH="$T/curlbin" run_case "$T/page2.json" RUNNER_NAME=hetzner-linux-03 RUNNER_OS=Linux RUNNER_ARCH=X64
-exit0 "curl"
-has summary.md '| Queued | 12s |' "curl path finds the job"
-if grep -q t0ken "$T/log.txt"; then no "token kept out of curl's arguments"; else ok "token kept out of curl's arguments"; fi
+echo "unparsable response degrades, never fails"
+echo 'not json' > "$T/garbage.json"
+run_case "$T/garbage.json" RUNNER_NAME=hetzner-linux-03 RUNNER_OS=Linux RUNNER_ARCH=X64
+exit0 "garbage"
+has summary.md '| Queued | n/a (needs actions: read) |' "a bad response degrades"
+lacks log.txt 't0ken' "token not on curl's command line"
 
 echo "run mode"
 run_case "$T/run.json" MODE=run RUNNER_NAME=rpi5-04 RUNNER_OS=Linux RUNNER_ARCH=ARM64 RUNNER_ENVIRONMENT=self-hosted
@@ -184,8 +187,13 @@ has summary.md '| report | `rpi5-04` | rpi5 | 4s | running | in_progress |' "cur
 has out.txt 'queued-seconds=4' "run mode still sets the job outputs"
 has out.txt '| Job | Runner | Pool |' "run mode markdown output"
 
+echo "run mode reads every page even when the job is on the first"
+run_case "$T/hit1.json" FIXTURE2="$T/page2.json" MODE=run RUNNER_NAME=hetzner-linux-03
+exit0 "run mode paging"
+has log.txt 'page=2' "run mode asks for page 2"
+
 echo "run mode, API says no"
-run_case "$T/run.json" MODE=run GH_FAIL=1 RUNNER_NAME=rpi5-04 RUNNER_OS=Linux RUNNER_ARCH=ARM64
+run_case "$T/run.json" MODE=run CURL_FAIL=1 RUNNER_NAME=rpi5-04 RUNNER_OS=Linux RUNNER_ARCH=ARM64
 exit0 "run mode 403"
 has summary.md 'n/a (needs actions: read)' "run table says what is missing"
 

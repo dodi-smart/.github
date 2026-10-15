@@ -1,3 +1,9 @@
+## [1.17.2](https://github.com/dodi-smart/.github/compare/v1.17.1...v1.17.2) (2026-10-15)
+
+### 🐛 Bug Fixes
+
+* **workflows:** grant permissions per job, verify the yq download and scope the runner-picker token ([9947c89](https://github.com/dodi-smart/.github/commit/9947c8925e8aba489c5f4ff7cff2db65603406cc))
+
 ## [1.17.1](https://github.com/dodi-smart/.github/compare/v1.17.0...v1.17.1) (2026-10-14)
 
 ### 🐛 Bug Fixes

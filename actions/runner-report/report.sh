@@ -2,10 +2,14 @@
 # Say which runner a job got, so a slow or odd job can be traced to a machine.
 #
 # NEVER FAILS THE JOB. Callers often hold `contents: read` only, and the jobs
-# API needs `actions: read`, so a 403 is the normal case, not an error. Every
-# lookup that can go wrong degrades to "n/a (reason)" and the runner name, OS
-# and architecture, which the runner hands every step, are always reported. This
-# is a debugging aid; a report that turns a green build red is worse than none.
+# API needs `actions: read`, so a 403 is the normal case, not an error. The
+# shared workflows add no permission for this report (AGENTS.md says why), so
+# their jobs read "queued n/a (needs actions: read)" unless the job already
+# holds `actions: read` for something else, as pr-review and claude-assist do.
+# Every lookup that can go wrong degrades to "n/a (reason)" and the runner name,
+# OS and architecture, which the runner hands every step, are always reported.
+# This is a debugging aid; a report that turns a green build red is worse than
+# none.
 #
 # One API call serves both modes, and job mode stops paging once it has found its
 # job. The job is matched by runner name + in_progress: `runner.labels` is not a
@@ -140,7 +144,8 @@ run_table() {
 if [ "$MODE" = run ]; then md="$(run_table)"; else md="$(job_table)"; fi
 
 printf '%s\n' "$md" >> "$SUMMARY" 2>/dev/null
-echo "::notice title=Runner::$NAME ($pool) queued ${queued_short:-n/a}"
+# The notice is all most readers see, so it carries the reason as the summary does.
+echo "::notice title=Runner::$NAME ($pool) queued ${queued_short:-n/a (${note:-no timestamps})}"
 
 {
   echo "runner=$NAME"

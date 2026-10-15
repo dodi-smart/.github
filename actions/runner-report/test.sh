@@ -141,10 +141,29 @@ has stdout.txt '::notice title=Runner::GitHub Actions 1000000042 (hosted) queued
 has summary.md '| Image | n/a |' "image is n/a without the env"
 lacks summary.md 'Selector' "no selector row when none was asked for"
 
+echo "self-hosted job whose token can read the jobs API: the real queue time"
+cat > "$T/scaled.json" <<'JSON'
+{"total_count":2,"jobs":[
+ {"id":4001,"name":"review / gate","status":"completed","conclusion":"success",
+  "created_at":"2026-10-15T20:45:20Z","started_at":"2026-10-15T20:45:31Z","completed_at":"2026-10-15T20:45:45Z",
+  "runner_name":"hetzner-cpx31-runner-AAAAAAAAAAAAA","labels":["self-hosted","Linux","light"]},
+ {"id":4002,"name":"review / review","status":"in_progress","conclusion":null,
+  "created_at":"2026-10-15T20:45:49Z","started_at":"2026-10-15T20:45:57Z","completed_at":null,
+  "runner_name":"hetzner-cpx31-runner-BBBBBBBBBBBBB","labels":["self-hosted","Linux","light"]}
+]}
+JSON
+run_case "$T/scaled.json" RUNNER_NAME=hetzner-cpx31-runner-BBBBBBBBBBBBB RUNNER_OS=Linux RUNNER_ARCH=X64 \
+  RUNNER_ENVIRONMENT=self-hosted SELECTOR='["self-hosted","Linux","light"]'
+exit0 "self-hosted with actions: read"
+has stdout.txt '::notice title=Runner::hetzner-cpx31-runner-BBBBBBBBBBBBB (hetzner) queued 8s' "notice has the real queue time"
+has summary.md '| Queued | 8s |' "summary has the real queue time"
+lacks stdout.txt 'n/a' "nothing is reported missing"
+has out.txt 'queued-seconds=8' "queued-seconds output is the real wait"
+
 echo "API says no (403)"
 run_case "$T/hosted.json" CURL_FAIL=1 RUNNER_NAME=beelink-2 RUNNER_OS=Linux RUNNER_ARCH=ARM64 RUNNER_ENVIRONMENT=self-hosted
 exit0 "403"
-has stdout.txt '::notice title=Runner::beelink-2 (beelink) queued n/a' "notice still written, pool from the runner name"
+has stdout.txt '::notice title=Runner::beelink-2 (beelink) queued n/a (needs actions: read)' "notice still written, pool from the runner name, and says why"
 has summary.md '| Runner | `beelink-2` |' "summary still names the runner"
 has summary.md '| OS / arch | Linux / ARM64 |' "summary still has os / arch"
 has summary.md '| Queued | n/a (needs actions: read) |' "queued says what is missing"
@@ -155,6 +174,7 @@ echo "no token, no API call"
 run_case "$T/hosted.json" GH_TOKEN= RUNNER_NAME=rpi5-1 RUNNER_OS=Linux RUNNER_ARCH=ARM64 RUNNER_ENVIRONMENT=self-hosted
 exit0 "no token"
 has summary.md '| Queued | n/a (no token) |' "no token is named"
+has stdout.txt 'queued n/a (no token)' "notice names the missing token"
 if [ -s "$T/log.txt" ]; then no "no API call without a token"; else ok "no API call without a token"; fi
 
 echo "self-hosted runner with no pool label, job not in the listing"
@@ -162,6 +182,7 @@ run_case "$T/hosted.json" RUNNER_NAME=somebox RUNNER_OS=Linux RUNNER_ARCH=X64 RU
 exit0 "job not found"
 has summary.md '| Pool | self-hosted |' "unlabelled self-hosted is not called hosted"
 has summary.md '| Queued | n/a (job not found) |' "job not found is named"
+has stdout.txt '::notice title=Runner::somebox (self-hosted) queued n/a (job not found)' "notice names the missing job"
 
 echo "macOS-shaped runner whose job is already finished: pool comes from the name"
 run_case "$T/run.json" RUNNER_NAME=m4pro-vm-2 RUNNER_OS=macOS RUNNER_ARCH=ARM64 RUNNER_ENVIRONMENT=self-hosted

@@ -1,5 +1,7 @@
 # This repo's own release. Cuts a version from main with semantic-release, then
-# moves the major tag that every caller pins.
+# moves the `next` channel. It never moves `v<major>`: that is promote.yml, so a
+# merge reaches the canary callers on `@next` first and everyone else only when
+# a release is promoted.
 #
 # It does NOT call the reusable release.yml, and cannot. That workflow uses
 # actions/setup-stack@v1, and on a fresh repo no v1 exists yet, so the first
@@ -7,11 +9,16 @@
 # tag. A relative `./` reference does not help either, because inside a reusable
 # workflow it resolves against the CALLING repo.
 #
-# `v1` moves only after Self test passes on the exact commit being released.
-# semantic-release moves the tag the moment it succeeds, and a merge that is
-# broken only in combination would otherwise reach every caller before Self test
+# `next` moves only after Self test passes on the exact commit being released.
+# semantic-release cuts the tag the moment it succeeds, and a merge that is
+# broken only in combination would otherwise reach a caller before Self test
 # had reported. The `self-test` job below is that gate. Self test has no push
 # trigger of its own, so this is also its only run on a merge to main.
+#
+# What `next` points at is not main. It is a child of the release tag in which
+# every internal `@v1` reference is pinned to the exact version, so a caller on
+# `@next` runs the workflows and the actions they call from one release. The
+# commit is built by scripts/channel-tag.sh and tagged `pinned/vX.Y.Z`.
 #
 # Hosted on purpose. This repo is public, the org runner group refuses public
 # repos, and a self-hosted job here would queue rather than fail.
@@ -70,3 +77,38 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: npx semantic-release
+
+      # The channel commit rewrites workflow files, which GITHUB_TOKEN can never
+      # push. The org App can, so it is used whenever its secrets are present;
+      # without them the push is attempted with GITHUB_TOKEN and fails loudly.
+      - id: have-app
+        env:
+          CLIENT_ID: ${{ secrets.GH_APP_CLIENT_ID }}
+        run: |
+          if [ -n "${CLIENT_ID:-}" ]; then
+            echo "yes=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "yes=false" >> "$GITHUB_OUTPUT"
+            echo "::warning title=Moving next with GITHUB_TOKEN::GH_APP_CLIENT_ID is not set, so the pinned commit is pushed as github-actions[bot]. GitHub rejects a push that changes workflow files with that token."
+          fi
+
+      # Not narrowed with permission-*: the push must satisfy the same rulesets the release does.
+      - id: app-token
+        if: steps.have-app.outputs.yes == 'true'
+        # jactionlint ignore=github-app
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id:   ${{ secrets.GH_APP_CLIENT_ID }}
+          private-key: ${{ secrets.GH_APP_PRIVATE_KEY }}
+
+      # Runs on every push to main, released or not, and is idempotent: it finds
+      # the newest release tag reachable from this commit, reuses its pinned
+      # commit if there is one, and moves `next` only forward. Re-running a
+      # failed run therefore repairs a release whose channel push failed, which
+      # semantic-release itself never would (it sees nothing new to release).
+      - name: Move the next channel
+        env:
+          CHANNEL_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          set -euo pipefail
+          ./scripts/channel-tag.sh pin | tee -a "$GITHUB_STEP_SUMMARY"

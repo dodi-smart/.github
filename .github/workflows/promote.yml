@@ -1,0 +1,96 @@
+# Moves `v<major>`, the tag every ordinary caller pins, onto a release that has
+# already been running on the `next` channel. This is the only thing that moves
+# it: Publish release moves `next` and stops.
+#
+# Run it by hand to promote, or to roll back by naming an older version:
+#
+#   gh workflow run promote.yml -R <this repo> -f version=1.20.0
+#
+# Left empty, `version` is whatever `next` points at. A version cut before
+# channels existed has no pinned commit, so its own tag is used, which is
+# exactly what it was before.
+#
+# The scheduled run is opt-in. It does nothing until the repository variable
+# AUTO_PROMOTE is set to `true`, and then promotes `next` once it has been in
+# place for AUTO_PROMOTE_MIN_AGE_HOURS (default 24). It never promotes an older
+# version over a newer one and does not look at how the canary callers fared:
+# turn it off, or promote by hand, when a canary run is red.
+#
+# Hosted on purpose, like Publish release: this repo is public, and the org
+# runner group refuses public repos.
+name: Promote
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to point v<major> at, e.g. 1.20.0. Empty promotes what next points at. An older version is a rollback."
+        type: string
+        required: false
+        default: ""
+  schedule:
+    - cron: "23 * * * *"
+
+# Shares Publish release's group, so a promotion never reads `next` halfway
+# through a release moving it.
+concurrency:
+  group: publish-release
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  promote:
+    # Only the default branch's copy of the script decides what is promoted.
+    if: github.ref == 'refs/heads/main' && (github.event_name != 'schedule' || vars.AUTO_PROMOTE == 'true')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write        # force-move the major tag
+    steps:
+      # Full history and every tag, or the script cannot see the releases.
+      # The script pushes the tag with these credentials unless the App token below replaces them.
+      # jactionlint ignore=artipacked
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: true
+
+      # The pinned commit changes workflow files, and GitHub refuses a push that
+      # does, with GITHUB_TOKEN, to any ref. Same mechanism as Publish release.
+      - id: have-app
+        env:
+          CLIENT_ID: ${{ secrets.GH_APP_CLIENT_ID }}
+        run: |
+          if [ -n "${CLIENT_ID:-}" ]; then
+            echo "yes=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "yes=false" >> "$GITHUB_OUTPUT"
+            echo "::warning title=Promoting with GITHUB_TOKEN::GH_APP_CLIENT_ID is not set, so the major tag is pushed as github-actions[bot]. GitHub rejects a push that changes workflow files with that token."
+          fi
+
+      # Not narrowed with permission-*: the push must satisfy the same rulesets the release does.
+      - id: app-token
+        if: steps.have-app.outputs.yes == 'true'
+        # jactionlint ignore=github-app
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id:   ${{ secrets.GH_APP_CLIENT_ID }}
+          private-key: ${{ secrets.GH_APP_PRIVATE_KEY }}
+
+      - name: Promote
+        env:
+          CHANNEL_TOKEN: ${{ steps.app-token.outputs.token }}
+          VERSION: ${{ inputs.version }}
+          AUTO: ${{ github.event_name == 'schedule' }}
+          MIN_AGE_HOURS: ${{ vars.AUTO_PROMOTE_MIN_AGE_HOURS || '24' }}
+        run: |
+          set -euo pipefail
+          args=()
+          if [ -n "${VERSION:-}" ]; then args+=(--version "$VERSION"); fi
+          if [ "$AUTO" = "true" ]; then args+=(--auto --min-age-hours "$MIN_AGE_HOURS"); fi
+          {
+            echo "### Promote"
+            ./scripts/channel-tag.sh promote "${args[@]}"
+          } | tee -a "$GITHUB_STEP_SUMMARY"

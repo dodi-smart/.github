@@ -815,21 +815,16 @@ That path does not read `fallback`.
 
 ## Versioning
 
-Pin `@v1`. It is a moving tag, and it moves on its own: every release from
-`main` force-advances it to the new version. A breaking input change cuts `v2`
-rather than redefining `v1`.
-
-**So merging to `main` is a rollout.** There is no staging step. The moment a
-release is cut, every repo pinned to `@v1` is running the new code, including the
-picker and composite actions this repo's own workflows call internally. Verify in
-the pull request, because after the merge it is already live everywhere.
+Pin `@v1`. It is a moving tag, but it no longer moves on a merge: it moves when
+a release is promoted (see [Releasing and channels](#releasing-and-channels)).
+A breaking input change cuts `v2` rather than redefining `v1`.
 
 Releases are cut by semantic-release from `main`, so the version comes from the
 commit messages. `feat:` opens a minor, `fix:` a patch, and a breaking change
 footer a major.
 
 The major tag is derived from the version, so this works unchanged at `v2` and
-beyond. Releasing `2.0.0` creates `v2` and **stops touching `v1`**, which freezes
+beyond. Promoting `2.0.0` creates `v2` and **stops touching `v1`**, which freezes
 at the last `1.x`. Callers pinned to `@v1` keep the old major until they choose
 to move, which is the whole point of pinning a major.
 
@@ -842,19 +837,62 @@ during an incident.
 `chore(deps)` also cuts a patch, which is specific to this repo. Renovate labels
 every dependency update `chore(deps)`, and elsewhere that deliberately releases
 nothing. Here the dependencies are the action versions these workflows run on, so
-a bump that never reached a release would leave every caller pinned to `@v1` on
-the old ones. A plain `chore:` with no `deps` scope still releases nothing.
+a bump that never reached a release would leave every caller on the old ones. A
+plain `chore:` with no `deps` scope still releases nothing.
 
-Do not pin `@main` even so. `@v1` still moves only when a release is cut, so a
-commit that releases nothing, a `docs:` or a `ci:` change, never reaches a
+Do not pin `@main` even so. `@v1` still moves only when a release is promoted, so
+a commit that releases nothing, a `docs:` or a `ci:` change, never reaches a
 caller. `@main` picks up every commit. `@v1` is also a version you can name in a
 rollback, and `@main` is not.
 
-To roll back, point the tag at the previous release and force it:
+### Releasing and channels
 
-```bash
-git tag -f v1 v1.0.1 && git push -f origin v1
-```
+A merge to `main` is no longer a rollout to everyone. A release moves through two
+channels:
+
+| Channel | Moved by | Who follows it |
+|---|---|---|
+| `next` | every release, right after `Self test` passes on the merge commit | a small set of canary repositories, which pin `@next` |
+| `v1` | the `Promote` workflow, on purpose | every other caller, which pins `@v1` |
+
+1. **Merge.** semantic-release cuts `vX.Y.Z` on `main`. `scripts/channel-tag.sh`
+   then builds a child commit of that tag, which is not on `main`, where every
+   `dodi-smart/.github/actions/*@v1` and `dodi-smart/.github/.github/workflows/*@v1`
+   reference in `.github/workflows/*.yml` and `actions/**/action.yml` is rewritten
+   to `@vX.Y.Z`. That commit is tagged `pinned/vX.Y.Z` and `next` is force-moved
+   onto it. Without the rewrite a caller on `@next` would run the new workflow
+   but each action from whatever `v1` is at that moment. With it, `@next` runs the
+   workflows and the actions they call from exactly `vX.Y.Z`. Third-party
+   references (`actions/checkout@v7`) and exact versions are never touched.
+2. **Soak.** The canary repositories run the release on their own pull requests.
+   Nobody else sees it.
+3. **Promote.** Run the `Promote` workflow, which force-moves `v<major>` onto
+   `pinned/vX.Y.Z`:
+
+   ```bash
+   gh workflow run promote.yml -R dodi-smart/.github                 # what next points at
+   gh workflow run promote.yml -R dodi-smart/.github -f version=1.20.0
+   ```
+
+   The major is taken from the version, so promoting `2.0.0` moves `v2` and leaves
+   `v1` alone. `next` stays one channel and always follows the newest release.
+4. **Roll back.** Promote an older version: `-f version=1.19.2`. A version cut
+   before channels existed has no pinned commit, so its own tag is used, and it
+   behaves as it always did. To roll the canary back, move `next` by hand:
+   `scripts/channel-tag.sh pin --version 1.19.2 --force`.
+
+**Automatic promotion is off.** Set the repository variable `AUTO_PROMOTE` to
+`true` and the hourly `Promote` schedule promotes `next` once it has been in
+place for 24 hours (`AUTO_PROMOTE_MIN_AGE_HOURS` changes that). It never promotes
+an older version over a newer one, and it does not look at how the canary runs
+went, so turn it off or promote by hand when one is red.
+
+**The first release after this was introduced moves only `next`.** `v1` stays on
+the last release cut before channels, and every caller on `@v1` keeps working
+exactly as it did. Until `Promote` is run, `v1` does not move at all, so nothing
+merged since reaches a caller on `@v1`. The canary callers only start following
+`next` when they change `@v1` to `@next`, which is a change in each of those
+repositories and not in this one.
 
 One thing pinning does not buy you here. `claude-code-action` refuses to run when
 the workflow file differs from the default-branch copy, which is a correct
@@ -918,7 +956,7 @@ by the link, not by an install, so nothing is added to the consumer's
 `package.json` or its lockfile.
 
 Updates arrive the way workflow updates do: someone merges a change here, the
-`@v1` tag moves, and every consumer is on the new config the next time it
+release is promoted to `@v1`, and every consumer is on the new config the next time it
 releases. There is no per-repo version to bump, and so no way for a consumer
 to lag.
 

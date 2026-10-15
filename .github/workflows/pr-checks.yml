@@ -168,13 +168,13 @@ jobs:
       # A `workflow_dispatch` (no PR), an API error, an empty list and the
       # 3000-file cap all come out `false`.
       - id: docs
-        uses: dodi-smart/.github/actions/changed-files@v1
+        uses: dodi-smart/.github/actions/changed-files@v1.20.0
         with:
           patterns: ${{ inputs.docs-only-paths }}
 
       - id: rd
         if: ${{ inputs.react-doctor }}
-        uses: dodi-smart/.github/actions/changed-files@v1
+        uses: dodi-smart/.github/actions/changed-files@v1.20.0
         with:
           patterns: ${{ inputs.react-doctor-paths }}
 
@@ -196,7 +196,7 @@ jobs:
 
       - id: light
         if: ${{ steps.need.outputs.needs_light == 'true' }}
-        uses: dodi-smart/.github/actions/pick-runner@v1
+        uses: dodi-smart/.github/actions/pick-runner@v1.20.0
         with:
           weight:             ${{ inputs.light-weight }}
           gh-app-client-id:   ${{ secrets.GH_APP_CLIENT_ID }}
@@ -204,7 +204,7 @@ jobs:
 
       - id: heavy
         if: ${{ steps.docs.outputs.all-matched != 'true' }}
-        uses: dodi-smart/.github/actions/pick-runner@v1
+        uses: dodi-smart/.github/actions/pick-runner@v1.20.0
         with:
           weight:             ${{ inputs.heavy-weight }}
           gh-app-client-id:   ${{ secrets.GH_APP_CLIENT_ID }}
@@ -220,7 +220,7 @@ jobs:
       contents: read
       pull-requests: read
     steps:
-      - uses: dodi-smart/.github/actions/commitlint@v1
+      - uses: dodi-smart/.github/actions/commitlint@v1.20.0
         with:
           config: ${{ inputs.commitlint-config }}
           number: ${{ github.event.pull_request.number }}
@@ -240,7 +240,7 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
-      - uses: dodi-smart/.github/actions/zavet-check@v1
+      - uses: dodi-smart/.github/actions/zavet-check@v1.20.0
         with:
           zavet-dir:       ${{ inputs.zavet-dir }}
           stack:           ${{ inputs.zavet-stack }}
@@ -262,7 +262,7 @@ jobs:
       pull-requests: write     # the action posts its own sticky comment
       statuses: write          # and a commit status carrying the score
     steps:
-      - uses: dodi-smart/.github/actions/react-doctor@v1
+      - uses: dodi-smart/.github/actions/react-doctor@v1.20.0
         with:
           directory: ${{ inputs.react-doctor-directory }}
 
@@ -284,7 +284,7 @@ jobs:
       - uses: actions/checkout@v7
         with: { persist-credentials: false }
       - id: setup
-        uses: dodi-smart/.github/actions/setup-stack@v1
+        uses: dodi-smart/.github/actions/setup-stack@v1.20.0
         with:
           stack:           ${{ inputs.stack }}
           isolate:         false
@@ -303,7 +303,7 @@ jobs:
       # `hk: false` the single `Run phases` step below runs as it always did.
       - name: Run phases (install)
         if: ${{ inputs.hk }}
-        uses: dodi-smart/.github/actions/run-phases@v1
+        uses: dodi-smart/.github/actions/run-phases@v1.20.0
         with:
           env-file: ${{ steps.setup.outputs.env-file }}
           install:  ${{ steps.setup.outputs.install }}
@@ -334,7 +334,7 @@ jobs:
           retention-days: 1
       - name: Run phases
         if: ${{ !inputs.hk }}
-        uses: dodi-smart/.github/actions/run-phases@v1
+        uses: dodi-smart/.github/actions/run-phases@v1.20.0
         with:
           env-file:    ${{ steps.setup.outputs.env-file }}
           install:     ${{ steps.setup.outputs.install }}
@@ -343,7 +343,7 @@ jobs:
           typecheck:   ${{ steps.setup.outputs.typecheck }}
       - name: Run phases (after hk)
         if: ${{ inputs.hk }}
-        uses: dodi-smart/.github/actions/run-phases@v1
+        uses: dodi-smart/.github/actions/run-phases@v1.20.0
         with:
           env-file:    ${{ steps.setup.outputs.env-file }}
           lint:        ${{ steps.setup.outputs.lint }}
@@ -363,7 +363,7 @@ jobs:
       - uses: actions/checkout@v7
         with: { persist-credentials: false }
       - id: setup
-        uses: dodi-smart/.github/actions/setup-stack@v1
+        uses: dodi-smart/.github/actions/setup-stack@v1.20.0
         with:
           stack:           ${{ inputs.stack }}
           isolate:         false
@@ -377,7 +377,7 @@ jobs:
           flutter-version: ${{ inputs.flutter-version }}
           rust-toolchain:  ${{ inputs.rust-toolchain }}
       - name: Run phases
-        uses: dodi-smart/.github/actions/run-phases@v1
+        uses: dodi-smart/.github/actions/run-phases@v1.20.0
         with:
           env-file: ${{ steps.setup.outputs.env-file }}
           install:  ${{ steps.setup.outputs.install }}
@@ -411,7 +411,7 @@ jobs:
       - uses: actions/checkout@v7
         with: { persist-credentials: false }
       - id: setup
-        uses: dodi-smart/.github/actions/setup-stack@v1
+        uses: dodi-smart/.github/actions/setup-stack@v1.20.0
         with:
           stack:           ${{ inputs.stack }}
           isolate:         false
@@ -426,7 +426,7 @@ jobs:
           flutter-version: ${{ inputs.flutter-version }}
           rust-toolchain:  ${{ inputs.rust-toolchain }}
       - name: Run phases
-        uses: dodi-smart/.github/actions/run-phases@v1
+        uses: dodi-smart/.github/actions/run-phases@v1.20.0
         with:
           env-file:       ${{ steps.setup.outputs.env-file }}
           build-env-file: ${{ steps.setup.outputs.build-env-file }}
@@ -449,7 +449,7 @@ jobs:
       - uses: actions/checkout@v7
         with: { persist-credentials: false }
       - id: setup
-        uses: dodi-smart/.github/actions/setup-stack@v1
+        uses: dodi-smart/.github/actions/setup-stack@v1.20.0
         with:
           stack:           ${{ inputs.stack }}
           isolate:         false
@@ -471,7 +471,7 @@ jobs:
       # `hk: false` the single `Run phases` step below runs as it always did.
       - name: Run phases (install)
         if: ${{ inputs.hk }}
-        uses: dodi-smart/.github/actions/run-phases@v1
+        uses: dodi-smart/.github/actions/run-phases@v1.20.0
         with:
           env-file: ${{ steps.setup.outputs.env-file }}
           install:  ${{ steps.setup.outputs.install }}
@@ -502,7 +502,7 @@ jobs:
           retention-days: 1
       - name: Run phases
         if: ${{ !inputs.hk }}
-        uses: dodi-smart/.github/actions/run-phases@v1
+        uses: dodi-smart/.github/actions/run-phases@v1.20.0
         with:
           env-file:       ${{ steps.setup.outputs.env-file }}
           build-env-file: ${{ steps.setup.outputs.build-env-file }}
@@ -514,7 +514,7 @@ jobs:
           build:          ${{ steps.setup.outputs.build }}
       - name: Run phases (after hk)
         if: ${{ inputs.hk }}
-        uses: dodi-smart/.github/actions/run-phases@v1
+        uses: dodi-smart/.github/actions/run-phases@v1.20.0
         with:
           env-file:       ${{ steps.setup.outputs.env-file }}
           build-env-file: ${{ steps.setup.outputs.build-env-file }}
@@ -572,7 +572,7 @@ jobs:
         with:
           file-coverage-root-path: ${{ env.WRITER_WORKSPACE }}
       - if: inputs.coverage == 'lcov'
-        uses: dodi-smart/.github/actions/lcov-report@v1
+        uses: dodi-smart/.github/actions/lcov-report@v1.20.0
         with:
           path:        coverage/*
           source-root: ${{ env.WRITER_WORKSPACE }}

@@ -1,3 +1,12 @@
+## [1.17.3](https://github.com/dodi-smart/.github/compare/v1.17.2...v1.17.3) (2026-10-15)
+
+### 🐛 Bug Fixes
+
+* **deps-verify:** drop the gate's unused head-sha output ([2cb0bd5](https://github.com/dodi-smart/.github/commit/2cb0bd5d50400db893a3f07e1273e132b971f86e))
+* **deps-verify:** read the finished pr-checks run on workflow_run instead of polling it ([881adea](https://github.com/dodi-smart/.github/commit/881adea4c6598cf8378b58588c671baf0be5f2b8))
+* **deps-verify:** run the wait job hosted so it cannot deadlock the light pool ([701f40c](https://github.com/dodi-smart/.github/commit/701f40cde99bd6d5069328ad1323ce41f046bd19))
+* **pick-runner:** overflow light jobs to an idle large runner when the light pool is busy ([7b2600b](https://github.com/dodi-smart/.github/commit/7b2600bcbeb04aeecd32886d7a29a6e95f7b78d1))
+
 ## [1.17.2](https://github.com/dodi-smart/.github/compare/v1.17.1...v1.17.2) (2026-10-15)
 
 ### 🐛 Bug Fixes

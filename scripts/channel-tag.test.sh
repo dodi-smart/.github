@@ -214,6 +214,16 @@ run "$R4" promote --version 1.5.0 >/dev/null
 eq "a 1.x rollback moves v1, not v2" "$(sha "$R4" v1)" "$(sha "$R4" pinned/v1.5.0)"
 eq "and leaves v2 where it was" "$(sha "$R4" v2)" "$P2"
 
+# A checkout that persisted GITHUB_TOKEN as an extraheader would send it in place
+# of the App token in the URL, and GitHub refuses that push for workflow files.
+SHIM="$TMP/shim"; mkdir -p "$SHIM"; REAL_GIT="$(command -v git)"
+printf '#!/usr/bin/env bash\necho "$*" >> "%s/git.log"\nexec "%s" "$@"\n' "$TMP" "$REAL_GIT" > "$SHIM/git"; chmod +x "$SHIM/git"
+(cd "$R4" && PATH="$SHIM:$PATH" CHANNEL_TOKEN=t GITHUB_REPOSITORY=o/r "$SCRIPT" promote --version 1.5.0 --remote origin >/dev/null 2>&1)
+eq "a token push clears the persisted auth header" "$(grep -c '^-c http.https://github.com/.extraheader= push' "$TMP/git.log")" 1
+: > "$TMP/git.log"
+(cd "$R4" && PATH="$SHIM:$PATH" "$SCRIPT" promote --version 1.5.0 >/dev/null 2>&1)
+eq "a plain push leaves the header alone" "$(grep -c 'extraheader' "$TMP/git.log")" 0
+
 echo
 echo "$pass passed, $fail failed"
 [ "$fail" -eq 0 ]

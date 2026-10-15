@@ -33,8 +33,14 @@ note() { echo "channel-tag: $*" >&2; }
 cmd="${1:-}"; [ -n "$cmd" ] || usage
 shift
 version="" remote=origin push=1 force=0 auto=0 min_age=24
+# actions/checkout persists GITHUB_TOKEN as an http extraheader, and git sends
+# that header in place of the token in the URL. Pushing workflow files with it
+# is refused, so the token remote clears the header for this script's own
+# fetches and pushes. An empty value resets the list.
+remote_opts=()
 if [ -n "${CHANNEL_TOKEN:-}" ]; then
   remote="https://x-access-token:${CHANNEL_TOKEN}@github.com/${GITHUB_REPOSITORY:?CHANNEL_TOKEN needs GITHUB_REPOSITORY}.git"
+  remote_opts=(-c "http.https://github.com/.extraheader=")
 fi
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -70,7 +76,7 @@ version_at() {
 
 push_tag() { # push_tag <tag> [--force]
   [ "$push" = 1 ] || return 0
-  git push ${2:+"$2"} "$remote" "refs/tags/$1:refs/tags/$1"
+  git ${remote_opts[@]+"${remote_opts[@]}"} push ${2:+"$2"} "$remote" "refs/tags/$1:refs/tags/$1"
 }
 
 move_tag() { # move_tag <tag> <commit>
@@ -81,7 +87,7 @@ move_tag() { # move_tag <tag> <commit>
 # Tags may exist on the remote only (a fresh checkout, a rerun elsewhere).
 fetch_tags() {
   [ "$push" = 1 ] || return 0
-  git fetch --quiet --force --tags "$remote" 2>/dev/null || note "could not fetch tags from the remote; using the local ones"
+  git ${remote_opts[@]+"${remote_opts[@]}"} fetch --quiet --force --tags "$remote" 2>/dev/null || note "could not fetch tags from the remote; using the local ones"
 }
 
 # Rewrites one file's content on stdin. Only a `uses:` line is touched, and only

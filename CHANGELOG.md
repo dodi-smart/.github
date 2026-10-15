@@ -1,3 +1,9 @@
+## [1.23.0](https://github.com/dodi-smart/.github/compare/v1.22.4...v1.23.0) (2026-10-15)
+
+### ✨ Features
+
+* **pr-checks:** run pick and the required PR Checks summary on a dedicated control pool ([29127b2](https://github.com/dodi-smart/.github/commit/29127b2c580dc43406109fd41bd9262e2f7b223c))
+
 ## [1.22.4](https://github.com/dodi-smart/.github/compare/v1.22.3...v1.22.4) (2026-10-15)
 
 ### 🐛 Bug Fixes

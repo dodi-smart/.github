@@ -103,7 +103,7 @@ jobs:
       fell-back: ${{ steps.pick.outputs.fell-back }}
     steps:
       - id: pick
-        uses: dodi-smart/.github/actions/pick-runner@v1
+        uses: dodi-smart/.github/actions/pick-runner@v1.19.0
         with:
           weight:             ${{ inputs.weight }}
           labels:             ${{ inputs.labels }}

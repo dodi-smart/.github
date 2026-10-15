@@ -69,7 +69,7 @@ jobs:
     steps:
       # agent:no-touch first, unconditionally.
       - id: gate
-        uses: dodi-smart/.github/actions/agent-gate@v1
+        uses: dodi-smart/.github/actions/agent-gate@v1.19.0
         with:
           labels:        ${{ toJson(github.event.issue.labels.*.name) }}
           event-name:    ${{ github.event_name }}
@@ -155,7 +155,7 @@ jobs:
       # refused actor must never pay for a hosted picker.
       - id: pick
         if: steps.check.outputs.proceed == 'true'
-        uses: dodi-smart/.github/actions/pick-runner@v1
+        uses: dodi-smart/.github/actions/pick-runner@v1.19.0
         with:
           weight:             ${{ inputs.runner-weight }}
           labels:             ${{ inputs.runner-labels }}
@@ -180,7 +180,7 @@ jobs:
           fetch-depth: 0
           ref: ${{ inputs.base-branch }}
 
-      - uses: dodi-smart/.github/actions/run-agent@v1
+      - uses: dodi-smart/.github/actions/run-agent@v1.19.0
         with:
           oauth-token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           model: ${{ inputs.model }}

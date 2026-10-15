@@ -1,3 +1,9 @@
+## [1.18.1](https://github.com/dodi-smart/.github/compare/v1.18.0...v1.18.1) (2026-10-15)
+
+### 🐛 Bug Fixes
+
+* **release:** clear the persisted checkout header when pushing channel tags with the App token ([427027f](https://github.com/dodi-smart/.github/commit/427027fc6ec1c9a254b70f0504e47b0b633cd8ba))
+
 ## [1.18.0](https://github.com/dodi-smart/.github/compare/v1.17.3...v1.18.0) (2026-10-15)
 
 ### ✨ Features

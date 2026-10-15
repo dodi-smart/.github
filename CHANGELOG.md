@@ -1,3 +1,9 @@
+## [1.22.0](https://github.com/dodi-smart/.github/compare/v1.21.0...v1.22.0) (2026-10-15)
+
+### ✨ Features
+
+* **workflows:** run the deps-verify gate and release on the light pool ([241b4ce](https://github.com/dodi-smart/.github/commit/241b4cec3a44ee2a1156474596faecd66c76e8af))
+
 ## [1.21.0](https://github.com/dodi-smart/.github/compare/v1.20.0...v1.21.0) (2026-10-15)
 
 ### ✨ Features

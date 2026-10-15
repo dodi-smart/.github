@@ -1,38 +1,39 @@
-# Composite: choose a runner, and say so out loud when the choice is wrong.
+# Composite: resolve a runner weight to a `runs-on` selector. Static.
 #
 # This is the logic behind the `pick-runner.yml` reusable workflow, extracted so
-# a caller that already runs a hosted job (pr-checks.yml's own picker, for one)
-# can pick twice without paying for two hosted jobs. `pick-runner.yml` stays the
-# thin wrapper most callers should keep using; this action is for a workflow that
-# needs the selection INSIDE a job it already has.
+# a caller that already has a job (pr-checks.yml's own `pick`, an agent
+# workflow's gate job) can pick without a second job. `pick-runner.yml` stays the
+# thin wrapper for a caller that wants the selection as a job of its own.
 #
-# A composite action cannot read `secrets`, so a caller passes the two GH App
-# values through as inputs instead. `pick-runner.yml` does exactly that when it
-# calls this action, which is why its own `secrets:` block is unchanged.
+# There is NO API call, NO GitHub App token and NO fleet listing. A weight is a
+# fixed list of capability labels, and overflow is left to GitHub's queue: the
+# large pool also carries `light`, so a light job waits for whichever matching
+# runner frees up first. The old picker listed the org's runners to choose
+# between pools, which cost a token, an API call and a hosted job on every run,
+# and could only guess when the listing failed.
 #
 # Selection is by capability label, never by architecture and never by machine
 # name. An architecture pins a tier of intent to this month's hardware, and a
-# machine name does not survive re-registration.
-#
-# Centralising the selector is the point. A lost or renamed label is one commit
-# here rather than one per workflow per repo. The decision reads ONE listing of
-# the org's runners (cached for the rest of the job, so a second call in the same
-# job costs nothing) and lives in pick.sh, where test.sh asserts it. A selector
-# that matches nothing looks exactly like a busy fleet, so the same listing feeds
-# a warning. It warns rather than fails: breaking CI over a bad selector would be
-# worse than the bug.
+# machine name does not survive re-registration. A lost or renamed label is one
+# commit in pick.sh rather than one per workflow per repo.
 #
 # Public repos and fork PRs never touch self-hosted, with no opt-out. The runner
 # group refuses public repos, and a fork PR would otherwise run attacker-authored
 # code on our hardware against a cache the next job inherits.
+#
+# The emergency switch: org variables DODI_RUNS_ON_LIGHT, _HEAVY, _AGENT and
+# _APPLE (JSON: an array of labels, or `"ubuntu-latest"`) repoint a weight with
+# no release. Pass them as the `runs-on-*` inputs (`${{ vars.DODI_RUNS_ON_LIGHT }}`)
+# or export them in the calling job's `env`; the input wins when both are set.
 name: Pick runner
-description: Resolve a semantic runner weight to a runs-on selector, validated against the live fleet.
+description: Resolve a semantic runner weight to a runs-on selector, with no API call.
 
 inputs:
   # Semantic preset. Prefer this over `labels`, so re-tiering the fleet is
   # one edit here rather than an audit of every caller.
   #   light   lint, typecheck, checks, releases, reading a diff
   #   heavy   builds, Docker, full suites
+  #   agent   agent workflows: review, triage, assist
   #   apple   Xcode, iOS, Swift, signing
   #   hosted  force GitHub-hosted, skip self-hosted entirely
   #
@@ -40,42 +41,32 @@ inputs:
   # capability labels with NO architecture. A runner of any arch that joins
   # a pool is picked up without a change here.
   weight:
-    description: 'light | heavy | apple | hosted'
+    description: 'light | heavy | agent | apple | hosted'
     default: light
 
   # Escape hatch for a stack the presets do not describe, e.g. a job needing
-  # the `docker` label, or an Android build needing an SDK-bearing image.
-  # Wins over `weight` when non-empty. Validated like any other selector, so a
-  # typo here is reported rather than silently downgraded to hosted.
+  # the `docker` label. Wins over `weight` and over the overrides below.
   labels:
     description: 'Comma-separated capability labels. Wins over weight when set.'
     default: ""
 
-  # Where a job goes when its pool cannot take it. Empty means the weight's own
-  # default, and an explicit value always wins:
-  #   light   self-hosted,Linux,large, when a large runner is idle
-  #   heavy   `hosted-runner`, never the light pool, where a heavy job runs out
-  #           of memory (exit 137)
-  #   apple   none: the light pool cannot run Xcode, so the job queues
-  #   labels  self-hosted,Linux,light, as before
-  # A self-hosted fallback QUEUES when the fleet is offline, where a hosted one
-  # would run, so set this to `ubuntu-latest` for a job that must finish even then.
-  fallback:
-    description: "Fallback selector. Empty means the weight's default (see README)."
+  # The emergency switch, one per weight. Empty falls back to the job's
+  # DODI_RUNS_ON_* environment variable, then to the default selector.
+  runs-on-light:
+    description: 'Override for light: JSON array of labels or one label. Pass vars.DODI_RUNS_ON_LIGHT.'
     default: ""
-
-  # When to use the fallback. `busy` goes when no matching runner is online AND
-  # idle. `offline` goes only when none is online, so a busy pool queues the job.
-  # Empty means the weight's default: `busy` for light and labels, `offline` for
-  # heavy and apple. Long jobs want `offline`, because hosted costs more than the
-  # queue.
-  fallback-when:
-    description: "busy | offline. Empty means the weight's default."
+  runs-on-heavy:
+    description: 'Override for heavy: JSON array of labels or one label. Pass vars.DODI_RUNS_ON_HEAVY.'
+    default: ""
+  runs-on-agent:
+    description: 'Override for agent: JSON array of labels or one label. Pass vars.DODI_RUNS_ON_AGENT.'
+    default: ""
+  runs-on-apple:
+    description: 'Override for apple: JSON array of labels or one label. Pass vars.DODI_RUNS_ON_APPLE.'
     default: ""
 
   # The runner used whenever self-hosted is off the table: `weight: hosted`,
-  # and the public-repo and fork-PR path. That path never reads `fallback`,
-  # so `fallback` can never point it at our own hardware.
+  # and the public-repo and fork-PR path.
   hosted-runner:
     description: 'Runner used when self-hosted is off the table.'
     default: "ubuntu-latest"
@@ -86,27 +77,32 @@ inputs:
     description: 'Force hosted on public repos and fork PRs. Leave true.'
     default: "true"
 
-  # A composite action cannot read `secrets`, so the caller passes these
-  # through explicitly. GH_APP_CLIENT_ID is the ONE name for this secret
-  # across the org; migrate a repo carrying the older GH_APP_ID rather than
-  # teaching this action a second name.
+  # Accepted and IGNORED, so a caller written for the fleet-listing picker keeps
+  # working unchanged. Overflow is the queue's job now, so there is no fallback to
+  # choose, and nothing reads the fleet, so there is no token to mint.
+  fallback:
+    description: 'Ignored. Kept so existing callers keep working.'
+    default: ""
+  fallback-when:
+    description: 'Ignored. Kept so existing callers keep working.'
+    default: ""
   gh-app-client-id:
-    description: 'GH_APP_CLIENT_ID secret, passed through by the caller. Empty skips fleet validation.'
+    description: 'Ignored. The picker no longer reads the org runner list.'
     default: ""
   gh-app-private-key:
-    description: 'GH_APP_PRIVATE_KEY secret, passed through by the caller.'
+    description: 'Ignored. The picker no longer reads the org runner list.'
     default: ""
 
 outputs:
   runner:
     description: "JSON array of labels for runs-on, via fromJson()"
-    value: ${{ steps.out.outputs.runner }}
+    value: ${{ steps.resolve.outputs.runner }}
   selector:
-    description: "The resolved selector, for logging"
+    description: "The resolved selector, for logging. Empty when hosted."
     value: ${{ steps.resolve.outputs.selector }}
   fell-back:
-    description: "true when the runner is the fallback, so a caller can widen max-parallel on hosted"
-    value: ${{ steps.out.outputs.fell-back }}
+    description: "Always false. Kept so existing callers keep working."
+    value: ${{ steps.resolve.outputs.fell-back }}
 
 runs:
   using: composite
@@ -116,93 +112,13 @@ runs:
       env:
         WEIGHT:        ${{ inputs.weight }}
         LABELS:        ${{ inputs.labels }}
-        FALLBACK_WHEN: ${{ inputs.fallback-when }}
+        HOSTED_RUNNER: ${{ inputs.hosted-runner }}
+        GUARD:         ${{ inputs.guard-public }}
         PRIVATE:       ${{ github.event.repository.private }}
         FORK:          ${{ github.event.pull_request.head.repo.fork }}
-        GUARD:         ${{ inputs.guard-public }}
-        ACTION_PATH: ${{ github.action_path }}
-      run: '"$ACTION_PATH/pick.sh" resolve'
-
-    # A second call in the same job (pr-checks picks light, then heavy) reuses
-    # the first call's listing, and mints no second token.
-    - id: cache
-      if: steps.resolve.outputs.hosted == 'false'
-      shell: bash
-      env:
-        ORG: ${{ github.repository_owner }}
-      run: |
-        file="$RUNNER_TEMP/pick-runner-fleet-$ORG.json"
-        echo "file=$file" >> "$GITHUB_OUTPUT"
-        if [ -s "$file" ]; then echo "hit=true" >> "$GITHUB_OUTPUT"; else echo "hit=false" >> "$GITHUB_OUTPUT"; fi
-
-    # Absence is announced, never silent. Without the app token, the listing
-    # below cannot read the org runner list (github.token has no org scope), and
-    # a skipped check reads exactly like a clean pass.
-    - id: have-app
-      if: steps.cache.outputs.hit == 'false'
-      shell: bash
-      env:
-        CLIENT_ID: ${{ inputs.gh-app-client-id }}
-      run: |
-        if [ -n "${CLIENT_ID:-}" ]; then
-          echo "yes=true" >> "$GITHUB_OUTPUT"
-        else
-          echo "yes=false" >> "$GITHUB_OUTPUT"
-          echo "::warning title=Runner selector cannot be validated::GH_APP_CLIENT_ID is not set on this repository, so the org runner list cannot be read. The job will queue on the selector, and it will queue forever if no runner matches it. Add GH_APP_CLIENT_ID and GH_APP_PRIVATE_KEY to fix."
-        fi
-
-    # The org runner list is an org-level endpoint, so this token cannot be
-    # limited to one repository. It only ever reads that list, and asks for
-    # nothing but the permission that reads it.
-    - id: app-token
-      if: steps.have-app.outputs.yes == 'true'
-      uses: actions/create-github-app-token@v3
-      with:
-        client-id:   ${{ inputs.gh-app-client-id }}
-        private-key: ${{ inputs.gh-app-private-key }}
-        # jactionlint ignore=github-app
-        owner:       ${{ github.repository_owner }}
-        permission-organization-self-hosted-runners: read
-
-    # Reads the fleet once. Only a listing that was really read is cached, so a
-    # failed read is retried by the next call rather than remembered.
-    - id: fleet
-      if: steps.have-app.outputs.yes == 'true'
-      shell: bash
-      env:
-        GH_TOKEN: ${{ steps.app-token.outputs.token }}
-        ORG:      ${{ github.repository_owner }}
-        FILE:     ${{ steps.cache.outputs.file }}
-      run: |
-        # Steps run as `bash -e {0}` and `set -uo pipefail` does not clear
-        # `-e`. This step must report rather than fail, hence `set +e`.
-        set +e
-        set -uo pipefail
-        # Key off gh's OWN exit status, captured separately. Piping into
-        # `jq -s` masks a gh failure, because a pipeline's status is the last
-        # command's, and jq slurps the error body into a one-element array
-        # that passes a length check.
-        raw=$(gh api "/orgs/$ORG/actions/runners" --paginate \
-              --jq '.runners[] | {name,labels:[.labels[].name],status,busy}' 2>/dev/null)
-        rc=$?
-        if [ "$rc" -eq 0 ] && jq -s '.' <<<"$raw" > "$FILE.tmp" 2>/dev/null; then
-          mv "$FILE.tmp" "$FILE"
-        else
-          rm -f "$FILE.tmp"
-          echo "err=gh exited $rc" >> "$GITHUB_OUTPUT"
-        fi
-
-    - id: out
-      shell: bash
-      env:
-        WEIGHT:        ${{ inputs.weight }}
-        LABELS:        ${{ inputs.labels }}
-        FALLBACK:      ${{ inputs.fallback }}
-        FALLBACK_WHEN: ${{ inputs.fallback-when }}
-        HOSTED_RUNNER: ${{ inputs.hosted-runner }}
-        HOSTED_ONLY:   ${{ steps.resolve.outputs.hosted }}
-        SELECTOR:      ${{ steps.resolve.outputs.selector }}
-        FLEET_FILE:    ${{ steps.cache.outputs.file }}
-        FLEET_ERR:     ${{ steps.fleet.outputs.err }}
-        ACTION_PATH: ${{ github.action_path }}
-      run: '"$ACTION_PATH/pick.sh" decide'
+        RUNS_ON_LIGHT: ${{ inputs.runs-on-light }}
+        RUNS_ON_HEAVY: ${{ inputs.runs-on-heavy }}
+        RUNS_ON_AGENT: ${{ inputs.runs-on-agent }}
+        RUNS_ON_APPLE: ${{ inputs.runs-on-apple }}
+        ACTION_PATH:   ${{ github.action_path }}
+      run: '"$ACTION_PATH/pick.sh"'

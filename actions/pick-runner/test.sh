@@ -1,13 +1,12 @@
 #!/usr/bin/env bash
-# Regression tests for the picker's fallback policy.
+# Regression tests for the static picker.
 #
-# The claim worth asserting is the table in the README: what each weight falls
-# back to, and when. Above all, `heavy` never lands on the light pool, because
-# a heavy job there runs out of memory. The fleet listings below are built from
-# made-up runners in the shape `gh api /orgs/<org>/actions/runners` returns after
-# the picker's own jq (name, labels as strings, status, busy).
+# What is worth asserting: each weight's labels, that `labels` and the
+# DODI_RUNS_ON_* overrides win in the right order, that a bad override is ignored
+# rather than fatal, that a public repo or fork PR can never reach self-hosted, and
+# that the picker makes no API call at all.
 #
-# Run: actions/pick-runner/test.sh
+# Run: actions/pick-runner/test.sh   (bash 3.2 and 5)
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 # An explicit template is required: BSD/macOS `mktemp -d` with no template
@@ -17,57 +16,30 @@ trap 'rm -rf "$TMP"' EXIT
 
 LIGHT='self-hosted,Linux,light'
 LARGE='self-hosted,Linux,large'
+AGENT='self-hosted,Linux,agent'
 MAC='self-hosted,macOS,ARM64'
 HOSTED='ubuntu-latest'
 
-# fleet <file> <pool:state>...   pool is light|large|mac, state is idle|busy|offline
-fleet() {
-  local f="$1" n=0 spec labels status busy items=()
-  shift
-  for spec in "$@"; do
-    n=$((n+1))
-    case "${spec%%:*}" in
-      light) labels='"self-hosted","Linux","X64","docker","light"' ;;
-      large) labels='"self-hosted","Linux","X64","docker","large"' ;;
-      mac)   labels='"self-hosted","macOS","ARM64","large"' ;;
-    esac
-    case "${spec##*:}" in
-      idle)    status=online;  busy=false ;;
-      busy)    status=online;  busy=true ;;
-      offline) status=offline; busy=false ;;
-    esac
-    items+=("{\"name\":\"runner-$n\",\"labels\":[$labels],\"status\":\"$status\",\"busy\":$busy}")
-  done
-  local IFS=,
-  echo "[${items[*]:-}]" > "$f"
-}
-
 pass=0; fail=0
-check() { # <desc> <want runner> <want fell-back> <got runner> <got fell-back>
+check() { # <desc> <want runner> <want selector> <got runner> <got selector> <got fell-back>
   local mark
-  if [ "$2" = "$4" ] && [ "$3" = "$5" ]; then mark="ok  "; pass=$((pass+1))
+  if [ "$2" = "$4" ] && [ "$3" = "$5" ] && [ "$6" = "false" ]; then mark="ok  "; pass=$((pass+1))
   else mark="FAIL"; fail=$((fail+1)); fi
-  printf '  %s %-58s runner=%-24s fell-back=%s\n' "$mark" "$1" "$4" "$5"
-  [ "$mark" = "ok  " ] || printf '       wanted runner=%s fell-back=%s\n' "$2" "$3"
+  printf '  %s %-58s runner=%-24s fell-back=%s\n' "$mark" "$1" "$4" "$6"
+  [ "$mark" = "ok  " ] || printf '       wanted runner=%s selector=%s fell-back=false, got selector=%s\n' "$2" "$3" "$5"
 }
 
-# pick <desc> <want selector> <want fell-back> <fleet file, or "none"> [ENV=value ...]
+# pick <desc> <want runner (comma-joined)> <want selector> [ENV=value ...]
 pick() {
-  local desc="$1" want="$2" wantfb="$3" file="$4"; shift 4
+  local desc="$1" want="$2" wantsel="$3"; shift 3
   export GITHUB_OUTPUT="$TMP/out"; : > "$GITHUB_OUTPUT"
-  local -a e=(PRIVATE=true FORK=false GUARD=true WEIGHT=light LABELS= FALLBACK= FALLBACK_WHEN= HOSTED_RUNNER="$HOSTED")
-  env "${e[@]}" "$@" bash "$HERE/pick.sh" resolve >"$TMP/log" 2>&1
-  local sel hosted
-  sel=$(grep '^selector=' "$GITHUB_OUTPUT" | cut -d= -f2-)
-  hosted=$(grep '^hosted=' "$GITHUB_OUTPUT" | cut -d= -f2-)
-  : > "$GITHUB_OUTPUT"
-  [ "$file" = none ] && file="$TMP/absent"
-  env "${e[@]}" "$@" SELECTOR="$sel" HOSTED_ONLY="$hosted" FLEET_FILE="$file" \
-    bash "$HERE/pick.sh" decide >"$TMP/log" 2>&1
-  local got gotfb
+  local -a e=(PRIVATE=true FORK=false GUARD=true WEIGHT=light LABELS= HOSTED_RUNNER="$HOSTED")
+  env "${e[@]}" "$@" bash "$HERE/pick.sh" >"$TMP/log" 2>&1
+  local got sel fb
   got=$(grep '^runner=' "$GITHUB_OUTPUT" | cut -d= -f2- | jq -r 'join(",")')
-  gotfb=$(grep '^fell-back=' "$GITHUB_OUTPUT" | cut -d= -f2-)
-  check "$desc" "$want" "$wantfb" "$got" "$gotfb"
+  sel=$(grep '^selector=' "$GITHUB_OUTPUT" | cut -d= -f2-)
+  fb=$(grep '^fell-back=' "$GITHUB_OUTPUT" | cut -d= -f2-)
+  check "$desc" "$want" "$wantsel" "$got" "$sel" "$fb"
 }
 
 warned() { # <desc> <substring of the warning>
@@ -77,115 +49,76 @@ warned() { # <desc> <substring of the warning>
   printf '  %s %s\n' "$mark" "$1"
 }
 
-F="$TMP/fleet.json"
+echo "== each weight resolves to its labels =="
+pick "light"                                     "$LIGHT"  "$LIGHT"
+pick "heavy"                                     "$LARGE"  "$LARGE"  WEIGHT=heavy
+pick "agent"                                     "$AGENT"  "$AGENT"  WEIGHT=agent
+pick "apple"                                     "$MAC"    "$MAC"    WEIGHT=apple
+pick "hosted"                                    "$HOSTED" ""        WEIGHT=hosted
+pick "custom hosted-runner for weight hosted"    "macos-latest" ""   WEIGHT=hosted HOSTED_RUNNER=macos-latest
+pick "weight defaults to light when unset"       "$LIGHT"  "$LIGHT"  WEIGHT=
 
-echo "== light: overflows to the large pool when nothing is idle =="
-fleet "$F" light:idle light:busy large:idle
-pick "idle runner"                     "$LIGHT" false "$F"
-fleet "$F" light:busy light:busy large:idle
-pick "all busy, an idle large runner takes it" "$LARGE" true "$F"
-fleet "$F" light:busy light:busy large:busy
-pick "all busy, large busy too: stays on light" "$LIGHT" false "$F"
-fleet "$F" light:busy light:busy
-pick "all busy, no large pool: stays on light" "$LIGHT" false "$F"
-fleet "$F" light:offline light:offline large:busy
-pick "all offline goes large even when busy" "$LARGE" true "$F"
-fleet "$F" light:busy light:idle large:idle
-pick "mixed, one idle"                 "$LIGHT" false "$F"
-fleet "$F" light:busy
-pick "fallback equal to the selector is not a fall back" "$LIGHT" false "$F" FALLBACK="$LIGHT"
-if grep -q "falling back" "$TMP/log"; then fail=$((fail+1)); echo "  FAIL  ...logs no 'falling back' line"; else pass=$((pass+1)); echo "  ok    ...logs no 'falling back' line"; fi
-fleet "$F" light:busy light:busy
-pick "light + fallback-when offline queues when busy" "$LIGHT" false "$F" FALLBACK_WHEN=offline
+echo "== the legacy inputs change nothing =="
+pick "fallback is ignored"                       "$LIGHT"  "$LIGHT"  FALLBACK="$HOSTED" FALLBACK_WHEN=offline
+pick "heavy ignores fallback too"                "$LARGE"  "$LARGE"  WEIGHT=heavy FALLBACK="$LIGHT" FALLBACK_WHEN=busy
+pick "an unknown fallback-when is not an error"  "$LIGHT"  "$LIGHT"  FALLBACK_WHEN=sometimes
+pick "app credentials are ignored"               "$LIGHT"  "$LIGHT"  GH_APP_CLIENT_ID=x GH_APP_PRIVATE_KEY=y
 
-echo "== heavy: never the light pool =="
-fleet "$F" large:idle large:busy light:idle
-pick "idle large runner"               "$LARGE" false "$F" WEIGHT=heavy
-fleet "$F" large:busy large:busy light:idle
-pick "all large busy queues on large"  "$LARGE" false "$F" WEIGHT=heavy
-fleet "$F" large:offline large:offline light:idle
-pick "all large offline goes hosted"   "$HOSTED" true "$F" WEIGHT=heavy
-fleet "$F" large:offline large:busy light:idle
-pick "mixed offline and busy queues"   "$LARGE" false "$F" WEIGHT=heavy
-fleet "$F" light:idle
-pick "no large runner at all goes hosted, not light" "$HOSTED" true "$F" WEIGHT=heavy
-warned "  ...and says the selector matches nothing" "matches nothing"
-fleet "$F" large:offline light:idle
-pick "custom hosted-runner is the heavy fallback" "macos-latest" true "$F" WEIGHT=heavy HOSTED_RUNNER=macos-latest
-fleet "$F" large:busy
-pick "heavy + fallback-when busy goes hosted when busy" "$HOSTED" true "$F" WEIGHT=heavy FALLBACK_WHEN=busy
+echo "== labels win over weight =="
+pick "labels override"                           "self-hosted,Linux,docker" "self-hosted,Linux,docker" LABELS="self-hosted,Linux,docker"
+pick "labels beat weight"                        "self-hosted,Linux,docker" "self-hosted,Linux,docker" WEIGHT=apple LABELS="self-hosted,Linux,docker"
+pick "labels are trimmed"                        "self-hosted,Linux,gpu" "self-hosted , Linux , gpu" LABELS="self-hosted , Linux , gpu"
+pick "labels beat an org override"               "self-hosted,Linux,gpu" "self-hosted,Linux,gpu" LABELS="self-hosted,Linux,gpu" RUNS_ON_LIGHT='"ubuntu-latest"'
 
-echo "== apple: never falls back to Linux =="
-fleet "$F" mac:idle light:idle
-pick "idle mac runner"                 "$MAC" false "$F" WEIGHT=apple
-fleet "$F" mac:busy light:idle
-pick "busy mac queues"                 "$MAC" false "$F" WEIGHT=apple
-fleet "$F" mac:offline light:idle
-pick "offline mac queues, never light" "$MAC" false "$F" WEIGHT=apple
-warned "  ...and warns that nothing is online" "offline"
-fleet "$F" light:idle
-pick "no mac runner at all queues"     "$MAC" false "$F" WEIGHT=apple
-warned "  ...and warns" "matches nothing"
+echo "== org variable overrides, the emergency switch =="
+pick "light -> hosted string (input)"            "$HOSTED" "$HOSTED" RUNS_ON_LIGHT='"ubuntu-latest"'
+pick "light -> hosted string (env var)"          "$HOSTED" "$HOSTED" DODI_RUNS_ON_LIGHT='"ubuntu-latest"'
+pick "heavy -> array"                            "self-hosted,Linux,docker" "self-hosted,Linux,docker" WEIGHT=heavy RUNS_ON_HEAVY='["self-hosted","Linux","docker"]'
+pick "agent -> hosted"                           "$HOSTED" "$HOSTED" WEIGHT=agent DODI_RUNS_ON_AGENT='"ubuntu-latest"'
+pick "apple -> array"                            "self-hosted,macOS" "self-hosted,macOS" WEIGHT=apple DODI_RUNS_ON_APPLE='["self-hosted","macOS"]'
+pick "the input beats the env var"               "$LARGE" "$LARGE" RUNS_ON_LIGHT='["self-hosted","Linux","large"]' DODI_RUNS_ON_LIGHT='"ubuntu-latest"'
+pick "an override only moves its own weight"     "$LARGE" "$LARGE" WEIGHT=heavy DODI_RUNS_ON_LIGHT='"ubuntu-latest"'
+pick "an empty override is no override"          "$LIGHT" "$LIGHT" RUNS_ON_LIGHT= DODI_RUNS_ON_LIGHT=
+pick "weight hosted ignores every override"      "$HOSTED" "" WEIGHT=hosted DODI_RUNS_ON_LIGHT='["self-hosted","x"]'
+pick "not JSON: ignored, default kept"           "$LIGHT" "$LIGHT" DODI_RUNS_ON_LIGHT='ubuntu-latest'
+warned "  ...and warns" "override ignored"
+pick "empty array: ignored, default kept"        "$LIGHT" "$LIGHT" DODI_RUNS_ON_LIGHT='[]'
+warned "  ...and warns" "override ignored"
+pick "an object: ignored, default kept"          "$LIGHT" "$LIGHT" DODI_RUNS_ON_LIGHT='{"a":1}'
+pick "an array of numbers: ignored"              "$LIGHT" "$LIGHT" DODI_RUNS_ON_LIGHT='[1,2]'
 
-echo "== explicit inputs win over the weight's default =="
-fleet "$F" large:busy light:idle
-pick "explicit fallback keeps the weight's when: busy queues" "$LARGE" false "$F" WEIGHT=heavy FALLBACK="$LIGHT"
-fleet "$F" large:offline light:idle
-pick "heavy + explicit fallback, offline"        "$LIGHT" true "$F" WEIGHT=heavy FALLBACK="$LIGHT"
-fleet "$F" light:busy
-pick "light + explicit hosted fallback, busy"    "$HOSTED" true "$F" FALLBACK="$HOSTED"
-fleet "$F" mac:offline
-pick "apple + explicit hosted fallback, offline" "$HOSTED" true "$F" WEIGHT=apple FALLBACK="$HOSTED"
-fleet "$F" large:busy
-pick "explicit fallback and fallback-when together" "$HOSTED" true "$F" WEIGHT=heavy FALLBACK="$HOSTED" FALLBACK_WHEN=busy
-
-echo "== labels: today's behaviour =="
-fleet "$F" large:busy light:idle
-pick "custom selector, busy: light fallback"     "$LIGHT" true "$F" LABELS="self-hosted,Linux,large"
-fleet "$F" large:busy light:busy
-pick "custom selector, busy, light busy: queues" "self-hosted,Linux,large" false "$F" LABELS="self-hosted,Linux,large"
-fleet "$F" large:idle
-pick "custom selector, idle"                     "self-hosted,Linux,large" false "$F" LABELS="self-hosted,Linux,large"
-fleet "$F" large:busy
-pick "custom selector, fallback-when offline"    "self-hosted,Linux,large" false "$F" LABELS="self-hosted,Linux,large" FALLBACK_WHEN=offline
-
-echo "== selector that matches nothing =="
-fleet "$F" light:idle
-pick "label no runner carries"                   "$LIGHT" true "$F" LABELS="self-hosted,Linux,gpu"
-warned "  ...names the missing label" "gpu"
-fleet "$F" light:idle mac:idle
-pick "labels exist, never together"              "$LIGHT" true "$F" LABELS="light,macOS"
-warned "  ...says they are not together" "no single runner"
-
-echo "== fleet cannot be read: queue, never guess =="
-pick "no listing, light"                         "$LIGHT" false none
-pick "no listing, heavy stays off light and hosted" "$LARGE" false none WEIGHT=heavy
-pick "no listing, apple"                         "$MAC" false none WEIGHT=apple
-pick "no listing, explicit fallback still queues" "$LARGE" false none WEIGHT=heavy FALLBACK="$HOSTED"
-pick "no listing, gh failed"                     "$LARGE" false none WEIGHT=heavy FLEET_ERR="gh exited 1"
-warned "  ...and warns it was not validated" "NOT validated"
-echo '[]' > "$F"
-pick "empty listing counts as unreadable"        "$LARGE" false "$F" WEIGHT=heavy FLEET_ERR=
-warned "  ...and warns" "NOT validated"
-
-echo "== hosted, and the public/fork guard =="
-fleet "$F" large:idle light:idle
-pick "weight hosted"                             "$HOSTED" false "$F" WEIGHT=hosted
-pick "public repo, heavy"                        "$HOSTED" false "$F" WEIGHT=heavy PRIVATE=false
-pick "public repo ignores an explicit fallback"  "$HOSTED" false "$F" WEIGHT=heavy PRIVATE=false FALLBACK="$LIGHT" FALLBACK_WHEN=busy
-pick "fork PR, light"                            "$HOSTED" false "$F" FORK=true
-pick "fork PR ignores an explicit fallback"      "$HOSTED" false "$F" FORK=true FALLBACK="$LIGHT"
-pick "fork PR ignores labels"                    "$HOSTED" false "$F" FORK=true LABELS="$LARGE"
-pick "public repo, guard off, self-hosted again" "$LIGHT" false "$F" PRIVATE=false GUARD=false
+echo "== the public/fork guard has no opt-out =="
+pick "public repo, light"                        "$HOSTED" "" PRIVATE=false
+pick "public repo, heavy"                        "$HOSTED" "" WEIGHT=heavy PRIVATE=false
+pick "public repo, apple"                        "$HOSTED" "" WEIGHT=apple PRIVATE=false
+pick "repository privacy unknown is public"      "$HOSTED" "" PRIVATE=
+pick "fork PR, light"                            "$HOSTED" "" FORK=true
+pick "fork PR, agent"                            "$HOSTED" "" WEIGHT=agent FORK=true
+pick "fork PR ignores labels"                    "$HOSTED" "" FORK=true LABELS="$LARGE"
+pick "fork PR ignores an override"               "$HOSTED" "" FORK=true DODI_RUNS_ON_LIGHT='["self-hosted","x"]'
+pick "public repo ignores labels"                "$HOSTED" "" PRIVATE=false LABELS="$LARGE"
+pick "public repo uses hosted-runner"            "macos-latest" "" PRIVATE=false HOSTED_RUNNER=macos-latest
+pick "guard off on a public repo: self-hosted"   "$LIGHT" "$LIGHT" PRIVATE=false GUARD=false
 
 echo "== bad input =="
 export GITHUB_OUTPUT="$TMP/out"; : > "$GITHUB_OUTPUT"
-if FALLBACK_WHEN=sometimes PRIVATE=true bash "$HERE/pick.sh" resolve >"$TMP/log" 2>&1; then
-  fail=$((fail+1)); echo "  FAIL unknown fallback-when was accepted"
-else pass=$((pass+1)); echo "  ok   unknown fallback-when is rejected"; fi
-if WEIGHT=huge PRIVATE=true bash "$HERE/pick.sh" resolve >"$TMP/log" 2>&1; then
+if WEIGHT=huge PRIVATE=true bash "$HERE/pick.sh" >"$TMP/log" 2>&1; then
   fail=$((fail+1)); echo "  FAIL unknown weight was accepted"
 else pass=$((pass+1)); echo "  ok   unknown weight is rejected"; fi
+if WEIGHT=huge PRIVATE=false bash "$HERE/pick.sh" >"$TMP/log" 2>&1; then
+  pass=$((pass+1)); echo "  ok   unknown weight on a public repo is still hosted, not an error"
+else fail=$((fail+1)); echo "  FAIL unknown weight on a public repo failed"; fi
+
+echo "== no API call, no token, no fleet =="
+if grep -rEq 'actions/runners|create-github-app-token|gh api|curl ' "$HERE/pick.sh" "$HERE/action.yml"; then
+  fail=$((fail+1)); echo "  FAIL the picker reaches the API again"
+else pass=$((pass+1)); echo "  ok   no API call in pick.sh or action.yml"; fi
+# Run with no network tools and no token: it must still resolve.
+export GITHUB_OUTPUT="$TMP/out"; : > "$GITHUB_OUTPUT"
+if env -i PATH="$(dirname "$(command -v jq)"):/usr/bin:/bin" GITHUB_OUTPUT="$GITHUB_OUTPUT" PRIVATE=true bash "$HERE/pick.sh" >"$TMP/log" 2>&1 \
+   && grep -q '^runner=\["self-hosted","Linux","light"\]$' "$GITHUB_OUTPUT"; then
+  pass=$((pass+1)); echo "  ok   resolves with an empty environment (no token, no network config)"
+else fail=$((fail+1)); echo "  FAIL did not resolve with an empty environment"; fi
 
 echo
 echo "pass=$pass fail=$fail"

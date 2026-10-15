@@ -1,3 +1,10 @@
+## [1.21.0](https://github.com/dodi-smart/.github/compare/v1.20.0...v1.21.0) (2026-10-15)
+
+### ✨ Features
+
+* **pick-runner:** resolve runners statically with no API call, token or fleet listing ([d8a77df](https://github.com/dodi-smart/.github/commit/d8a77df42b06bafca2f0935d08fedc785108df81))
+* **pr-checks:** run helper jobs on the light pool and report the runner ([5734c2e](https://github.com/dodi-smart/.github/commit/5734c2e5e6fb557a800c5274c9668f501f3ea012))
+
 ## [1.20.0](https://github.com/dodi-smart/.github/compare/v1.19.0...v1.20.0) (2026-10-15)
 
 ### ✨ Features

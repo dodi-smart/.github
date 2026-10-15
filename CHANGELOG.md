@@ -1,3 +1,14 @@
+## [1.19.0](https://github.com/dodi-smart/.github/compare/v1.18.1...v1.19.0) (2026-10-15)
+
+### ✨ Features
+
+* **runner-report:** add action that reports the runner a job got and its queue time ([5d423f2](https://github.com/dodi-smart/.github/commit/5d423f2259d6af5e1adf855b6bb55ecb69da7e0b))
+
+### 🐛 Bug Fixes
+
+* **deps-verify:** push the agent's fixes whatever identity it committed as ([360de97](https://github.com/dodi-smart/.github/commit/360de970091c483afa474fe36c43b440768cad79))
+* **runner-report:** spell unparsable in test label ([eb2a86a](https://github.com/dodi-smart/.github/commit/eb2a86a8fa414eebb20f4e2e95ed152e9ecc89a3))
+
 ## [1.18.1](https://github.com/dodi-smart/.github/compare/v1.18.0...v1.18.1) (2026-10-15)
 
 ### 🐛 Bug Fixes

@@ -17,9 +17,9 @@
 #
 # `pick` and `pr-checks` are helper jobs that run no caller code, so in a private
 # repo they run on the light pool and cost no GitHub-hosted minutes. A public
-# repo or a fork PR keeps ubuntu-latest, and `vars.DODI_RUNS_ON_LIGHT` repoints
-# both at once (the emergency switch to hosted). The expression is written out in
-# each job because `runs-on` cannot read `env`.
+# repo or a fork PR keeps ubuntu-latest. There is no switch to hosted: capacity
+# and runner monitoring keep the pool up instead. The expression is written out
+# in each job because `runs-on` cannot read `env`.
 name: PR Checks
 
 # This workflow runs the caller's own code (install scripts, tests, builds), so
@@ -161,7 +161,7 @@ jobs:
   # and silently skips React Doctor, so the tool check below says so out loud.
   pick:
     name: Pick runner
-    runs-on: ${{ fromJSON((github.event.repository.private && !github.event.pull_request.head.repo.fork) && (vars.DODI_RUNS_ON_LIGHT || '["self-hosted","Linux","light"]') || '"ubuntu-latest"') }}
+    runs-on: ${{ fromJSON((github.event.repository.private && !github.event.pull_request.head.repo.fork) && '["self-hosted","Linux","light"]' || '"ubuntu-latest"') }}
     timeout-minutes: 10
     permissions:
       contents: read
@@ -215,16 +215,12 @@ jobs:
         uses: dodi-smart/.github/actions/pick-runner@v1
         with:
           weight:        ${{ inputs.light-weight }}
-          runs-on-light: ${{ vars.DODI_RUNS_ON_LIGHT }}
-          runs-on-heavy: ${{ vars.DODI_RUNS_ON_HEAVY }}
 
       - id: heavy
         if: ${{ steps.docs.outputs.all-matched != 'true' }}
         uses: dodi-smart/.github/actions/pick-runner@v1
         with:
           weight:        ${{ inputs.heavy-weight }}
-          runs-on-light: ${{ vars.DODI_RUNS_ON_LIGHT }}
-          runs-on-heavy: ${{ vars.DODI_RUNS_ON_HEAVY }}
 
   # A CLI, not a Docker action: see actions/commitlint.
   commitlint:
@@ -670,13 +666,13 @@ jobs:
   #
   # Its name is the required status context (`<caller job> / PR Checks`), so it
   # never changes. It runs no caller code, so it runs on the light pool of a
-  # private repo; the fallback to ubuntu-latest and the `vars` switch are the
-  # same as `pick`'s.
+  # private repo, and on ubuntu-latest for a public repo or a fork PR, like
+  # `pick`.
   pr-checks:
     name: PR Checks
     needs: [pick, commitlint, checks, test, build, all, coverage]
     if: always()
-    runs-on: ${{ fromJSON((github.event.repository.private && !github.event.pull_request.head.repo.fork) && (vars.DODI_RUNS_ON_LIGHT || '["self-hosted","Linux","light"]') || '"ubuntu-latest"') }}
+    runs-on: ${{ fromJSON((github.event.repository.private && !github.event.pull_request.head.repo.fork) && '["self-hosted","Linux","light"]' || '"ubuntu-latest"') }}
     timeout-minutes: 2
     steps:
       - uses: dodi-smart/.github/actions/runner-report@v1

@@ -66,7 +66,7 @@ jobs:
       (github.event.action != 'labeled' || github.event.label.name == 'agent:implement')
       && (github.event_name != 'issue_comment' || contains(github.event.comment.body, '@claude'))
       && !(endsWith(github.event.issue.user.login, '[bot]') || startsWith(github.event.issue.user.login, 'app/'))
-    runs-on: ${{ fromJSON((github.event.repository.private && !github.event.pull_request.head.repo.fork) && (vars.DODI_RUNS_ON_LIGHT || '["self-hosted","Linux","light"]') || '"ubuntu-latest"') }}
+    runs-on: ${{ fromJSON((github.event.repository.private && !github.event.pull_request.head.repo.fork) && '["self-hosted","Linux","light"]' || '"ubuntu-latest"') }}
     timeout-minutes: 10   # the picker calls the org API and may retry
     permissions:
       contents: read

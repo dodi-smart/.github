@@ -18,8 +18,7 @@
 #
 # The pick is static, with no API call and no token, so this job runs on the light
 # pool of a private repo instead of a GitHub-hosted runner. A public repo or a fork
-# PR stays hosted. `vars.DODI_RUNS_ON_LIGHT` repoints it, and the picker's light
-# weight, in one move.
+# PR stays hosted.
 name: Pick runner
 
 on:
@@ -48,9 +47,10 @@ on:
         type: string
         default: ""
 
-      # Accepted and IGNORED, so a caller written for the fleet-listing picker
-      # keeps working. Overflow is the queue's job now: the large pool also carries
-      # `light`, so there is no fallback to choose.
+      # DEPRECATED and ignored: a caller that still passes either gets a warning
+      # naming it. They are removed once no caller passes them. Overflow is the
+      # queue's job: the large pool also carries `light`, so there is no
+      # fallback to choose.
       fallback:
         type: string
         default: ""
@@ -90,7 +90,7 @@ on:
 jobs:
   pick:
     name: Pick runner
-    runs-on: ${{ fromJSON((github.event.repository.private && !github.event.pull_request.head.repo.fork) && (vars.DODI_RUNS_ON_LIGHT || '["self-hosted","Linux","light"]') || '"ubuntu-latest"') }}
+    runs-on: ${{ fromJSON((github.event.repository.private && !github.event.pull_request.head.repo.fork) && '["self-hosted","Linux","light"]' || '"ubuntu-latest"') }}
     timeout-minutes: 10
     outputs:
       runner:   ${{ steps.pick.outputs.runner }}
@@ -105,7 +105,5 @@ jobs:
           labels:        ${{ inputs.labels }}
           hosted-runner: ${{ inputs.hosted-runner }}
           guard-public:  ${{ inputs.guard-public }}
-          runs-on-light: ${{ vars.DODI_RUNS_ON_LIGHT }}
-          runs-on-heavy: ${{ vars.DODI_RUNS_ON_HEAVY }}
-          runs-on-agent: ${{ vars.DODI_RUNS_ON_AGENT }}
-          runs-on-apple: ${{ vars.DODI_RUNS_ON_APPLE }}
+          fallback:      ${{ inputs.fallback }}
+          fallback-when: ${{ inputs.fallback-when }}

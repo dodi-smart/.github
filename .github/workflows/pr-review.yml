@@ -74,7 +74,7 @@ jobs:
       github.event.pull_request.draft != true
       && (github.event.action != 'labeled' || github.event.label.name == 'agent:review')
       && !(endsWith(github.event.pull_request.user.login, '[bot]') || startsWith(github.event.pull_request.user.login, 'app/'))
-    runs-on: ${{ fromJSON((github.event.repository.private && !github.event.pull_request.head.repo.fork) && (vars.DODI_RUNS_ON_LIGHT || '["self-hosted","Linux","light"]') || '"ubuntu-latest"') }}
+    runs-on: ${{ fromJSON((github.event.repository.private && !github.event.pull_request.head.repo.fork) && '["self-hosted","Linux","light"]' || '"ubuntu-latest"') }}
     timeout-minutes: 10   # the picker calls the org API and may retry
     permissions:
       contents: read

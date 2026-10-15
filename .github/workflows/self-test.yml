@@ -46,9 +46,9 @@ jobs:
       - name: Shared semantic-release config tests
         run: npm test
 
-      # The picker is static: each weight's labels, the `labels` and
-      # DODI_RUNS_ON_* overrides, and the public/fork guard are behaviour, so
-      # they are asserted, not reviewed.
+      # The picker is static: each weight's labels, `labels`, the absence of any
+      # run-time override, and the public/fork guard are behaviour, so they are
+      # asserted, not reviewed.
       - name: Pick-runner policy
         run: ./actions/pick-runner/test.sh
 
@@ -532,7 +532,7 @@ jobs:
           files = ['pr-review', 'claude-assist', 'issue-triage', 'issue-implement']
           # Written as two pieces so the workflow linter does not read it as an expression.
           expr = ('$' + '{{ fromJSON((github.event.repository.private && !github.event.pull_request.head.repo.fork) '
-                  '&& (vars.DODI_RUNS_ON_LIGHT || \'["self-hosted","Linux","light"]\') || \'"ubuntu-latest"\') }}')
+                  '&& \'["self-hosted","Linux","light"]\' || \'"ubuntu-latest"\') }}')
           bad = []
           for f in files:
               text = open('.github/workflows/' + f + '.yml').read()
@@ -706,9 +706,16 @@ jobs:
           # character for character, and it must carry every part of the contract.
           EXPR = wrapper['runs-on']
           for part in ('github.event.repository.private', '!github.event.pull_request.head.repo.fork',
-                       'vars.DODI_RUNS_ON_LIGHT', 'self-hosted', 'Linux', 'light', 'ubuntu-latest'):
+                       'self-hosted', 'Linux', 'light', 'ubuntu-latest'):
               if part not in EXPR:
                   errors.append('pick-runner.yml: the light runs-on expression lost ' + part)
+          # No run-time switch: a job's pool changes in a release, never through
+          # a repository or org variable.
+          for path in sorted(glob.glob('.github/workflows/*.yml') + glob.glob('actions/*/*.yml') + glob.glob('actions/*/*.sh')):
+              if path.endswith('self-test.yml') or path.endswith('test.sh'):
+                  continue
+              if 'DODI_RUNS_ON' in open(path).read():
+                  errors.append(path + ': reads a DODI_RUNS_ON_* switch; pools change in a release, not at run time')
           for jid in ('pick', 'pr-checks'):
               if pc[jid]['runs-on'] != EXPR:
                   errors.append('pr-checks.yml: %s must use the same light expression as pick-runner.yml' % jid)
@@ -1063,7 +1070,7 @@ jobs:
           import re, sys, yaml
           # No literal dollar-brace in this script: Actions would evaluate it before bash runs.
           D = chr(36) + '{' + '{'
-          EXPR = D + ' fromJSON((github.event.repository.private && !github.event.pull_request.head.repo.fork) && (vars.DODI_RUNS_ON_LIGHT || \'[\"self-hosted\",\"Linux\",\"light\"]\') || \'\"ubuntu-latest\"\') }}'
+          EXPR = D + ' fromJSON((github.event.repository.private && !github.event.pull_request.head.repo.fork) && \'[\"self-hosted\",\"Linux\",\"light\"]\' || \'\"ubuntu-latest\"\') }}'
           bad = []
           for f, job in (('deps-verify.yml', 'gate'), ('release.yml', 'release')):
               path = '.github/workflows/' + f

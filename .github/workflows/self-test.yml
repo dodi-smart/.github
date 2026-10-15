@@ -781,8 +781,7 @@ jobs:
           '
 
       # A malformed release.config.mjs does not fail loudly, it just stops
-      # cutting releases, and the major tag every caller pins stops moving
-      # with it.
+      # cutting releases, and the next channel stops moving with it.
       - name: Release and Renovate config parse
         run: |
           set -euo pipefail
@@ -794,14 +793,13 @@ jobs:
             const { pluginName } = await import("@dodi-smart/semantic-release-config");
             const byName = (name) => config.plugins.find(p => pluginName(p) === name);
             if (!config.branches.includes("main")) throw new Error("release config: main is not a release branch");
-            for (const need of ["@semantic-release/commit-analyzer", "@semantic-release/exec"]) {
-              if (!byName(need)) throw new Error("release config: missing " + need);
-            }
-            const exec = byName("@semantic-release/exec");
-            if (!/git tag -f v/.test(exec[1].successCmd)) throw new Error("release config: the major tag is never moved");
+            if (!byName("@semantic-release/commit-analyzer")) throw new Error("release config: missing @semantic-release/commit-analyzer");
+            // A release must not move a caller-facing tag. The next channel is moved by
+            // scripts/channel-tag.sh and the major tag only by promote.yml.
+            if (/git (tag|push)/.test(JSON.stringify(config.plugins))) throw new Error("release config: a release step moves a tag, so a merge reaches every caller without promote.yml");
             const analyzer = byName("@semantic-release/commit-analyzer");
             const deps = (analyzer[1].releaseRules || []).some(r => r.type === "chore" && r.scope === "deps" && r.release === "patch");
-            if (!deps) throw new Error("release config: chore(deps) no longer cuts a patch, so v1 stops moving on dependency updates");
+            if (!deps) throw new Error("release config: chore(deps) no longer cuts a patch, so releases stop on dependency updates");
             const notes = byName("@semantic-release/release-notes-generator");
             const types = ((notes[1].presetConfig || {}).types) || [];
             if (!types.length) throw new Error("release config: no changelog sections configured");
@@ -885,6 +883,11 @@ jobs:
       # What a consumer gets from the installer, checked by resolving.
       - name: Shared config links into a consumer
         run: ./actions/semantic-release-config/test.sh
+
+      # The channel script decides what every caller runs; its tests build a
+      # throwaway repo and bare remote, so nothing here touches this checkout.
+      - name: Channel tags and ref pinning
+        run: ./scripts/channel-tag.test.sh
 
       # The tooling is installed outside the checkout, so an install there
       # also resolving the caller's whole dependency tree cannot come back.

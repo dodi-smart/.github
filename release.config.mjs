@@ -4,7 +4,7 @@
 // repo's own release first. Here the package resolves through the npm
 // workspace; a consumer gets it linked in by actions/semantic-release-config.
 
-import { commitAnalyzer, releaseNotes, changelog, git, github, exec } from "@dodi-smart/semantic-release-config";
+import { commitAnalyzer, releaseNotes, changelog, git, github } from "@dodi-smart/semantic-release-config";
 
 export default {
   branches: ["main"],
@@ -49,6 +49,9 @@ export default {
     // does not exist fails the release.
     github({ releasedLabels: false }),
 
-    [exec, { successCmd: "git tag -f v${nextRelease.version.split('.')[0]} ${nextRelease.gitTag} && git push -f origin v${nextRelease.version.split('.')[0]}" }],
+    // Deliberately no step that moves a tag. A release cuts vX.Y.Z and stops.
+    // The `next` channel is moved by scripts/channel-tag.sh in the workflow
+    // step that follows, and `v<major>` only by promote.yml, so a merge cannot
+    // reach every caller on its own. Self test fails if a tag move comes back.
   ],
 };

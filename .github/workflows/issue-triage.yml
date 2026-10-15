@@ -61,12 +61,22 @@ concurrency:
 permissions: {}
 
 jobs:
-  # The picker runs INSIDE this job, after the last step that can still say no.
-  # It is itself a hosted job, so it must never run for an event that will not
-  # proceed, and folding it in here means a proceeding run costs one hosted
-  # start instead of two.
+  # The picker runs INSIDE this job, after the last step that can still say
+  # no, so it never runs for an event that will not proceed.
+  # The gate runs on the light pool of a private repo and on a hosted runner
+  # otherwise (a public repo, or a fork PR, which the pool cannot serve). The
+  # `if:` below is a cheap pre-filter on the event payload alone, so an event the
+  # gate would only stop costs no runner at all. It is strictly narrower than the
+  # gate: every rule the gate keeps (`agent:no-touch` first, then the rest) still
+  # runs for an event that passes it, and nothing the gate posts is skipped.
   gate:
-    runs-on: ubuntu-latest
+    if: >-
+      contains(fromJSON('["issues","issue_comment","workflow_dispatch"]'), github.event_name)
+      && github.event.sender.type != 'Bot'
+      && !(endsWith(github.event.issue.user.login, '[bot]') || startsWith(github.event.issue.user.login, 'app/'))
+      && (github.event.action != 'labeled' || github.event.label.name == 'agent:triage')
+      && (github.event_name != 'issue_comment' || contains(github.event.comment.body, '@claude'))
+    runs-on: ${{ fromJSON((github.event.repository.private && !github.event.pull_request.head.repo.fork) && (vars.DODI_RUNS_ON_LIGHT || '["self-hosted","Linux","light"]') || '"ubuntu-latest"') }}
     timeout-minutes: 10   # the picker calls the org API and may retry
     permissions:
       contents: read
@@ -76,6 +86,10 @@ jobs:
       mode:    ${{ steps.bots.outputs.mode }}
       runner:  ${{ steps.pick.outputs.runner }}
     steps:
+      - uses: dodi-smart/.github/actions/runner-report@v1
+        with:
+          selector: light
+
       # agent:no-touch is evaluated inside this action, first and
       # unconditionally. Nothing below may run ahead of it. The gate reads the
       # event payload only, so it needs no checkout and stays cheap enough to
@@ -162,6 +176,10 @@ jobs:
       issues: write
       id-token: write
     steps:
+      - uses: dodi-smart/.github/actions/runner-report@v1
+        with:
+          selector: ${{ needs.gate.outputs.runner }}
+
       # Credentials persist on purpose: the action runs `git fetch` from this checkout before the agent starts.
       # jactionlint ignore=artipacked
       - uses: actions/checkout@v7

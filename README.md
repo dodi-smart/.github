@@ -860,11 +860,14 @@ channels:
    then builds a child commit of that tag, which is not on `main`, where every
    `dodi-smart/.github/actions/*@v1` and `dodi-smart/.github/.github/workflows/*@v1`
    reference in `.github/workflows/*.yml` and `actions/**/action.yml` is rewritten
-   to `@vX.Y.Z`. That commit is tagged `pinned/vX.Y.Z` and `next` is force-moved
-   onto it. Without the rewrite a caller on `@next` would run the new workflow
-   but each action from whatever `v1` is at that moment. With it, `@next` runs the
-   workflows and the actions they call from exactly `vX.Y.Z`. Third-party
-   references (`actions/checkout@v7`) and exact versions are never touched.
+   to `@pinned/vX.Y.Z`, the tag of that same commit. That commit is tagged
+   `pinned/vX.Y.Z` and `next` is force-moved onto it. Without the rewrite a caller
+   on `@next` would run the new workflow but each action from whatever `v1` is at
+   that moment. Pinning to `@vX.Y.Z` would not be enough either: that tag is the
+   release commit, whose own references still say `@v1`, so an action called by
+   a pinned action would run `v1`. Pointing every reference at the pinned commit's
+   own tag makes `@next` one commit at every depth. Third-party references
+   (`actions/checkout@v7`) and exact versions are never touched.
 2. **Soak.** The canary repositories run the release on their own pull requests.
    Nobody else sees it.
 3. **Promote.** Run the `Promote` workflow, which force-moves `v<major>` onto

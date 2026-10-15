@@ -110,15 +110,23 @@ eq "v1 is NOT moved by a release (first-release safety)" "$(sha "$R" v1)" "$V1_B
 eq "v1 is NOT moved on the remote" "$(remote_sha "$R" v1)" "$V1_BEFORE"
 
 wf="$(show "$R" "$P" .github/workflows/wf.yml)"
-case "$wf" in *"workflows/other.yml@v1.1.0"*) ok "reusable workflow ref pinned";; *) bad "reusable workflow ref pinned";; esac
-case "$wf" in *"actions/alpha@v1.1.0"*) ok "action ref pinned";; *) bad "action ref pinned";; esac
-case "$wf" in *'actions/beta/nested@v1.1.0"   # trailing comment'*) ok "quoted ref with a trailing comment pinned";; *) bad "quoted ref with a trailing comment pinned";; esac
+case "$wf" in *"workflows/other.yml@pinned/v1.1.0"*) ok "reusable workflow ref pinned";; *) bad "reusable workflow ref pinned";; esac
+case "$wf" in *"actions/alpha@pinned/v1.1.0"*) ok "action ref pinned";; *) bad "action ref pinned";; esac
+case "$wf" in *'actions/beta/nested@pinned/v1.1.0"   # trailing comment'*) ok "quoted ref with a trailing comment pinned";; *) bad "quoted ref with a trailing comment pinned";; esac
 case "$wf" in *"actions/checkout@v7"*) ok "actions/checkout@v7 untouched";; *) bad "actions/checkout@v7 untouched";; esac
 case "$wf" in *"other-org/.github/actions/alpha@v1"$'\n'*) ok "another org's ref untouched";; *) bad "another org's ref untouched";; esac
 case "$wf" in *"actions/alpha@v1.2.3"*) ok "an exact version is left alone";; *) bad "an exact version is left alone";; esac
 case "$wf" in *"#   uses: dodi-smart/.github/.github/workflows/wf.yml@v1"$'\n'*) ok "a commented example is left alone";; *) bad "a commented example is left alone";; esac
 case "$wf" in *'in a script stays"'*) ok "a ref inside a run script is left alone";; *) bad "a ref inside a run script is left alone";; esac
-case "$(show "$R" "$P" actions/alpha/action.yml)" in *"nested@v1.1.0"*) ok "composite action ref pinned";; *) bad "composite action ref pinned";; esac
+case "$(show "$R" "$P" actions/alpha/action.yml)" in *"nested@pinned/v1.1.0"*) ok "composite action ref pinned";; *) bad "composite action ref pinned";; esac
+# Self-consistent at every depth: each internal ref in the pinned commit names a
+# tag that resolves to that same commit, so an action called by a pinned action
+# runs the pinned commit too, never the release commit with its floating refs.
+# Only `uses:` lines count: a ref in a comment or a run script is prose.
+refs="$(git -C "$R" grep -h -E '^[[:space:]]*(-[[:space:]]+)?uses:[[:space:]]*["]?dodi-smart/\.github/' "$P" -- .github/workflows actions \
+        | grep -oE '@[^"[:space:]]+' | grep -vE '^@v[0-9]+\.[0-9]+\.[0-9]+$' | sed 's/^@//' | sort -u)"
+eq "every rewritten ref names the pinned tag" "$refs" "pinned/v1.1.0"
+eq "that tag is the pinned commit itself" "$(sha "$R" "$refs")" "$P"
 case "$(show "$R" "$P" actions/beta/nested/action.yml)" in *"actions/cache@v5"*) ok "nested action third-party ref untouched";; *) bad "nested action third-party ref untouched";; esac
 eq "files that name no internal ref are byte-identical" "$(show "$R" "$P" .github/workflows/other.yml)" "$(show "$R" v1.1.0 .github/workflows/other.yml)"
 eq "README is never rewritten" "$(show "$R" "$P" README.md)" "$(show "$R" v1.1.0 README.md)"
@@ -203,7 +211,7 @@ release "$R4" 2.0.0
 eq "the 2.0.0 sources name @v2, not @v1" "$(grep -c 'alpha@v2$' "$R4/.github/workflows/wf.yml")" 1
 run "$R4" pin >/dev/null
 P2="$(sha "$R4" pinned/v2.0.0)"
-eq "a new major is pinned to its own version" "$(show "$R4" "$P2" actions/alpha/action.yml | grep -c 'nested@v2.0.0')" 1
+eq "a new major is pinned to its own version" "$(show "$R4" "$P2" actions/alpha/action.yml | grep -c 'nested@pinned/v2.0.0')" 1
 eq "next stays a single channel and follows the newest release" "$(sha "$R4" next)" "$P2"
 eq "the 1.5.0 pinned commit is what next held before 2.0.0" "$P1" "$(sha "$R4" pinned/v1.5.0)"
 ne "the old major's pinned commit is kept" "$(sha "$R4" pinned/v1.5.0)" none

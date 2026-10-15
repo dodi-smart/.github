@@ -102,6 +102,13 @@ inputs:
       email is `<bot-id>+<bot-name>@users.noreply.github.com`, so the two have to
       belong together.
     default: '41898282'
+  branch-prefix:
+    description: >-
+      Prefix of the branch claude-code-action creates for an issue in tag mode,
+      forwarded to `branch_prefix`. The action's own default is `claude/`, which
+      breaks the org's conventional branch names, so it is never passed through.
+      A caller that knows the change type passes `feat/` or `fix/`.
+    default: 'chore/'
 
 # Both are EMPTY when the agent never ran, which is not the same as a run that
 # found nothing. claude-code-action skips itself, and still reports success, when
@@ -183,6 +190,7 @@ runs:
         additional_permissions: ${{ inputs.additional-permissions }}
         bot_name: ${{ inputs.bot-name }}
         bot_id: ${{ inputs.bot-id }}
+        branch_prefix: ${{ inputs.branch-prefix }}
         # Never optional. See the header.
         display_report: true
         claude_args: >-

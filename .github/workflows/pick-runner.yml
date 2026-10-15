@@ -44,7 +44,7 @@ on:
 
       # Where a job goes when its pool cannot take it. Empty means the weight's own
       # default, and an explicit value always wins:
-      #   light   self-hosted,Linux,light (the pool it is already on)
+      #   light   self-hosted,Linux,large, when a large runner is idle
       #   heavy   `hosted-runner`, never the light pool, where a heavy job runs out
       #           of memory (exit 137)
       #   apple   none: the light pool cannot run Xcode, so the job queues

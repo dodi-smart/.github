@@ -79,14 +79,18 @@ warned() { # <desc> <substring of the warning>
 
 F="$TMP/fleet.json"
 
-echo "== light: the light pool when nothing is idle (unchanged) =="
-fleet "$F" light:idle light:busy
+echo "== light: overflows to the large pool when nothing is idle =="
+fleet "$F" light:idle light:busy large:idle
 pick "idle runner"                     "$LIGHT" false "$F"
+fleet "$F" light:busy light:busy large:idle
+pick "all busy, an idle large runner takes it" "$LARGE" true "$F"
+fleet "$F" light:busy light:busy large:busy
+pick "all busy, large busy too: stays on light" "$LIGHT" false "$F"
 fleet "$F" light:busy light:busy
-pick "all busy, stays on the light pool" "$LIGHT" false "$F"
-fleet "$F" light:offline light:offline
-pick "all offline, no other pool to try" "$LIGHT" false "$F"
-fleet "$F" light:busy light:idle
+pick "all busy, no large pool: stays on light" "$LIGHT" false "$F"
+fleet "$F" light:offline light:offline large:busy
+pick "all offline goes large even when busy" "$LARGE" true "$F"
+fleet "$F" light:busy light:idle large:idle
 pick "mixed, one idle"                 "$LIGHT" false "$F"
 fleet "$F" light:busy
 pick "fallback equal to the selector is not a fall back" "$LIGHT" false "$F" FALLBACK="$LIGHT"
@@ -136,8 +140,10 @@ fleet "$F" large:busy
 pick "explicit fallback and fallback-when together" "$HOSTED" true "$F" WEIGHT=heavy FALLBACK="$HOSTED" FALLBACK_WHEN=busy
 
 echo "== labels: today's behaviour =="
-fleet "$F" large:busy
+fleet "$F" large:busy light:idle
 pick "custom selector, busy: light fallback"     "$LIGHT" true "$F" LABELS="self-hosted,Linux,large"
+fleet "$F" large:busy light:busy
+pick "custom selector, busy, light busy: queues" "self-hosted,Linux,large" false "$F" LABELS="self-hosted,Linux,large"
 fleet "$F" large:idle
 pick "custom selector, idle"                     "self-hosted,Linux,large" false "$F" LABELS="self-hosted,Linux,large"
 fleet "$F" large:busy

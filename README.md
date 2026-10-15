@@ -756,7 +756,7 @@ rather than paying for a second hosted job just to reuse the workflow.
 
 | `weight` | Selector | Falls back to | Use |
 |---|---|---|---|
-| `light` | `self-hosted,Linux,light` | the same light pool, when no runner is online and idle (`fallback-when: busy`) | lint, typecheck, checks, releases, reading a diff |
+| `light` | `self-hosted,Linux,light` | `self-hosted,Linux,large`, when no light runner is online and idle and a large one is (`fallback-when: busy`) | lint, typecheck, checks, releases, reading a diff |
 | `heavy` | `self-hosted,Linux,large` | `hosted-runner`, only when no runner is online (`fallback-when: offline`); a busy pool queues | builds, Docker, full suites |
 | `apple` | `self-hosted,macOS,ARM64` | nothing: it queues, and warns when no runner is online | Apple toolchain, signing |
 | `hosted` | none | not applicable | forces `hosted-runner`, `ubuntu-latest` by default |
@@ -779,6 +779,13 @@ The picker reads the org's runner list once, then decides from it. A runner
 - `fallback-when: offline` goes to the fallback only when no matching runner is
   online. If some are online but busy, the job gets the primary selector and
   queues. Long jobs want this: hosted costs more than the queue.
+
+`light` overflows to the large pool. A light job fits on a large runner, and
+without the overflow every light job queued on the few light runners while the
+large pool sat idle. It overflows only when a large runner is idle: when both
+pools are busy the job stays on light, rather than queueing behind builds. Any
+self-hosted fallback follows the same rule when the pool is busy; when the pool
+is offline the job goes to the fallback regardless.
 
 `heavy` never falls back to the light pool. A heavy build there runs out of
 memory beside the light pool's other jobs (exit 137). A busy large pool queues

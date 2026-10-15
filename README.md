@@ -756,7 +756,7 @@ rather than paying for a second hosted job just to reuse the workflow.
 
 | `weight` | Selector | Falls back to | Use |
 |---|---|---|---|
-| `light` | `self-hosted,Linux,light` | the same light pool, when no runner is online and idle (`fallback-when: busy`) | lint, typecheck, checks, releases, reading a diff |
+| `light` | `self-hosted,Linux,light` | `self-hosted,Linux,large`, when no light runner is online and idle and a large one is (`fallback-when: busy`) | lint, typecheck, checks, releases, reading a diff |
 | `heavy` | `self-hosted,Linux,large` | `hosted-runner`, only when no runner is online (`fallback-when: offline`); a busy pool queues | builds, Docker, full suites |
 | `apple` | `self-hosted,macOS,ARM64` | nothing: it queues, and warns when no runner is online | Apple toolchain, signing |
 | `hosted` | none | not applicable | forces `hosted-runner`, `ubuntu-latest` by default |
@@ -779,6 +779,13 @@ The picker reads the org's runner list once, then decides from it. A runner
 - `fallback-when: offline` goes to the fallback only when no matching runner is
   online. If some are online but busy, the job gets the primary selector and
   queues. Long jobs want this: hosted costs more than the queue.
+
+`light` overflows to the large pool. A light job fits on a large runner, and
+without the overflow every light job queued on the few light runners while the
+large pool sat idle. It overflows only when a large runner is idle: when both
+pools are busy the job stays on light, rather than queueing behind builds. Any
+self-hosted fallback follows the same rule when the pool is busy; when the pool
+is offline the job goes to the fallback regardless.
 
 `heavy` never falls back to the light pool. A heavy build there runs out of
 memory beside the light pool's other jobs (exit 137). A busy large pool queues
@@ -1020,14 +1027,19 @@ the base branch. The comment says so in one line.
 
 Which runner it takes:
 
-- **A green build waits and reads on a light runner.** A `wait` job starts on the
-  light pool, polls the `pr-checks` run and decides the verdict. The `verify` job
-  then runs on the light pool too when the verdict is green, so a green PR never
-  holds a heavy slot. It takes the heavy pool only to build or fix: a red or
-  infra verdict, or a repo with no `pr-checks` that builds here. With an `apple`
-  or `hosted` `runner-weight`, or explicit `runner-labels`, there is no lighter
-  pool, so both jobs use that selector.
-- **A rebase of an unchanged update runs nothing.** `wait` hashes the changed lines
+- **Nothing waits for `pr-checks`.** The caller triggers on `pull_request` and
+  on `workflow_run` for its PR Checks workflow. The short hosted `gate` reads the
+  `pr-checks` run on the head commit once. While it has not finished, the run
+  stops there, and the run's completion starts verification again with the
+  verdict ready. A runner failure is re-run the same way, once. No job holds a
+  runner while CI runs; AGENTS.md has why.
+- **A green build reads on a light runner.** The `verify` job runs on the light
+  pool when the verdict is green, so a green PR never holds a heavy slot. It
+  takes the heavy pool only to build or fix: a red or infra verdict, or a repo
+  with no `pr-checks` that builds here. With an `apple` or `hosted`
+  `runner-weight`, or explicit `runner-labels`, there is no lighter pool, so
+  `verify` uses that selector either way.
+- **A rebase of an unchanged update runs nothing.** The gate hashes the changed lines
   of every file except lockfiles and records the hash in the comment. When the
   build is green, the PR already carries `deps:verified` (or `deps:fixed` with its
   fix commits still on the branch) and the hash is the same, `verify` does not
@@ -1037,6 +1049,43 @@ Which runner it takes:
 - **Lock file maintenance is judged by the build.** A green build with only
   lockfiles changed gets `deps:verified` and a one-line comment, with no agent.
   A red one goes to the agent as before.
+
+The caller listens for both events. `workflows:` names the caller's own PR
+Checks workflow by its `name:`. Without the `workflow_run` trigger nothing starts
+verification once `pr-checks` finishes:
+
+```yaml
+name: Dependency Verification
+on:
+  pull_request:
+    # `labeled` is the safe manual re-run: apply `agent:review` to a Renovate PR.
+    types: [opened, synchronize, reopened, labeled]
+  # `branches:` keeps a human PR's checks from creating a run at all.
+  workflow_run:
+    workflows: [PR Checks]
+    types: [completed]
+    branches: ['renovate/**', 'dependabot/**']
+jobs:
+  verify:
+    # Cheap pre-filter, so a human PR never starts a hosted job. The shared
+    # workflow gates again on the resolved pull request.
+    if: >-
+      (github.event_name == 'pull_request'
+        && contains(fromJson('["renovate[bot]","app/renovate","dependabot[bot]"]'), github.event.pull_request.user.login)
+        && (github.event.action != 'labeled' || github.event.label.name == 'agent:review'))
+      || (github.event_name == 'workflow_run'
+        && github.event.workflow_run.event == 'pull_request'
+        && !contains(fromJson('["cancelled","skipped"]'), github.event.workflow_run.conclusion))
+    uses: dodi-smart/.github/.github/workflows/deps-verify.yml@v1
+    secrets: inherit
+    permissions:
+      contents: read
+      pull-requests: write
+      actions: write
+      id-token: write
+    with:
+      stack: bun
+```
 
 `env` and `build-env` mean what they mean in `pr-checks`: same format, same
 parser, and `build-env` reaches the build command only. They matter when the

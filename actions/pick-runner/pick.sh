@@ -24,6 +24,21 @@ runner_json() {
   jq -cn --arg s "$1" '$s | split(",") | map(gsub("^\\s+|\\s+$"; "")) | tojson' -r
 }
 
+# pool_counts <selector> <fleet file>: the runners that carry every label in
+# the selector, as tab-separated total, online, idle, and the selector's labels
+# that no runner carries at all (space-separated, empty when none).
+pool_counts() {
+  jq -r --arg s "$1" '
+    ($s | split(",") | map(gsub("^\\s+|\\s+$"; ""))) as $want
+    | . as $all
+    | [ .[] | select(. as $r | all($want[]; . as $l | ($r.labels | index($l)) != null)) ] as $m
+    | [ ($m | length),
+        ($m | map(select(.status == "online")) | length),
+        ($m | map(select(.status == "online" and .busy != true)) | length),
+        ([ $want[] | select(. as $l | any($all[]; .labels | index($l)) | not) ] | join(" ")) ]
+    | @tsv' "$2"
+}
+
 # The decision's two outputs: a comma-separated selector, and whether it is a fall back.
 emit() { { echo "runner=$(runner_json "$1")"; echo "fell-back=$2"; } >> "$GITHUB_OUTPUT"; }
 
@@ -76,8 +91,10 @@ decide() {
   fi
 
   # What a weight falls back to, and when. An explicit input always wins.
-  #   light   the light pool, when no runner is idle. Short jobs would rather
-  #           run now than wait.
+  #   light   the large pool, when no light runner is idle. Short jobs would
+  #           rather run now than wait, and a light job fits on a large runner
+  #           (the reverse does not). Without it every light job queued on the
+  #           few light runners while the large pool sat idle.
   #   heavy   hosted, and only when no runner is online at all. Never the light
   #           pool: a heavy job there runs out of memory (exit 137). A busy
   #           large pool queues instead, because a long build costs more on
@@ -88,6 +105,7 @@ decide() {
   local fb_def="self-hosted,Linux,light" when_def="busy"
   if [ -z "$LABELS" ]; then
     case "$WEIGHT" in
+      light) fb_def="self-hosted,Linux,large" ;;
       heavy) fb_def="$HOSTED_RUNNER"; when_def="offline" ;;
       apple) fb_def="";               when_def="offline" ;;
     esac
@@ -112,15 +130,7 @@ decide() {
   fi
 
   local total online idle missing
-  IFS=$'\t' read -r total online idle missing < <(jq -r --arg s "$sel" '
-    ($s | split(",") | map(gsub("^\\s+|\\s+$"; ""))) as $want
-    | . as $all
-    | [ .[] | select(. as $r | all($want[]; . as $l | ($r.labels | index($l)) != null)) ] as $m
-    | [ ($m | length),
-        ($m | map(select(.status == "online")) | length),
-        ($m | map(select(.status == "online" and .busy != true)) | length),
-        ([ $want[] | select(. as $l | any($all[]; .labels | index($l)) | not) ] | join(" ")) ]
-    | @tsv' "$fleet")
+  IFS=$'\t' read -r total online idle missing < <(pool_counts "$sel" "$fleet")
 
   local dest="the fallback '$fb'"
   [ -n "$fb" ] || dest="a queue with no fallback"
@@ -138,11 +148,22 @@ decide() {
     fi
   fi
 
+  # A busy pool overflows to a self-hosted fallback only when that pool has an
+  # idle runner. Otherwise the job would queue there instead of here, behind
+  # that pool's own jobs, and never come back when this pool frees up. An
+  # offline pool goes regardless: there is nothing to wait for here.
+  local fb_free=1
+  if [ -n "$fb" ] && [ "$online" != "0" ] && [[ "$fb" == self-hosted* ]]; then
+    fb_free=$(pool_counts "$fb" "$fleet" | cut -f3)
+    [ "$fb_free" != "0" ] || echo "no idle runner in '$fb' either, so this job stays on '$sel'"
+  fi
+
   # Fall back when the pool is offline, or busy and the policy says so. Skip it
-  # when there is nowhere else to go: no fallback set, or it is the selector
-  # already (the light default). Then queue on the primary, no fall back reported.
+  # when there is nowhere else to go: no fallback set, it is the selector
+  # already, or (when busy) it has no idle runner. Then queue on the primary,
+  # no fall back reported.
   if [ -n "$fb" ] && [ "$fb" != "$sel" ] \
-     && { [ "$online" = "0" ] || { [ "$when" = "busy" ] && [ "$idle" = "0" ]; }; }; then
+     && { [ "$online" = "0" ] || { [ "$when" = "busy" ] && [ "$idle" = "0" ] && [ "$fb_free" != "0" ]; }; }; then
     echo "falling back to '$fb' ($online online, $idle idle, fallback-when: $when)"
     emit "$fb" true
   else

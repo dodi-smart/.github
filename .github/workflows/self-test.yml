@@ -447,8 +447,8 @@ jobs:
           import sys, yaml
 
           # Each workflow picks one pool, named runner. deps-verify picks two, because
-          # its wait job runs on light and its verify job takes heavy only to
-          # build: light and heavy, each read by runs-on.
+          # its verify job runs on light for a green verdict and takes heavy only
+          # to build: light and heavy, each read by runs-on.
           agent_workflows = [
               ('issue-triage.yml',   'triage',    ['runner']),
               ('issue-implement.yml','implement', ['runner']),
@@ -507,33 +507,37 @@ jobs:
       - name: deps-verify decides when a run is skipped
         run: ./actions/deps-intent/test.sh
 
-      # A green Renovate PR must not hold a heavy runner while it waits. The wait
-      # job runs on light and decides the verdict; verify takes heavy only when
-      # the verdict is not green, and the agent runs only when the judge says so.
-      - name: deps-verify waits on light and takes heavy only to build
+      # Nothing in deps-verify waits for pr-checks (see deps-verify in AGENTS.md
+      # for why). The gate reads a finished run once; verify takes heavy only
+      # when the verdict is not green, and the agent runs only when the judge
+      # says so.
+      - name: deps-verify never waits, and takes heavy only to build
         run: |
           set -euo pipefail
           python3 -c "
           import sys, yaml
-          doc = yaml.safe_load(open('.github/workflows/deps-verify.yml'))
-          jobs = doc['jobs']
+          src = open('.github/workflows/deps-verify.yml').read()
+          jobs = yaml.safe_load(src)['jobs']
           bad = []
-          wait, verify = jobs.get('wait'), jobs.get('verify')
-          if not wait or not verify:
-              sys.exit('::error::deps-verify needs a wait job and a verify job')
-          if 'needs.gate.outputs.light' not in str(wait.get('runs-on')) or 'heavy' in str(wait.get('runs-on')):
-              bad.append('wait must run on the light pool only')
+          if sorted(jobs) != ['gate', 'verify']:
+              bad.append('deps-verify must have exactly the gate and verify jobs, found %s: a third job is how a waiting job comes back' % sorted(jobs))
+          if 'sleep ' in src:
+              bad.append('deps-verify must not sleep: it reads a finished pr-checks run, it never polls one')
+          gate, verify = jobs.get('gate') or {}, jobs.get('verify') or {}
+          proceed = str((gate.get('outputs') or {}).get('proceed', ''))
+          if \"steps.judge.outputs.judge != 'skip'\" not in proceed or \"steps.ci.outputs.ready == 'true'\" not in proceed:
+              bad.append('the gate must proceed only with a ready verdict and a judge that is not skip')
+          if \"needs.gate.outputs.proceed == 'true'\" not in str(verify.get('if')):
+              bad.append('verify must run only when the gate proceeds')
           ro = str(verify.get('runs-on'))
-          if 'needs.wait.outputs.verdict' not in ro or 'green' not in ro or 'needs.gate.outputs.light' not in ro or 'needs.gate.outputs.heavy' not in ro:
+          if 'needs.gate.outputs.verdict' not in ro or 'green' not in ro or 'needs.gate.outputs.light' not in ro or 'needs.gate.outputs.heavy' not in ro:
               bad.append('verify runs-on must choose light for a green verdict and heavy otherwise')
-          if \"needs.wait.outputs.judge != 'skip'\" not in str(verify.get('if')):
-              bad.append('verify must not run when the judge says skip')
-          agent = [s for s in verify['steps'] if s.get('id') == 'agent'][0]
-          if \"needs.wait.outputs.judge == 'agent'\" not in str(agent.get('if', '')):
+          agent = [s for s in verify.get('steps', []) if s.get('id') == 'agent']
+          if not agent or \"needs.gate.outputs.judge == 'agent'\" not in str(agent[0].get('if', '')):
               bad.append('the agent step must run only when the judge says agent')
           if bad:
               sys.exit('::error::' + '; '.join(bad))
-          print('deps-verify waits on light and takes heavy only when there is something to build')
+          print('deps-verify never waits, and takes heavy only when there is something to build')
           "
 
       # deps-verify may push fix commits, so where the push happens is the

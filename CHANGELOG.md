@@ -1,3 +1,9 @@
+## [1.22.2](https://github.com/dodi-smart/.github/compare/v1.22.1...v1.22.2) (2026-10-15)
+
+### 🐛 Bug Fixes
+
+* **pick-runner:** drop the run-time runner switch and deprecate the ignored fallback inputs ([918afe4](https://github.com/dodi-smart/.github/commit/918afe45726dae71d7e53740a060c23afa2134d9))
+
 ## [1.22.1](https://github.com/dodi-smart/.github/compare/v1.22.0...v1.22.1) (2026-10-15)
 
 ### 🐛 Bug Fixes

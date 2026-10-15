@@ -1060,9 +1060,11 @@ on:
   pull_request:
     # `labeled` is the safe manual re-run: apply `agent:review` to a Renovate PR.
     types: [opened, synchronize, reopened, labeled]
+  # `branches:` keeps a human PR's checks from creating a run at all.
   workflow_run:
     workflows: [PR Checks]
     types: [completed]
+    branches: ['renovate/**', 'dependabot/**']
 jobs:
   verify:
     # Cheap pre-filter, so a human PR never starts a hosted job. The shared
@@ -1073,8 +1075,7 @@ jobs:
         && (github.event.action != 'labeled' || github.event.label.name == 'agent:review'))
       || (github.event_name == 'workflow_run'
         && github.event.workflow_run.event == 'pull_request'
-        && (startsWith(github.event.workflow_run.head_branch, 'renovate/')
-            || startsWith(github.event.workflow_run.head_branch, 'dependabot/')))
+        && !contains(fromJson('["cancelled","skipped"]'), github.event.workflow_run.conclusion))
     uses: dodi-smart/.github/.github/workflows/deps-verify.yml@v1
     secrets: inherit
     permissions:

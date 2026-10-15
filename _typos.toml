@@ -1,0 +1,5 @@
+# CHANGELOG.md is written by semantic-release and carries commit hashes, which
+# typos reads as misspelled words (a hash containing "afe"). Nothing in it is
+# hand-typed, so it is not linted.
+[files]
+extend-exclude = ["CHANGELOG.md"]

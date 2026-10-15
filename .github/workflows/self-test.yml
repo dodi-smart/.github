@@ -77,6 +77,15 @@ jobs:
       - name: run-phases runs each phase alone and stops at the first failure
         run: ./actions/run-phases/test.sh
 
+      # claude-code-action replaces the git identity a job configured, so
+      # deps-verify's fixes were authored by claude[bot] and its own push guard
+      # refused them. This runs the push and publish steps against real git
+      # repos: the author allowlist, the explicit --author, the identity
+      # run-agent forwards, the Renovate-owned needs-manual label and the
+      # no-report comment.
+      - name: run-agent identity and deps-verify's push and publish steps
+        run: ./actions/run-agent/test.sh
+
       # The wait must never pass on the job's own Deployment, and must count the
       # commit before a `[skip ci]` release commit, the one the host builds.
       - name: Deployment wait proves the host's deployment

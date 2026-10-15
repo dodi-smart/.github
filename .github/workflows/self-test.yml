@@ -447,8 +447,8 @@ jobs:
           import sys, yaml
 
           # Each workflow picks one pool, named runner. deps-verify picks two, because
-          # its wait job runs on light and its verify job takes heavy only to
-          # build: light and heavy, each read by runs-on.
+          # its verify job runs on light for a green verdict and takes heavy only
+          # to build: light and heavy, each read by runs-on.
           agent_workflows = [
               ('issue-triage.yml',   'triage',    ['runner']),
               ('issue-implement.yml','implement', ['runner']),
@@ -507,10 +507,12 @@ jobs:
       - name: deps-verify decides when a run is skipped
         run: ./actions/deps-intent/test.sh
 
-      # A green Renovate PR must not hold a heavy runner while it waits. The wait
-      # job runs on light and decides the verdict; verify takes heavy only when
-      # the verdict is not green, and the agent runs only when the judge says so.
-      - name: deps-verify waits on light and takes heavy only to build
+      # The wait job must not hold a self-hosted runner: it polls a pr-checks run
+      # that needs those same runners, and enough open dependency PRs at once
+      # took every slot and deadlocked. It runs hosted and decides the verdict;
+      # verify takes heavy only when the verdict is not green, and the agent runs
+      # only when the judge says so.
+      - name: deps-verify waits hosted and takes heavy only to build
         run: |
           set -euo pipefail
           python3 -c "
@@ -521,8 +523,8 @@ jobs:
           wait, verify = jobs.get('wait'), jobs.get('verify')
           if not wait or not verify:
               sys.exit('::error::deps-verify needs a wait job and a verify job')
-          if 'needs.gate.outputs.light' not in str(wait.get('runs-on')) or 'heavy' in str(wait.get('runs-on')):
-              bad.append('wait must run on the light pool only')
+          if str(wait.get('runs-on')) != 'ubuntu-latest':
+              bad.append('wait must run on ubuntu-latest, never on a self-hosted pool its pr-checks run needs')
           ro = str(verify.get('runs-on'))
           if 'needs.wait.outputs.verdict' not in ro or 'green' not in ro or 'needs.gate.outputs.light' not in ro or 'needs.gate.outputs.heavy' not in ro:
               bad.append('verify runs-on must choose light for a green verdict and heavy otherwise')
@@ -533,7 +535,7 @@ jobs:
               bad.append('the agent step must run only when the judge says agent')
           if bad:
               sys.exit('::error::' + '; '.join(bad))
-          print('deps-verify waits on light and takes heavy only when there is something to build')
+          print('deps-verify waits hosted and takes heavy only when there is something to build')
           "
 
       # deps-verify may push fix commits, so where the push happens is the

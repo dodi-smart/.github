@@ -1020,13 +1020,15 @@ the base branch. The comment says so in one line.
 
 Which runner it takes:
 
-- **A green build waits and reads on a light runner.** A `wait` job starts on the
-  light pool, polls the `pr-checks` run and decides the verdict. The `verify` job
-  then runs on the light pool too when the verdict is green, so a green PR never
-  holds a heavy slot. It takes the heavy pool only to build or fix: a red or
+- **A green build waits hosted and reads on a light runner.** A `wait` job starts
+  on `ubuntu-latest`, polls the `pr-checks` run and decides the verdict. It never
+  holds a self-hosted slot, because the `pr-checks` run it waits on needs those
+  same runners: enough open dependency PRs at once would take every slot and
+  nothing could finish. The `verify` job runs on the light pool when the verdict
+  is green, so a green PR never holds a heavy slot. It takes the heavy pool only to build or fix: a red or
   infra verdict, or a repo with no `pr-checks` that builds here. With an `apple`
   or `hosted` `runner-weight`, or explicit `runner-labels`, there is no lighter
-  pool, so both jobs use that selector.
+  pool, so `verify` uses that selector either way.
 - **A rebase of an unchanged update runs nothing.** `wait` hashes the changed lines
   of every file except lockfiles and records the hash in the comment. When the
   build is green, the PR already carries `deps:verified` (or `deps:fixed` with its

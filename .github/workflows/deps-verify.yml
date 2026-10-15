@@ -123,11 +123,12 @@ jobs:
       # Only when the run above is still proceeding: a human-authored PR (this
       # workflow runs for bots only) must never pay for a hosted picker.
       #
-      # Both pools are picked here, because the wait job below runs on light and
-      # the verify job takes heavy only when there is something to build. The
+      # Both pools are picked here, because the verify job runs on light for a
+      # green verdict and takes heavy only when there is something to build. The
       # action caches the fleet listing, so the second call costs no API calls.
       # An `apple` or `hosted` weight, or an explicit selector, has no lighter
-      # pool to wait on (the light pool cannot run Xcode), so light follows it.
+      # pool (the light pool cannot run Xcode), so light follows it. The wait
+      # job picks nothing: it runs hosted, see below.
       - id: pick-light
         if: steps.gate.outputs.proceed == 'true'
         uses: dodi-smart/.github/actions/pick-runner@v1
@@ -146,13 +147,19 @@ jobs:
           gh-app-client-id:   ${{ secrets.GH_APP_CLIENT_ID }}
           gh-app-private-key: ${{ secrets.GH_APP_PRIVATE_KEY }}
 
-  # Waits for the caller's pr-checks run on a LIGHT runner, decides the build
-  # verdict, and decides whether `verify` runs at all (actions/deps-intent). A
-  # run that died of the runner is re-run ONCE, failed jobs only.
+  # Waits for the caller's pr-checks run, decides the build verdict, and decides
+  # whether `verify` runs at all (actions/deps-intent). A run that died of the
+  # runner is re-run ONCE, failed jobs only.
+  #
+  # Hosted, never self-hosted. It only calls the API and sleeps, for up to
+  # ci-timeout-minutes, while the pr-checks run it waits on needs the light pool
+  # too. With as many open dependency PRs as there are light runners, every
+  # light slot held a waiting job and no pr-checks job could ever start: a
+  # deadlock that only cancelling the runs cleared.
   wait:
     needs: [gate]
     if: needs.gate.outputs.proceed == 'true'
-    runs-on: ${{ fromJson(needs.gate.outputs.light) }}
+    runs-on: ubuntu-latest
     timeout-minutes: 120
     permissions:
       contents: read        # the compare API

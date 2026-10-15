@@ -8,10 +8,12 @@
 # `pin` runs after semantic-release has cut vX.Y.Z on main. It builds a child
 # commit of that tag, which is NOT on main, where every internal reference to
 # this repo's own actions and reusable workflows is rewritten from the floating
-# major (`@v1`) to the exact release (`@vX.Y.Z`). That commit is tagged
-# `pinned/vX.Y.Z`, and `next` is force-moved onto it. A caller on `@next` then
-# runs the workflows AND the actions they call from one release, instead of the
-# workflow from one commit and each action from whatever `v1` is at that moment.
+# major (`@v1`) to `@pinned/vX.Y.Z`: the tag of that same child commit. A caller
+# on `@next` then runs the workflows AND every action they call, at any depth,
+# from that one commit. Pinning to `@vX.Y.Z` instead would not hold: that tag is
+# the release commit, whose own internal references still float on `@v1`, so an
+# action called by a pinned action (or a pinned reusable workflow's own steps)
+# would run whatever `v1` is, and fail outright when `v1` predates it.
 #
 # `promote` force-moves `v<major>` onto the pinned commit of a version. With no
 # --version it promotes whatever `next` points at. Promoting an older version is
@@ -90,12 +92,13 @@ fetch_tags() {
   git ${remote_opts[@]+"${remote_opts[@]}"} fetch --quiet --force --tags "$remote" 2>/dev/null || note "could not fetch tags from the remote; using the local ones"
 }
 
-# Rewrites one file's content on stdin. Only a `uses:` line is touched, and only
-# when it names this repo's own actions or reusable workflows at a bare major.
+# Rewrites one file's content on stdin to `@pinned/v<version>`. Only a `uses:`
+# line is touched, and only when it names this repo's own actions or reusable
+# workflows at a bare major.
 # `actions/checkout@v7`, `@v1.2.3` and a comment that merely mentions a ref stay
 # as they are.
 rewrite() {
-  PIN="v$1" perl -pe '
+  PIN="pinned/v$1" perl -pe '
     s{^(\s*(?:-\s+)?uses:\s*["\x27]?dodi-smart/\.github/(?:actions/[\w./-]+|\.github/workflows/[\w.-]+\.ya?ml))\@v\d+(?![\w.-])}{$1\@$ENV{PIN}}
   '
 }
@@ -138,7 +141,7 @@ pin() {
       GIT_COMMITTER_NAME="${GIT_COMMITTER_NAME:-github-actions[bot]}" \
       GIT_COMMITTER_EMAIL="${GIT_COMMITTER_EMAIL:-41898282+github-actions[bot]@users.noreply.github.com}" \
       git commit-tree "$tree" -p "$commit" -m "chore(release): pin internal references to $tag [skip ci]" \
-        -m "A channel commit, not on main. Internal references to this repo's own actions and reusable workflows are pinned to $tag, so a caller on @next runs one release end to end. Built by scripts/channel-tag.sh."
+        -m "A channel commit, not on main. Internal references to this repo's own actions and reusable workflows are pinned to $pinned_tag, this commit's own tag, so a caller on @next runs one commit end to end at every depth. Built by scripts/channel-tag.sh."
     )"
     git tag "$pinned_tag" "$pinned"
     note "created $pinned_tag ($pinned), $changed file(s) rewritten"

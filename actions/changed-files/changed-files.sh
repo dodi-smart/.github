@@ -31,18 +31,33 @@ names() {
 # pattern also matches everything under it, so a directory needs no `dir/*` of its
 # own. `all` needs at least one path and one pattern, so it is never vacuously true.
 matches() {
-  python3 -c '
-import fnmatch, sys
-pats = [p.strip().rstrip("/") for p in sys.argv[1].splitlines() if p.strip()]
-pats += [p + "/*" for p in pats]
-files = [f for f in sys.stdin.read().splitlines() if f]
-hit = lambda f: any(fnmatch.fnmatchcase(f, p) for p in pats)
-if sys.argv[2] == "all":
-    ok = bool(files and pats and all(hit(f) for f in files))
-else:
-    ok = any(hit(f) for f in files)
-print("true" if ok else "false")
-' "$1" "${2:-any}"
+  # Pure bash, so it runs on an image that ships no scripting runtime. A `case` pattern is
+  # an fnmatch pattern in which `*` also crosses `/`, which is the semantics
+  # this needs.
+  local mode="${2:-any}" pats=() p f hit n=0 total=0 ok
+  while IFS= read -r p; do
+    p="${p#"${p%%[![:space:]]*}"}"; p="${p%"${p##*[![:space:]]}"}"
+    while [[ "$p" == */ ]]; do p="${p%/}"; done
+    [ -n "$p" ] || continue
+    pats+=("$p" "$p/*")
+  done <<<"$1"
+  while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    total=$((total + 1))
+    hit=0
+    for p in ${pats[@]+"${pats[@]}"}; do
+      # shellcheck disable=SC2254  # $p is a pattern on purpose
+      case "$f" in $p) hit=1; break ;; esac
+    done
+    n=$((n + hit))
+  done
+  ok=false
+  if [ "$mode" = "all" ]; then
+    [ "$total" -gt 0 ] && [ "${#pats[@]}" -gt 0 ] && [ "$n" -eq "$total" ] && ok=true
+  else
+    [ "$n" -gt 0 ] && ok=true
+  fi
+  echo "$ok"
 }
 
 case "${1:-}" in

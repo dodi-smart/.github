@@ -62,11 +62,19 @@ permissions: {}
 
 jobs:
   # The picker runs INSIDE this job, after the last step that can still say
-  # no. It is itself a hosted job, so it must never run for an event that will
-  # not proceed, and folding it in here means a proceeding run costs one
-  # hosted start instead of two.
+  # no, so it never runs for an event that will not proceed.
+  # The gate runs on the light pool of a private repo and on a hosted runner
+  # otherwise (a public repo, or a fork PR, which the pool cannot serve). The
+  # `if:` below is a cheap pre-filter on the event payload alone, so an event the
+  # gate would only stop costs no runner at all. It is strictly narrower than the
+  # gate: every rule the gate keeps (`agent:no-touch` first, then the rest) still
+  # runs for an event that passes it, and nothing the gate posts is skipped.
   gate:
-    runs-on: ubuntu-latest
+    if: >-
+      github.event.pull_request.draft != true
+      && (github.event.action != 'labeled' || github.event.label.name == 'agent:review')
+      && !(endsWith(github.event.pull_request.user.login, '[bot]') || startsWith(github.event.pull_request.user.login, 'app/'))
+    runs-on: ${{ fromJSON((github.event.repository.private && !github.event.pull_request.head.repo.fork) && (vars.DODI_RUNS_ON_LIGHT || '["self-hosted","Linux","light"]') || '"ubuntu-latest"') }}
     timeout-minutes: 10   # the picker calls the org API and may retry
     permissions:
       contents: read
@@ -80,6 +88,10 @@ jobs:
       ci:      ${{ steps.ci.outputs.summary }}
       runner:  ${{ steps.pick.outputs.runner }}
     steps:
+      - uses: dodi-smart/.github/actions/runner-report@v1
+        with:
+          selector: light
+
       # Payload-only rules first, before the file listing. agent:no-touch, drafts
       # and bot PRs are decided without fetching anything. Bot dependency PRs
       # are rejected here because deps-verify owns them, and reviewing them in
@@ -220,6 +232,10 @@ jobs:
       id-token: write
       actions: read
     steps:
+      - uses: dodi-smart/.github/actions/runner-report@v1
+        with:
+          selector: ${{ needs.gate.outputs.runner }}
+
       # Credentials persist here on purpose: the review agent works in this
       # checkout and may fetch from it.
       # jactionlint ignore=artipacked

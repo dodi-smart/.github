@@ -1,3 +1,9 @@
+## [1.20.0](https://github.com/dodi-smart/.github/compare/v1.19.0...v1.20.0) (2026-10-15)
+
+### ✨ Features
+
+* **agents:** move agent gate jobs off billed hosted runners onto the light pool ([2f7b71a](https://github.com/dodi-smart/.github/commit/2f7b71a91162dfa324cc961f40d0f47c847bd0df))
+
 ## [1.19.0](https://github.com/dodi-smart/.github/compare/v1.18.1...v1.19.0) (2026-10-15)
 
 ### ✨ Features

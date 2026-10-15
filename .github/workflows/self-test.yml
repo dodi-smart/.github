@@ -46,9 +46,10 @@ jobs:
       - name: Shared semantic-release config tests
         run: npm test
 
-      # `heavy` landing on the light pool ran jobs out of memory (exit 137).
-      # The fallback table is behaviour, so it is asserted, not reviewed.
-      - name: Pick-runner fallback policy
+      # The picker is static: each weight's labels, the `labels` and
+      # DODI_RUNS_ON_* overrides, and the public/fork guard are behaviour, so
+      # they are asserted, not reviewed.
+      - name: Pick-runner policy
         run: ./actions/pick-runner/test.sh
 
       # The kill switch is a claim about behaviour. Assert it.
@@ -516,6 +517,60 @@ jobs:
           print('every agent workflow picks its runner inside the gate job, guarded on proceed')
           "
 
+      # The agent workflows' gates ran on a billed hosted runner before every
+      # agent job. They now take the light pool of a private repo and stay hosted
+      # for a public repo or a fork PR, through one expression, and every job
+      # reports the runner it got. Three claims keep that from drifting: no
+      # hosted literal is left behind, runner-report is the first step of every
+      # job, and the kill switch is still the first rule the gate evaluates.
+      - name: Agent workflow gates are off hosted minutes and keep the kill switch first
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import re, sys, yaml
+
+          files = ['pr-review', 'claude-assist', 'issue-triage', 'issue-implement']
+          # Written as two pieces so the workflow linter does not read it as an expression.
+          expr = ('$' + '{{ fromJSON((github.event.repository.private && !github.event.pull_request.head.repo.fork) '
+                  '&& (vars.DODI_RUNS_ON_LIGHT || \'["self-hosted","Linux","light"]\') || \'"ubuntu-latest"\') }}')
+          bad = []
+          for f in files:
+              text = open('.github/workflows/' + f + '.yml').read()
+              jobs = yaml.safe_load(text)['jobs']
+              # The only hosted literal allowed is the one inside the expression.
+              if 'ubuntu-latest' in text.replace(expr, ''):
+                  bad.append(f + ': a hosted runner literal outside the gate expression')
+              gate = jobs['gate']
+              if gate.get('runs-on') != expr:
+                  bad.append(f + ': gate runs-on is not the shared light-or-hosted expression')
+              cond = str(gate.get('if', '')).strip()
+              if not cond:
+                  bad.append(f + ': gate has no job-level if for the payload-only filters')
+              if 'agent:no-touch' in cond:
+                  bad.append(f + ': the kill switch belongs to the gate action, not the job if')
+              if gate.get('permissions', {}).get('actions') and f != 'pr-review':
+                  bad.append(f + ': gate gained an actions permission')
+              for name, job in jobs.items():
+                  first = (job.get('steps') or [{}])[0]
+                  if 'actions/runner-report@' not in str(first.get('uses', '')):
+                      bad.append(f + ': job ' + name + ' does not start with runner-report')
+                  elif (first.get('with') or {}).get('selector') is None:
+                      bad.append(f + ': job ' + name + ' runner-report passes no selector')
+              # The gate action is the step straight after the report, so
+              # nothing evaluates ahead of agent:no-touch.
+              if 'agent-gate@' not in str(gate['steps'][1].get('uses', '')):
+                  bad.append(f + ': agent-gate is not the first step after runner-report')
+          # Inside the gate, agent:no-touch precedes every other rule.
+          sh = open('actions/agent-gate/gate.sh').read()
+          nt = sh.index('RULE 0, the kill switch')
+          for rule in ['RULE 0b', 'RULE 1,', 'RULE 2,', 'RULE 3,', 'RULE 4,', 'RULE 5,', 'RULE 6,']:
+              if sh.index(rule) < nt:
+                  bad.append('gate.sh evaluates ' + rule + ' before the kill switch')
+          if bad:
+              sys.exit('::error::' + '; '.join(bad))
+          print('agent gates use the shared runner expression, report first and check agent:no-touch first')
+          PY
+
       # A skip that should not have happened is the costly mistake here, above
       # all a `verified` label on a red build. test.sh asserts those cases first.
       - name: deps-verify decides when a run is skipped
@@ -616,9 +671,69 @@ jobs:
           print('pick-runner.yml still exposes inputs %s and outputs %s' % (sorted(need_in), sorted(need_out)))
           "
 
+      # The helper jobs of the shared checks run on the light pool of a private
+      # repo, with no hosted minutes, and every runner job reports where it ran.
+      # Each claim below drifted or could drift quietly: a literal
+      # `ubuntu-latest` creeping back bills hosted minutes; a renamed summary job
+      # breaks the required status context; a job whose first step is not the
+      # runner report loses the report when a later step fails.
+      - name: Checks helper jobs are self-hosted, static and report their runner
+        run: |
+          set -euo pipefail
+          python3 -c "
+          import glob, re, sys, yaml
+          REPORT = 'dodi-smart/.github/actions/runner-report@v1'
+          files = ['pr-checks', 'pick-runner', 'react-doctor', 'zavet-check']
+          errors = []
+          for name in files:
+              path = '.github/workflows/%s.yml' % name
+              text = open(path).read()
+              for n, line in enumerate(text.splitlines(), 1):
+                  if re.match(r'\s*runs-on:\s*[\"\']?ubuntu-latest', line):
+                      errors.append('%s:%d: a literal ubuntu-latest runs-on bills hosted minutes in a private repo' % (path, n))
+              for jid, job in yaml.safe_load(text)['jobs'].items():
+                  if 'uses' in job:
+                      continue
+                  steps = job.get('steps') or []
+                  if not steps or steps[0].get('uses') != REPORT:
+                      errors.append('%s: job %s must start with %s' % (path, jid, REPORT))
+                  runs_on = str(job.get('runs-on', ''))
+                  if 'self-hosted' not in runs_on and 'needs.' not in runs_on:
+                      errors.append('%s: job %s has runs-on %r, expected a self-hosted expression' % (path, jid, runs_on))
+          pc = yaml.safe_load(open('.github/workflows/pr-checks.yml'))['jobs']
+          wrapper = yaml.safe_load(open('.github/workflows/pick-runner.yml'))['jobs']['pick']
+          # The wrapper's expression is the reference; the others must match it
+          # character for character, and it must carry every part of the contract.
+          EXPR = wrapper['runs-on']
+          for part in ('github.event.repository.private', '!github.event.pull_request.head.repo.fork',
+                       'vars.DODI_RUNS_ON_LIGHT', 'self-hosted', 'Linux', 'light', 'ubuntu-latest'):
+              if part not in EXPR:
+                  errors.append('pick-runner.yml: the light runs-on expression lost ' + part)
+          for jid in ('pick', 'pr-checks'):
+              if pc[jid]['runs-on'] != EXPR:
+                  errors.append('pr-checks.yml: %s must use the same light expression as pick-runner.yml' % jid)
+          if pc['pr-checks'].get('name') != 'PR Checks':
+              errors.append('the summary job must stay named PR Checks, it is the required status context')
+          modes = [s.get('with', {}).get('mode') for s in pc['pr-checks']['steps'] if s.get('uses') == REPORT]
+          if 'run' not in modes:
+              errors.append('the PR Checks job must run runner-report with mode: run')
+          for f in glob.glob('actions/pick-runner/*'):
+              body = open(f).read()
+              if f.endswith('test.sh'):
+                  continue
+              for bad in ('actions/runners', 'create-github-app-token', 'gh api'):
+                  if bad in body:
+                      errors.append(f + ' mentions ' + bad + '; the picker must make no API call')
+          if errors:
+              sys.exit('::error::' + ' | '.join(errors))
+          print('helper jobs in %s are self-hosted, report their runner, and the picker makes no API call' % files)
+          "
+
       # The picker's `case` block is the only place a preset is defined, and the
       # README table is where people read it. Drift between them is how a
-      # retired pool keeps being documented as live.
+      # retired pool keeps being documented as live. The picker has no fallback
+      # column any more: overflow is the queue's job, and the large pool carries
+      # `light` too.
       - name: Runner presets match the README
         run: |
           set -euo pipefail
@@ -628,17 +743,17 @@ jobs:
           picker = open('actions/pick-runner/pick.sh').read()
           readme = open('README.md').read()
 
-          got = dict(re.findall(r'^\s+(light|heavy|apple|hosted)\)\s+sel="([^"]*)"',
+          got = dict(re.findall(r'^\s+(light|heavy|agent|apple|hosted)\)\s+sel="([^"]*)"',
                                 picker, re.M))
 
           rows = {}
-          for name, sel in re.findall(r'^\|\s*.(light|heavy|apple|hosted).\s*\|([^|]*)\|',
+          for name, sel in re.findall(r'^\|\s*.(light|heavy|agent|apple|hosted).\s*\|([^|]*)\|',
                                       readme, re.M):
               sel = sel.strip().strip('`').strip()
               rows[name] = '' if sel in ('', 'none') else sel
 
-          if len(got) != 4 or len(rows) != 4:
-              sys.exit('::error::parsed %d presets and %d README rows, expected 4 and 4. '
+          if len(got) != 5 or len(rows) != 5:
+              sys.exit('::error::parsed %d presets and %d README rows, expected 5 and 5. '
                        'Refusing to report clean from a parse that found nothing.'
                        % (len(got), len(rows)))
 
@@ -650,31 +765,17 @@ jobs:
 
           print('preset table agrees: %r' % got)
 
-          # The third cell says what a weight falls back to. It must agree with
-          # the defaults in pick.sh, above all that neither heavy nor apple names
-          # the light pool: a heavy job there runs out of memory.
-          fb = {}
-          for name, cell in re.findall(r'^\|\s*.(light|heavy|apple|hosted).\s*\|[^|]*\|([^|]*)\|',
-                                       readme, re.M):
-              fb[name] = cell
-          if len(fb) != 4:
-              sys.exit('::error::parsed %d README fallback cells, expected 4' % len(fb))
-
+          # No weight may name a fallback again. A busy pool queues, and the
+          # large pool is reached through the `light` label it carries, not through
+          # picker logic that could send a heavy job to the light pool (exit 137).
           bad = []
-          for w in ('heavy', 'apple'):
-              m = re.search(r'^\s+%s\)\s+fb_def="([^"]*)";\s+when_def="([^"]*)"' % w, picker, re.M)
-              if not m:
-                  sys.exit('::error::pick.sh has no fb_def/when_def for %s' % w)
-              if 'self-hosted,Linux,light' in m.group(1) or 'light' in fb[w]:
-                  bad.append('%s falls back to the light pool' % w)
-              if w == 'heavy' and m.group(2) not in fb[w]:
-                  bad.append('%s: pick.sh fallback-when is %r, README says %r' % (w, m.group(2), fb[w].strip()))
-          m = re.search(r'local fb_def="([^"]*)" when_def="([^"]*)"', picker)
-          if not m or m.group(2) not in fb['light']:
-              bad.append('light: pick.sh fallback-when does not appear in the README fallback cell')
+          if re.search(r'fb_def|fallback', re.sub(r'#.*', '', picker)):
+              bad.append('pick.sh has fallback logic again')
+          if 'fallback' in ' '.join(rows.values()).lower():
+              bad.append('a README selector cell mentions a fallback')
           if bad:
               sys.exit('::error::' + '; '.join(bad))
-          print('fallback column agrees with pick.sh')
+          print('the picker has no fallback')
           PRESETS
 
       # Caching a project build directory is a governed rule, not a preference.

@@ -1,3 +1,9 @@
+## [1.22.3](https://github.com/dodi-smart/.github/compare/v1.22.2...v1.22.3) (2026-10-15)
+
+### 🐛 Bug Fixes
+
+* **release:** pin internal refs to the pinned commit's own tag so next is one commit at every depth ([3f70390](https://github.com/dodi-smart/.github/commit/3f7039070059c1b73f73686ba4ddf803300f6a4b))
+
 ## [1.22.2](https://github.com/dodi-smart/.github/compare/v1.22.1...v1.22.2) (2026-10-15)
 
 ### 🐛 Bug Fixes

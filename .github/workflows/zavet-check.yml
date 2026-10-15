@@ -48,7 +48,7 @@ permissions: {}
 jobs:
   pick-runner:
     permissions: {}   # the picker reads no GITHUB_TOKEN
-    uses: dodi-smart/.github/.github/workflows/pick-runner.yml@v1
+    uses: dodi-smart/.github/.github/workflows/pick-runner.yml@v1.22.2
     with:
       weight: ${{ inputs.runner-weight }}
       labels: ${{ inputs.runner-labels }}
@@ -64,7 +64,7 @@ jobs:
       contents: read
       pull-requests: write
     steps:
-      - uses: dodi-smart/.github/actions/runner-report@v1
+      - uses: dodi-smart/.github/actions/runner-report@v1.22.2
         with:
           selector: ${{ needs.pick-runner.outputs.selector }}
       - uses: actions/checkout@v7
@@ -73,7 +73,7 @@ jobs:
       # The steps live in a composite action so the `zavet` job in pr-checks
       # runs the same code. The severity rules and the reasons behind them are
       # written there.
-      - uses: dodi-smart/.github/actions/zavet-check@v1
+      - uses: dodi-smart/.github/actions/zavet-check@v1.22.2
         with:
           checks:          ${{ inputs.checks }}
           guards:          ${{ inputs.guards }}

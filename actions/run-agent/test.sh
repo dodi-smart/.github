@@ -58,6 +58,8 @@ fix = job['env']
 emails = steps['push']['env']['AGENT_EMAILS'].replace('${{ env.FIX_EMAIL }}', fix['FIX_EMAIL'])
 open(work + '/push.sh', 'w').write(steps['push']['run'])
 open(work + '/publish.sh', 'w').write(steps['publish']['run'])
+open(work + '/actor.sh', 'w').write(steps['actor']['run'])
+open(work + '/renovate.sh', 'w').write(steps['renovate']['run'])
 open(work + '/fix.env', 'w').write('FIX_NAME=%r\nFIX_EMAIL=%r\n' % (fix['FIX_NAME'], fix['FIX_EMAIL']))
 open(work + '/agent-emails', 'w').write(emails)
 EOF
@@ -101,10 +103,12 @@ agent_commit() {
 }
 
 # push [ROUNDS]: runs the push step; leaves its outputs in $WORK/out.
+# FIX_PUSH and FIX_PUSH_WHY stand in for the renovate step (default: allowed).
 push() {
   : > "$WORK/out"
   ( cd "$WORK/r" && env -i PATH="$PATH" HOME="$WORK" GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null \
       FIX_NAME="$FIX_NAME" FIX_EMAIL="$FIX_EMAIL" AGENT_EMAILS="$AGENT_EMAILS" \
+      FIX_PUSH="${FIX_PUSH-true}" FIX_PUSH_WHY="${FIX_PUSH_WHY:-}" \
       BASE_SHA="$BASE" ROUNDS="${1:-0}" BASE_REF=main HEAD_REF=renovate/x REPO=o/r APP_TOKEN='' \
       GITHUB_OUTPUT="$WORK/out" bash "$WORK/push.sh" ) > "$WORK/log" 2>&1
 }
@@ -151,6 +155,17 @@ expect "a file Renovate changed is still refused" grep -q 'versions Renovate own
 repo; agent_commit "$CLAUDE_EMAIL" yarn.lock
 push
 expect "a lockfile is still refused" grep -q 'versions Renovate owns: yarn.lock' "$WORK/out"
+
+# 6b. The Renovate guard is checked before anything is rewritten.
+repo; agent_commit "$CLAUDE_EMAIL" src/a.ts
+before="$(git -C "$WORK/r" rev-parse HEAD)"
+FIX_PUSH=false FIX_PUSH_WHY='Renovate does not ignore the fix author here' push
+expect "a repo whose Renovate config does not ignore the fix author refuses the push" \
+  test "$(refused)" = 'Renovate does not ignore the fix author here'
+expect "and leaves the agent's commits as they were" test "$(git -C "$WORK/r" rev-parse HEAD)" = "$before"
+repo; agent_commit "$CLAUDE_EMAIL" src/a.ts
+FIX_PUSH='' push
+expect "an unread Renovate config refuses rather than guesses" test "$(refused)" = 'the Renovate config was not read'
 
 # 7. Publish. `gh` is a stub: it records the call and answers the events read.
 mkdir -p "$WORK/bin"
@@ -211,6 +226,57 @@ expect "an agent that skipped itself says so" grep -q 'skipped itself' "$WORK/co
 
 publish green failure failure
 expect "an agent that failed says so" grep -q 'The agent ran and failed' "$WORK/comment.md"
+
+# 9. The actor step: the App that pushed a fix round may start the agent on it.
+# actor ACTOR: runs the step in $WORK/r; prints its fix-pusher output.
+actor() {
+  : > "$WORK/out"
+  ( cd "$WORK/r" && env -i PATH="$PATH" HOME="$WORK" GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null \
+      FIX_EMAIL="$FIX_EMAIL" ACTOR="$1" GITHUB_OUTPUT="$WORK/out" bash "$WORK/actor.sh" ) > "$WORK/log" 2>&1
+  sed -n 's/^fix-pusher=//p' "$WORK/out"
+}
+# A fix round as the push step writes it, on top of Renovate's commit.
+repo; agent_commit "$CLAUDE_EMAIL" src/a.ts; push
+expect "a fix round's pusher is allowed when it is a bot" test "$(actor 'some-app[bot]')" = ',some-app[bot]'
+expect "a person needs no allowance (the action checks people itself)" test "$(actor 'someone')" = ''
+repo
+expect "a bot that pushed anything but a fix round is not allowed" test "$(actor 'some-app[bot]')" = ''
+repo; agent_commit "$FIX_EMAIL" src/a.ts
+expect "the fix author without the round trailer is not a fix round" test "$(actor 'some-app[bot]')" = ''
+
+# 10. The renovate step: which configs let a fix be pushed.
+# renovate_cfg [FILE CONTENT]...: a checkout holding only these files.
+renovate_cfg() {
+  rm -rf "$WORK/c"; mkdir -p "$WORK/c"
+  while [ $# -gt 0 ]; do
+    mkdir -p "$(dirname "$WORK/c/$1")"; printf '%s\n' "$2" > "$WORK/c/$1"; shift 2
+  done
+  : > "$WORK/out"
+  ( cd "$WORK/c" && env -i PATH="$PATH" HOME="$WORK" FIX_EMAIL="$FIX_EMAIL" OWNER=o \
+      GITHUB_OUTPUT="$WORK/out" bash "$WORK/renovate.sh" ) > "$WORK/log" 2>&1
+}
+fix_push() { sed -n 's/^fix-push=//p' "$WORK/out"; }
+renovate_cfg
+expect "a repo with no Renovate config may push" test "$(fix_push)" = true
+renovate_cfg renovate.json "{\"gitIgnoredAuthors\": [\"$FIX_EMAIL\"]}"
+expect "gitIgnoredAuthors naming the fix author may push" test "$(fix_push)" = true
+renovate_cfg .github/renovate.json5 "{ extends: ['github>o/.github'] }"
+expect "extending the shared preset may push" test "$(fix_push)" = true
+renovate_cfg .github/renovate.json5 '{ "extends": ["config:recommended", "github>o/.github#v1"] }'
+expect "extending the preset at a tag may push" test "$(fix_push)" = true
+renovate_cfg renovate.json '{"extends": ["config:recommended"]}'
+expect "a config that ignores nobody may not push" test "$(fix_push)" = false
+expect "and says which file to change" grep -qF 'gitIgnoredAuthors in renovate.json' "$WORK/out"
+renovate_cfg renovate.json '{"extends": ["github>o/.github:other"]}'
+expect "another preset of this repo is not the default one" test "$(fix_push)" = false
+renovate_cfg renovate.json '{"extends": ["github>elsewhere/.github"]}'
+expect "another org's preset does not count" test "$(fix_push)" = false
+renovate_cfg renovate.json '{}' .github/renovate.json "{\"gitIgnoredAuthors\": [\"$FIX_EMAIL\"]}"
+expect "the first config in Renovate's search order is the one read" test "$(fix_push)" = false
+renovate_cfg package.json "{\"name\": \"x\", \"renovate\": {\"gitIgnoredAuthors\": [\"$FIX_EMAIL\"]}}"
+expect "a renovate key in package.json is read" test "$(fix_push)" = true
+renovate_cfg package.json '{"name": "x"}'
+expect "a package.json without a renovate key is no config" test "$(fix_push)" = true
 
 printf '\n%s passed, %s failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

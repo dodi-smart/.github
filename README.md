@@ -1070,6 +1070,14 @@ The rules on fixes:
 - The commits carry the author the preset lists under `gitIgnoredAuthors`, so
   Renovate still owns the branch. If Renovate rebases and drops the fix, the next
   run makes it again.
+- A fix is pushed only where Renovate ignores that author: the repo's Renovate
+  config extends this preset, or lists the author in its own
+  `gitIgnoredAuthors`. Anywhere else the agent commits nothing and the PR ends
+  `needs-manual`, with the comment naming the file to change. A repo with no
+  Renovate config is not held back.
+- The push starts PR Checks on the fix, whose completion re-verifies the PR.
+  That run's actor is the App that pushed, and the agent accepts it only when
+  the head commit is a fix round of this job.
 
 A red build is `needs-manual` even when the agent finds the cause was already on
 the base branch. The comment says so in one line.

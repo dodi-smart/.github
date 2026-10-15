@@ -1,4 +1,4 @@
-# Reusable: choose a runner, and say so out loud when the choice is wrong.
+# Reusable: resolve a runner weight to a runs-on selector. Static, no API call.
 #
 #   jobs:
 #     pick-light:
@@ -10,11 +10,16 @@
 #       runs-on: ${{ fromJson(needs.pick-light.outputs.runner) }}
 #
 # A thin wrapper around `actions/pick-runner`, the composite action that does the
-# actual work. It exists so a caller that already has a hosted job (pr-checks.yml
-# picks twice from inside its own `pick` job, for one) is not forced to pay for a
-# second hosted job just to reuse this logic. Inputs and outputs here are
-# identical to the action's, and stay that way: every existing `uses:` of this
-# workflow, and every internal one, is unaffected by the split.
+# actual work. It exists so a caller that already has a job (pr-checks.yml picks
+# twice from inside its own `pick` job, for one) is not forced to run a second one
+# just to reuse this logic. Inputs and outputs here are identical to the action's,
+# and stay that way: every existing `uses:` of this workflow, and every internal
+# one, is unaffected by the split.
+#
+# The pick is static, with no API call and no token, so this job runs on the light
+# pool of a private repo instead of a GitHub-hosted runner. A public repo or a fork
+# PR stays hosted. `vars.DODI_RUNS_ON_LIGHT` repoints it, and the picker's light
+# weight, in one move.
 name: Pick runner
 
 on:
@@ -24,6 +29,7 @@ on:
       # one edit here rather than an audit of every caller.
       #   light   lint, typecheck, checks, releases, reading a diff
       #   heavy   builds, Docker, full suites
+      #   agent   review, triage, assist
       #   apple   Xcode, iOS, Swift, signing
       #   hosted  force GitHub-hosted, skip self-hosted entirely
       #
@@ -42,24 +48,12 @@ on:
         type: string
         default: ""
 
-      # Where a job goes when its pool cannot take it. Empty means the weight's own
-      # default, and an explicit value always wins:
-      #   light   self-hosted,Linux,large, when a large runner is idle
-      #   heavy   `hosted-runner`, never the light pool, where a heavy job runs out
-      #           of memory (exit 137)
-      #   apple   none: the light pool cannot run Xcode, so the job queues
-      #   labels  self-hosted,Linux,light, as before
-      # A self-hosted fallback QUEUES when the fleet is offline, where a hosted one
-      # would run, so set this to `ubuntu-latest` for a job that must finish even then.
+      # Accepted and IGNORED, so a caller written for the fleet-listing picker
+      # keeps working. Overflow is the queue's job now: the large pool also carries
+      # `light`, so there is no fallback to choose.
       fallback:
         type: string
         default: ""
-
-      # When to use the fallback. `busy` goes when no matching runner is online AND
-      # idle. `offline` goes only when none is online, so a busy pool queues the job.
-      # Empty means the weight's default: `busy` for light and labels, `offline` for
-      # heavy and apple. Long jobs want `offline`, because hosted costs more than the
-      # queue.
       fallback-when:
         type: string
         default: ""
@@ -85,9 +79,10 @@ on:
         description: "The resolved selector, for logging"
         value: ${{ jobs.pick.outputs.selector }}
       fell-back:
-        description: "true when the runner is the fallback, so a caller can widen max-parallel on hosted"
+        description: "Always false. Kept so existing callers keep working."
         value: ${{ jobs.pick.outputs.fell-back }}
 
+    # Accepted and ignored: the picker no longer reads the org runner list.
     secrets:
       GH_APP_CLIENT_ID:   { required: false }
       GH_APP_PRIVATE_KEY: { required: false }
@@ -95,21 +90,22 @@ on:
 jobs:
   pick:
     name: Pick runner
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON((github.event.repository.private && !github.event.pull_request.head.repo.fork) && (vars.DODI_RUNS_ON_LIGHT || '["self-hosted","Linux","light"]') || '"ubuntu-latest"') }}
     timeout-minutes: 10
     outputs:
       runner:   ${{ steps.pick.outputs.runner }}
       selector: ${{ steps.pick.outputs.selector }}
       fell-back: ${{ steps.pick.outputs.fell-back }}
     steps:
+      - uses: dodi-smart/.github/actions/runner-report@v1
       - id: pick
         uses: dodi-smart/.github/actions/pick-runner@v1
         with:
-          weight:             ${{ inputs.weight }}
-          labels:             ${{ inputs.labels }}
-          fallback:           ${{ inputs.fallback }}
-          fallback-when:      ${{ inputs.fallback-when }}
-          hosted-runner:      ${{ inputs.hosted-runner }}
-          guard-public:       ${{ inputs.guard-public }}
-          gh-app-client-id:   ${{ secrets.GH_APP_CLIENT_ID }}
-          gh-app-private-key: ${{ secrets.GH_APP_PRIVATE_KEY }}
+          weight:        ${{ inputs.weight }}
+          labels:        ${{ inputs.labels }}
+          hosted-runner: ${{ inputs.hosted-runner }}
+          guard-public:  ${{ inputs.guard-public }}
+          runs-on-light: ${{ vars.DODI_RUNS_ON_LIGHT }}
+          runs-on-heavy: ${{ vars.DODI_RUNS_ON_HEAVY }}
+          runs-on-agent: ${{ vars.DODI_RUNS_ON_AGENT }}
+          runs-on-apple: ${{ vars.DODI_RUNS_ON_APPLE }}

@@ -50,12 +50,12 @@ fleet changes.
 | Secret | Needed for |
 |---|---|
 | `CLAUDE_CODE_OAUTH_TOKEN` | every agent workflow |
-| `GH_APP_CLIENT_ID` + `GH_APP_PRIVATE_KEY` | validating the runner selector against the live fleet |
+| `GH_APP_CLIENT_ID` + `GH_APP_PRIVATE_KEY` | the App token other workflows mint (release pushes, deps-verify). The runner picker no longer uses them |
 
 `GH_APP_CLIENT_ID` is the one name for that secret. Migrate a repo still carrying
-the older `GH_APP_ID`. Without it the picker cannot read the org runner list, so
-it skips validation, and an unvalidated selector that matches nothing looks
-exactly like a busy fleet.
+the older `GH_APP_ID`. The runner picker is static and makes no API call, so it
+needs no token; `pick-runner.yml` still accepts the two secrets so an existing
+caller keeps working.
 
 ## The workflows
 
@@ -72,7 +72,7 @@ exactly like a busy fleet.
 | `react-doctor.yml` | pull request, React repos | Static analysis of React/TS source. Advisory by default. `pr-checks.yml` can run it as a job instead (`react-doctor: true`) |
 | `zavet-check.yml` | pull request | Knowledge-layer checks, for repos that have one. Report-only on dependency and automation bot PRs. `pr-checks.yml` can run it as a job instead (`zavet: true`) |
 | `supabase-checks.yml` | pull request, Supabase repos | Deno edge-function check, generated-types check, pgTAP tests. Hosted only. |
-| `pick-runner.yml` | called by the others | Chooses a runner and validates the choice |
+| `pick-runner.yml` | called by the others | Resolves a runner weight to a `runs-on` selector. Static: no API call, no token |
 
 `release.yml` reports what it did through `workflow_call` outputs, so a caller
 can chain a deploy job on an actual release rather than a green job:
@@ -240,7 +240,7 @@ The log shows the deployment id and commit before the routes are probed.
 | `actions/supabase-start` | Starts the local Supabase database with the stack's Docker images restored from the cache, saved on a miss. What both jobs of `supabase-checks.yml` call |
 | `actions/zavet-check` | Verifies a repo's `.zavet/` knowledge layer: decision checks, guard trailers, an optional audit, and a comment only on failure. What `zavet-check.yml` and `pr-checks.yml`'s `zavet` job run. The caller checks out with full history first. |
 | `actions/react-doctor` | Checks out with full history and runs React Doctor. What `react-doctor.yml` and `pr-checks.yml`'s `react-doctor` job run. |
-| `actions/pick-runner` | Resolves a runner weight to a selector, validated against the live fleet. What `pick-runner.yml` calls, and what a job that already runs hosted (like `pr-checks.yml`'s `pick`) calls directly to pick more than once without a second hosted job. |
+| `actions/pick-runner` | Resolves a runner weight to a selector, statically: no API call, no token, no fleet listing. What `pick-runner.yml` calls, and what a job that already exists (like `pr-checks.yml`'s `pick`) calls directly to pick more than once without another job. |
 
 `actions/changed-files` needs no checkout. It takes `patterns` (newline-separated
 paths or globs, `fnmatch`-style, so `*` crosses `/`; a pattern also matches everything under it),
@@ -301,8 +301,9 @@ Adopting a workflow here removes a class of problem rather than a file.
   implementation with tests, not one `if:` per workflow that drifts.
 - **Drift between copies.** A hand-written CI file diverges the moment two repos
   edit it. This is the same file for all of them.
-- **Silent breakage.** The picker checks its own selector against the live fleet
-  and annotates the run when it matches nothing.
+- **Silent breakage.** Every job starts with a runner report: which runner it
+  landed on, its pool, and how long it queued. A mislabelled or missing pool
+  shows up in the job summary, not as a job that waits forever unexplained.
 
 ## The badge that brought you here
 
@@ -470,10 +471,13 @@ with:
   coverage-path: app/build/reports/kover/reportDebug.xml
 ```
 
-Either shape runs behind ONE hosted `pick` job, not two. It resolves both the
-light and the heavy runner (skipping whichever `single-job` does not need), so
-picking twice costs one hosted job instead of two. It needs no checkout: it
-reads the changed files through the API.
+Either shape runs behind ONE `pick` job, not two. It resolves both the light and
+the heavy runner (skipping whichever `single-job` does not need), so picking
+twice costs one job instead of two. It needs no checkout: it reads the changed
+files through the API. `pick` and the closing `PR Checks` summary run no caller
+code, so in a private repo they run on the light pool and bill no GitHub-hosted
+minutes (a public repo or fork PR keeps `ubuntu-latest`). `PR Checks` also writes
+a "Where it ran" table of every job's runner and queue time to its summary.
 
 ### Coverage
 
@@ -594,12 +598,11 @@ named in a ruleset that has to work for every caller.
 ### One workflow instead of three
 
 A repo that calls `pr-checks.yml`, `zavet-check.yml` and `react-doctor.yml`
-starts three workflow runs per push, and each of the last two pays for its own
-hosted runner picker. `pr-checks.yml` already has one hosted `pick` job, so
-`zavet` and `react-doctor` can be opt-in jobs beside `checks`, on the light
-pool. That saves about 2 billed hosted minutes per push, per repo that used
-both. `commitlint` no longer starts a hosted job either: it runs on the light
-pool, so a repo with it enabled saves a third.
+starts three workflow runs per push, and each of the last two starts its own
+runner picker job. `pr-checks.yml` already has one `pick` job, so `zavet` and
+`react-doctor` can be opt-in jobs beside `checks`, on the light pool. That saves
+two job starts per push, per repo that used both. `commitlint` runs on the light
+pool too, so a repo with it enabled saves a third.
 
 ```yaml
 jobs:
@@ -748,19 +751,24 @@ jobs:
 
 ## Runners
 
-`pick-runner.yml` takes a semantic `weight` and resolves it. It is a thin
-wrapper around `actions/pick-runner`, the composite action that does the actual
-selecting; call the action directly from inside a job that is already hosted
-(as `pr-checks.yml`'s `pick` job does, twice, and as every agent workflow's
-`gate` job does, once, after `agent-gate` decides the run should proceed)
-rather than paying for a second hosted job just to reuse the workflow.
+`pick-runner.yml` takes a semantic `weight` and resolves it to a `runs-on`
+selector. It is a thin wrapper around `actions/pick-runner`, the composite action
+that does the actual selecting; call the action directly from inside a job you
+already have (as `pr-checks.yml`'s `pick` job does, twice, and as every agent
+workflow's `gate` job does, once, after `agent-gate` decides the run should
+proceed) rather than adding a job just to reuse the workflow.
 
-| `weight` | Selector | Falls back to | Use |
-|---|---|---|---|
-| `light` | `self-hosted,Linux,light` | `self-hosted,Linux,large`, when no light runner is online and idle and a large one is (`fallback-when: busy`) | lint, typecheck, checks, releases, reading a diff |
-| `heavy` | `self-hosted,Linux,large` | `hosted-runner`, only when no runner is online (`fallback-when: offline`); a busy pool queues | builds, Docker, full suites |
-| `apple` | `self-hosted,macOS,ARM64` | nothing: it queues, and warns when no runner is online | Apple toolchain, signing |
-| `hosted` | none | not applicable | forces `hosted-runner`, `ubuntu-latest` by default |
+The picker is **static**. It makes no API call, mints no token and lists no
+fleet. It maps a weight to fixed capability labels, so it costs a few
+milliseconds and cannot fail on a rate limit or a missing secret.
+
+| `weight` | Selector | Use |
+|---|---|---|
+| `light` | `self-hosted,Linux,light` | lint, typecheck, checks, releases, reading a diff |
+| `heavy` | `self-hosted,Linux,large` | builds, Docker, full suites |
+| `agent` | `self-hosted,Linux,agent` | agent workflows: review, triage, assist |
+| `apple` | `self-hosted,macOS,ARM64` | Apple toolchain, signing |
+| `hosted` | none | forces `hosted-runner`, `ubuntu-latest` by default |
 
 Selectors name capability labels, never an architecture and never a machine name.
 A runner of any arch that joins a pool is picked up with no change here, and a
@@ -770,49 +778,51 @@ machine name would not survive re-registration.
 work. They stay apart even when one pool could serve both, because re-tiering is
 then two lines here instead of an audit of every caller.
 
-### Falling back
+### Overflow happens in GitHub's queue
 
-The picker reads the org's runner list once, then decides from it. A runner
-"matches" when it carries every label in the selector.
+There is no fallback and no `fell-back` logic. The large runners also carry the
+`light` label, so a light job waits for whichever light-capable runner frees up
+first, and a busy light pool overflows onto the large one by itself. `heavy`
+selects `large` only, which no light-only runner carries, so a heavy build can
+never land on a small host (exit 137). The `fallback`, `fallback-when`,
+`gh-app-client-id` and `gh-app-private-key` inputs, and the two `GH_APP_*`
+secrets of `pick-runner.yml`, are still accepted and ignored so no caller has to
+change. `fell-back` is always `false`.
 
-- `fallback-when: busy` goes to the fallback when no matching runner is online
-  and idle. Short jobs would rather run now than wait.
-- `fallback-when: offline` goes to the fallback only when no matching runner is
-  online. If some are online but busy, the job gets the primary selector and
-  queues. Long jobs want this: hosted costs more than the queue.
+### The emergency switch
 
-`light` overflows to the large pool. A light job fits on a large runner, and
-without the overflow every light job queued on the few light runners while the
-large pool sat idle. It overflows only when a large runner is idle: when both
-pools are busy the job stays on light, rather than queueing behind builds. Any
-self-hosted fallback follows the same rule when the pool is busy; when the pool
-is offline the job goes to the fallback regardless.
+Org variables `DODI_RUNS_ON_LIGHT`, `DODI_RUNS_ON_HEAVY`, `DODI_RUNS_ON_AGENT`
+and `DODI_RUNS_ON_APPLE` override a weight's default with no release. The value
+is JSON, an array of labels or a single string:
 
-`heavy` never falls back to the light pool. A heavy build there runs out of
-memory beside the light pool's other jobs (exit 137). A busy large pool queues
-the job, and a large pool with nothing online sends it to hosted.
+```
+DODI_RUNS_ON_LIGHT = "ubuntu-latest"                      # everything light goes hosted
+DODI_RUNS_ON_HEAVY = ["self-hosted","Linux","docker"]    # pin heavy to the runners labelled docker
+```
 
-Both inputs default to the weight's own policy in the table, so leave them empty
-unless you know better. An explicit `fallback` or `fallback-when` always wins.
-A `labels` selector with no explicit `fallback` keeps the original behaviour:
-`self-hosted,Linux,light`, when no runner is idle.
+Helper jobs that run on `light` (`pr-checks.yml`'s `pick` and `PR Checks`, the
+`pick-runner.yml` job) read `DODI_RUNS_ON_LIGHT` in their `runs-on:` expression.
+A call to the action passes the variables as `runs-on-light|heavy|agent|apple`
+inputs, or exports them in the job's `env`; the input wins. `labels` beats an
+override, and an override that is not a JSON label or array of labels is reported
+with a warning and ignored, because failing every job over a typo in the switch
+would be worse. An unset variable changes nothing.
 
-If the fleet cannot be read (no GitHub App token, or an API error), the picker
-cannot tell busy from offline, so it emits the primary selector and the job
-queues, with a warning. It no longer sends that job to the fallback.
+Static `runs-on:` expression used by helper jobs that run no caller code:
 
-A self-hosted fallback queues when the whole fleet is offline, where a hosted one
-runs. Set `fallback: ubuntu-latest` for a light job that must finish even then.
-
-The `fell-back` output is `true` when the picked runner is the fallback, so a
-caller can widen `max-parallel` on hosted. The list is cached for the rest of the
-job, so `actions/pick-runner` called twice in one job (light, then heavy) mints one
-token and reads the fleet once.
+```yaml
+runs-on: ${{ fromJSON((github.event.repository.private && !github.event.pull_request.head.repo.fork) && (vars.DODI_RUNS_ON_LIGHT || '["self-hosted","Linux","light"]') || '"ubuntu-latest"') }}
+```
 
 Public repos and fork pull requests **always** get hosted runners, with no way to
 opt out. The runner group refuses public repos, and a fork PR would otherwise run
 attacker-authored code on our own hardware against a cache the next job inherits.
-That path does not read `fallback`.
+That holds for the action and for the expression above, and `labels` and the
+overrides cannot change it.
+
+The tools on a self-hosted image are bash, git, gh, jq, curl and Node. A helper
+job that moves to `light` must not need anything else; `changed-files` also needs
+`python3`, and `pr-checks.yml`'s `pick` warns if it is missing.
 
 ## Versioning
 

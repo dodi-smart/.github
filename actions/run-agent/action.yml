@@ -7,7 +7,7 @@
 # other condition, and public repos and fork PRs never touch a self-hosted
 # runner.
 #
-# Four footguns are repeated below because the code reads as wrong without them:
+# Five footguns are repeated below because the code reads as wrong without them:
 #
 #   `--allowed-tools` is VARIADIC, space-separated, each entry quoted if it
 #   contains parentheses. A comma-joined list parses as one meaningless token:
@@ -27,6 +27,11 @@
 #   (workflow_dispatch, schedule, a reopened issue) fails the job in Create
 #   prompt before the agent runs. The guard below drops the progress comment
 #   for those cases rather than the run.
+#
+#   claude-code-action sets its own git identity (`claude[bot]`) on the
+#   checkout, over whatever the caller configured earlier. A caller that checks
+#   who authored the agent's commits has to pass the identity it expects as
+#   `bot-name` and `bot-id`, or its own `git config` is silently replaced.
 name: Run agent
 description: Invoke claude-code-action with the org's tool allowlist, model policy and reporting defaults.
 
@@ -85,6 +90,18 @@ inputs:
   additional-permissions:
     description: 'YAML block, e.g. "actions: read"'
     default: ''
+  bot-name:
+    description: >-
+      Login of the git identity the agent commits as, forwarded to
+      claude-code-action's `bot_name`. The default is the action's own, so a
+      caller that does not care sees no change. See the header.
+    default: 'claude[bot]'
+  bot-id:
+    description: >-
+      Numeric GitHub user id for `bot-name`, forwarded to `bot_id`. The commit
+      email is `<bot-id>+<bot-name>@users.noreply.github.com`, so the two have to
+      belong together.
+    default: '41898282'
 
 # Both are EMPTY when the agent never ran, which is not the same as a run that
 # found nothing. claude-code-action skips itself, and still reports success, when
@@ -164,6 +181,8 @@ runs:
         plugins: ${{ inputs.plugins }}
         plugin_marketplaces: ${{ inputs.plugin-marketplaces }}
         additional_permissions: ${{ inputs.additional-permissions }}
+        bot_name: ${{ inputs.bot-name }}
+        bot_id: ${{ inputs.bot-id }}
         # Never optional. See the header.
         display_report: true
         claude_args: >-

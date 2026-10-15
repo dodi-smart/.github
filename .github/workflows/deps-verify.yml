@@ -454,6 +454,70 @@ jobs:
           } >> "$GITHUB_OUTPUT"
           echo "fix-rounds=$rounds"
 
+      # claude-code-action stops a run whose actor is a bot outside allowed-bots.
+      # A workflow_run's actor is whoever pushed the commit PR Checks ran on, so
+      # after a fix round it is the App this job pushed with, and re-verifying
+      # our own fix was refused. That actor is allowed only when the head commit
+      # is a fix round of this job: the fix author and the push step's trailer.
+      # Any other bot still stops the agent.
+      - id: actor
+        env:
+          ACTOR: ${{ github.actor }}
+        run: |
+          set -euo pipefail
+          extra=''
+          case "$ACTOR" in
+            *'[bot]')
+              author=$(git log -1 --format='%ae' HEAD)
+              round=$(git log -1 --format='%(trailers:key=Deps-Verify-Round,valueonly,separator=)' HEAD)
+              if [ "$author" = "$FIX_EMAIL" ] && [ -n "$round" ]; then
+                extra=",$ACTOR"
+                echo "re-verifying fix round $round, pushed by $ACTOR"
+              fi
+              ;;
+          esac
+          echo "fix-pusher=$extra" >> "$GITHUB_OUTPUT"
+
+      # Renovate stops rebasing a branch, so its PR can never automerge, once the
+      # branch carries a commit by an author it does not ignore. A fix is pushed
+      # only where the repo's Renovate config ignores FIX_EMAIL: listed in its
+      # own gitIgnoredAuthors, or inherited from this repo's preset
+      # (`default.json` lists it). Elsewhere the agent is told not to commit and
+      # the push step refuses, so the PR ends needs-manual, as it did before
+      # fixes were pushed at all. The config is the first file in Renovate's own
+      # search order, read from the checkout. A repo with none is not configured
+      # by Renovate here, so a push is not held back. The match is textual: a
+      # mention in a comment counts.
+      - id: renovate
+        env:
+          OWNER: ${{ github.repository_owner }}
+        run: |
+          set -euo pipefail
+          cfg=''
+          for f in renovate.json renovate.json5 .github/renovate.json .github/renovate.json5 \
+                   .gitlab/renovate.json .gitlab/renovate.json5 .renovaterc .renovaterc.json .renovaterc.json5; do
+            if [ -f "$f" ]; then cfg="$f"; break; fi
+          done
+          if [ -z "$cfg" ] && [ -f package.json ] && jq -e '.renovate' package.json >/dev/null 2>&1; then
+            cfg=package.json
+          fi
+          preset="[\"']github>${OWNER}/\\.github(#[^\"']*)?[\"']"
+          if [ -z "$cfg" ]; then
+            ok=true; why="no Renovate config in the repo"
+          elif grep -qF "$FIX_EMAIL" "$cfg"; then
+            ok=true; why="$cfg lists the fix author in gitIgnoredAuthors"
+          elif grep -qE "$preset" "$cfg"; then
+            ok=true; why="$cfg extends the shared preset, which ignores the fix author"
+          else
+            ok=false
+            why="Renovate does not ignore the fix author here: add \"$FIX_EMAIL\" to gitIgnoredAuthors in $cfg, or extend the shared preset"
+          fi
+          {
+            echo "fix-push=$ok"
+            echo "why=$why"
+          } >> "$GITHUB_OUTPUT"
+          echo "fix-push=$ok: $why"
+
       # Logs do not cross jobs, so a red pr-checks verdict fetches the failed
       # jobs' logs here, where the agent reads them.
       - if: needs.gate.outputs.mode == 'ci' && needs.gate.outputs.verdict != 'green' && needs.gate.outputs.run-id != ''
@@ -513,7 +577,8 @@ jobs:
       #
       # `allowed-bots` is load-bearing. Without it the action aborts with
       # "Workflow initiated by non-human actor", and every run here is
-      # bot-initiated. Named explicitly rather than '*', from the gate's list.
+      # bot-initiated. Named explicitly rather than '*', from the gate's list,
+      # plus the App that pushed this job's own fix round (the `actor` step).
       - id: agent
         if: needs.gate.outputs.judge == 'agent'
         uses: dodi-smart/.github/actions/run-agent@v1
@@ -521,7 +586,7 @@ jobs:
           oauth-token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           model: ${{ (steps.result.outputs.verdict != 'green' || needs.gate.outputs.update == 'major') && 'claude-opus-5' || 'claude-sonnet-5' }}
           max-turns: ${{ steps.result.outputs.verdict != 'green' && '60' || '25' }}
-          allowed-bots: ${{ needs.gate.outputs.dependency-bots }}
+          allowed-bots: ${{ needs.gate.outputs.dependency-bots }}${{ steps.actor.outputs.fix-pusher }}
           # claude-code-action sets its own git identity on the checkout, over
           # the `git config` of the facts step, so without these the agent
           # commits as claude[bot]. The push step accepts both identities and
@@ -543,6 +608,7 @@ jobs:
             - Source: ${{ needs.gate.outputs.mode == 'ci' && format('the repo''s own PR checks run, {0}. The failed jobs'' logs are in `{1}/deps-logs/ci.log`.', needs.gate.outputs.url, runner.temp) || format('this job''s own build. Each step''s output is in `{0}/deps-logs/<step>.log`.', runner.temp) }}
             - Update kind: `${{ needs.gate.outputs.update }}`.
             - Fix rounds already pushed: ${{ steps.facts.outputs.fix-rounds }} of 2.
+            - A fix can be pushed here: ${{ steps.renovate.outputs.fix-push == 'true' && 'yes' || format('no. {0}', steps.renovate.outputs.why) }}
             - Fix commits already on this branch:
               ${{ steps.facts.outputs.fixes }}
 
@@ -576,7 +642,9 @@ jobs:
                before reproducing anything).
             5. Fix when the update caused the failure, or when this repo calls
                an API the notes deprecate and name a replacement for, and only
-               while fix rounds are under 2:
+               while fix rounds are under 2 and a fix can be pushed here. When
+               it cannot, commit nothing: the verdict is `needs-manual`, and
+               its blocker line names the fix you would have made.
                - Make the smallest change that fixes it. Code only.
                - NEVER edit a lockfile, a version catalog, or a dependency
                  version in a manifest. Renovate chose those. A fix that needs
@@ -636,6 +704,7 @@ jobs:
           repositories: ${{ github.event.repository.name }}
 
       # Only this step pushes. A push is refused, never forced, when:
+      #   - the repo's Renovate config does not ignore the fix author (`renovate`),
       #   - the fix-round cap is reached,
       #   - a commit carries an author outside AGENT_EMAILS (a person's, or
       #     Renovate's, if one landed on the branch between checkout and now),
@@ -650,6 +719,8 @@ jobs:
           BASE_SHA: ${{ steps.facts.outputs.base-sha }}
           ROUNDS:   ${{ steps.facts.outputs.fix-rounds }}
           APP_TOKEN: ${{ steps.app-token.outputs.token }}
+          FIX_PUSH: ${{ steps.renovate.outputs.fix-push }}
+          FIX_PUSH_WHY: ${{ steps.renovate.outputs.why }}
           # The authors a commit by the agent may carry. FIX_EMAIL is what the
           # agent is told to use. The second is claude-code-action's own default,
           # which it falls back to whenever the identity above is not applied.
@@ -665,6 +736,8 @@ jobs:
           echo "pushed=false" >> "$GITHUB_OUTPUT"
           if [ "$new" = 0 ]; then echo "no fix commits"; exit 0; fi
           refuse() { echo "refused=$1" >> "$GITHUB_OUTPUT"; echo "::warning title=Fix not pushed::$1"; exit 0; }
+          # Empty when the renovate step did not run: refuse rather than guess.
+          [ "${FIX_PUSH:-}" = true ] || refuse "${FIX_PUSH_WHY:-the Renovate config was not read}"
           [ "$ROUNDS" -ge 2 ] && refuse "fix-round cap of 2 reached"
           others=$(git log --format='%ae' "$BASE_SHA..HEAD" | grep -vxF -f <(printf '%s' "$AGENT_EMAILS") || true)
           [ -n "$others" ] && refuse "a commit carries another author: $others"

@@ -102,7 +102,6 @@ jobs:
       heavy:    ${{ steps.pick-heavy.outputs.runner }}
       number:   ${{ steps.pr.outputs.number }}
       head-ref: ${{ steps.pr.outputs.head-ref }}
-      head-sha: ${{ steps.pr.outputs.head-sha }}
       base-ref: ${{ steps.pr.outputs.base-ref }}
       mode:     ${{ steps.ci.outputs.mode }}        # own | ci
       verdict:  ${{ steps.ci.outputs.verdict }}     # ci mode only; own mode is decided by the build

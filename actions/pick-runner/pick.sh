@@ -24,6 +24,21 @@ runner_json() {
   jq -cn --arg s "$1" '$s | split(",") | map(gsub("^\\s+|\\s+$"; "")) | tojson' -r
 }
 
+# pool_counts <selector> <fleet file>: the runners that carry every label in
+# the selector, as tab-separated total, online, idle, and the selector's labels
+# that no runner carries at all (space-separated, empty when none).
+pool_counts() {
+  jq -r --arg s "$1" '
+    ($s | split(",") | map(gsub("^\\s+|\\s+$"; ""))) as $want
+    | . as $all
+    | [ .[] | select(. as $r | all($want[]; . as $l | ($r.labels | index($l)) != null)) ] as $m
+    | [ ($m | length),
+        ($m | map(select(.status == "online")) | length),
+        ($m | map(select(.status == "online" and .busy != true)) | length),
+        ([ $want[] | select(. as $l | any($all[]; .labels | index($l)) | not) ] | join(" ")) ]
+    | @tsv' "$2"
+}
+
 # The decision's two outputs: a comma-separated selector, and whether it is a fall back.
 emit() { { echo "runner=$(runner_json "$1")"; echo "fell-back=$2"; } >> "$GITHUB_OUTPUT"; }
 
@@ -90,7 +105,7 @@ decide() {
   local fb_def="self-hosted,Linux,light" when_def="busy"
   if [ -z "$LABELS" ]; then
     case "$WEIGHT" in
-      light) fb_def="self-hosted,Linux,large"; when_def="busy" ;;
+      light) fb_def="self-hosted,Linux,large" ;;
       heavy) fb_def="$HOSTED_RUNNER"; when_def="offline" ;;
       apple) fb_def="";               when_def="offline" ;;
     esac
@@ -115,15 +130,7 @@ decide() {
   fi
 
   local total online idle missing
-  IFS=$'\t' read -r total online idle missing < <(jq -r --arg s "$sel" '
-    ($s | split(",") | map(gsub("^\\s+|\\s+$"; ""))) as $want
-    | . as $all
-    | [ .[] | select(. as $r | all($want[]; . as $l | ($r.labels | index($l)) != null)) ] as $m
-    | [ ($m | length),
-        ($m | map(select(.status == "online")) | length),
-        ($m | map(select(.status == "online" and .busy != true)) | length),
-        ([ $want[] | select(. as $l | any($all[]; .labels | index($l)) | not) ] | join(" ")) ]
-    | @tsv' "$fleet")
+  IFS=$'\t' read -r total online idle missing < <(pool_counts "$sel" "$fleet")
 
   local dest="the fallback '$fb'"
   [ -n "$fb" ] || dest="a queue with no fallback"
@@ -147,10 +154,7 @@ decide() {
   # offline pool goes regardless: there is nothing to wait for here.
   local fb_free=1
   if [ -n "$fb" ] && [ "$online" != "0" ] && [[ "$fb" == self-hosted* ]]; then
-    fb_free=$(jq -r --arg s "$fb" '
-      ($s | split(",") | map(gsub("^\\s+|\\s+$"; ""))) as $want
-      | [ .[] | select(. as $r | all($want[]; . as $l | ($r.labels | index($l)) != null))
-              | select(.status == "online" and .busy != true) ] | length' "$fleet")
+    fb_free=$(pool_counts "$fb" "$fleet" | cut -f3)
     [ "$fb_free" != "0" ] || echo "no idle runner in '$fb' either, so this job stays on '$sel'"
   fi
 

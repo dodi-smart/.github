@@ -201,6 +201,10 @@ jobs:
           oauth-token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           model: ${{ inputs.model }}
           track-progress: 'true'
+          # Tag mode creates the branch before the agent starts, as
+          # <prefix>issue-<n>-<timestamp>. The prefix follows the issue type
+          # triage set; anything else, or no type, is a chore.
+          branch-prefix: ${{ github.event.issue.type.name == 'Bug' && 'fix/' || (github.event.issue.type.name == 'Feature' || github.event.issue.type.name == 'Improvement') && 'feat/' || 'chore/' }}
           prompt: |
             Implement issue #${{ github.event.issue.number }} in ${{ github.repository }}.
 
@@ -215,9 +219,10 @@ jobs:
 
             ## How to work
 
-            1. Create a branch off the current HEAD. Name it conventionally,
-               `feat/`, `fix/`, `chore/`, `refactor/`, `test/`, and include the
-               issue number, e.g. `fix/158-company-prefill`.
+            1. If you are already on a branch made for this issue, work on it.
+               Otherwise create one off the current HEAD. Name it
+               conventionally, `feat/`, `fix/`, `chore/`, `refactor/`, `test/`,
+               and include the issue number, e.g. `fix/158-company-prefill`.
             2. Read the repo's CLAUDE.md / AGENTS.md first if present, and match
                the surrounding code: its naming, its comment density, its idiom.
             3. Follow the repo's commit conventions. If it has a commitlint

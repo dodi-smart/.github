@@ -47,6 +47,20 @@ EOF
 }
 expect "run-agent forwards bot-name and bot-id, defaulting to claude-code-action's own" identity_wired
 
+# claude-code-action names a tag-mode branch claude/issue-<n>-<ts> unless given a
+# prefix, so run-agent always forwards one, and its default is conventional.
+prefix_wired() {
+python3 - "$ROOT" <<'EOF'
+import sys, yaml
+doc = yaml.safe_load(open(sys.argv[1] + '/actions/run-agent/action.yml'))
+default = doc['inputs']['branch-prefix']['default']
+assert default.endswith('/') and not default.startswith('claude'), default
+call = [s for s in doc['runs']['steps'] if 'claude-code-action@' in str(s.get('uses', ''))][0]['with']
+assert call['branch_prefix'] == '${{ inputs.branch-prefix }}', call.get('branch_prefix')
+EOF
+}
+expect "run-agent forwards branch-prefix, defaulting to a conventional one, never claude/" prefix_wired
+
 # 2. Lift the push and publish steps out of the workflow.
 python3 - "$ROOT" "$WORK" <<'EOF' || { echo 'cannot read the deps-verify steps'; exit 1; }
 import sys, yaml

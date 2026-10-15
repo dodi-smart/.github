@@ -475,7 +475,7 @@ Either shape runs behind ONE `pick` job, not two. It resolves both the light and
 the heavy runner (skipping whichever `single-job` does not need), so picking
 twice costs one job instead of two. It needs no checkout: it reads the changed
 files through the API. `pick` and the closing `PR Checks` summary run no caller
-code, so in a private repo they run on the light pool and bill no GitHub-hosted
+code, so in a private repo they run on the control pool and bill no GitHub-hosted
 minutes (a public repo or fork PR keeps `ubuntu-latest`). `PR Checks` also writes
 a "Where it ran" table of every job's runner and queue time to its summary.
 
@@ -803,6 +803,8 @@ Static `runs-on:` expression used by helper jobs that run no caller code:
 ```yaml
 runs-on: ${{ fromJSON((github.event.repository.private && !github.event.pull_request.head.repo.fork) && '["self-hosted","Linux","light"]' || '"ubuntu-latest"') }}
 ```
+
+`pr-checks.yml`'s `pick` and `PR Checks` use it with `"control"` in place of `"light"`; see AGENTS.md.
 
 Public repos and fork pull requests **always** get hosted runners, with no way to
 opt out. The runner group refuses public repos, and a fork PR would otherwise run

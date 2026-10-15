@@ -671,8 +671,9 @@ jobs:
           print('pick-runner.yml still exposes inputs %s and outputs %s' % (sorted(need_in), sorted(need_out)))
           "
 
-      # The helper jobs of the shared checks run on the light pool of a private
-      # repo, with no hosted minutes, and every runner job reports where it ran.
+      # The helper jobs of the shared checks run self-hosted in a private repo
+      # (light, or control for pick and PR Checks: see AGENTS.md), with no hosted
+      # minutes, and every runner job reports where it ran.
       # Each claim below drifted or could drift quietly: a literal
       # `ubuntu-latest` creeping back bills hosted minutes; a renamed summary job
       # breaks the required status context; a job whose first step is not the
@@ -709,16 +710,24 @@ jobs:
                        'self-hosted', 'Linux', 'light', 'ubuntu-latest'):
               if part not in EXPR:
                   errors.append('pick-runner.yml: the light runs-on expression lost ' + part)
+          # pick and PR Checks run on control (see AGENTS.md): the light expression
+          # with only the pool changed. chr(34) is a double quote: this script
+          # sits inside one.
+          Q = chr(34)
+          CONTROL = EXPR.replace(Q + 'light' + Q, Q + 'control' + Q)
+          for jid in ('pick', 'pr-checks'):
+              if pc[jid]['runs-on'] != CONTROL:
+                  errors.append('pr-checks.yml: %s must use the light expression with the pool set to control' % jid)
           # No run-time switch: a job's pool changes in a release, never through
-          # a repository or org variable.
+          # a repository or org variable. No job but those two runs on control.
           for path in sorted(glob.glob('.github/workflows/*.yml') + glob.glob('actions/*/*.yml') + glob.glob('actions/*/*.sh')):
               if path.endswith('self-test.yml') or path.endswith('test.sh'):
                   continue
-              if 'DODI_RUNS_ON' in open(path).read():
+              text = open(path).read()
+              if 'DODI_RUNS_ON' in text:
                   errors.append(path + ': reads a DODI_RUNS_ON_* switch; pools change in a release, not at run time')
-          for jid in ('pick', 'pr-checks'):
-              if pc[jid]['runs-on'] != EXPR:
-                  errors.append('pr-checks.yml: %s must use the same light expression as pick-runner.yml' % jid)
+              if text.count(Q + 'control' + Q) != (2 if path.endswith('/pr-checks.yml') else 0):
+                  errors.append(path + ': names the control pool; only pr-checks pick and PR Checks may')
           if pc['pr-checks'].get('name') != 'PR Checks':
               errors.append('the summary job must stay named PR Checks, it is the required status context')
           modes = [s.get('with', {}).get('mode') for s in pc['pr-checks']['steps'] if s.get('uses') == REPORT]
@@ -750,24 +759,26 @@ jobs:
           picker = open('actions/pick-runner/pick.sh').read()
           readme = open('README.md').read()
 
-          got = dict(re.findall(r'^\s+(light|heavy|agent|apple|hosted)\)\s+sel="([^"]*)"',
-                                picker, re.M))
+          # Every `weight)  sel="..."` arm is a preset, whatever it is called, as
+          # dev-standards' read-presets.sh reads it, so there is no list to keep.
+          got = dict(re.findall(r'^\s+([a-z]+)\)\s+sel="([^"]*)"', picker, re.M))
 
+          # The README rows are the table under its `weight` header.
+          table = readme.split('| `weight` | Selector | Use |', 1)[1].split('\n\n', 1)[0]
           rows = {}
-          for name, sel in re.findall(r'^\|\s*.(light|heavy|agent|apple|hosted).\s*\|([^|]*)\|',
-                                      readme, re.M):
+          for name, sel in re.findall(r'^\|\s*`([a-z]+)`\s*\|([^|]*)\|', table, re.M):
               sel = sel.strip().strip('`').strip()
               rows[name] = '' if sel in ('', 'none') else sel
 
-          if len(got) != 5 or len(rows) != 5:
-              sys.exit('::error::parsed %d presets and %d README rows, expected 5 and 5. '
+          if 'light' not in got or 'light' not in rows:
+              sys.exit('::error::parsed presets %r and README rows %r with no light. '
                        'Refusing to report clean from a parse that found nothing.'
-                       % (len(got), len(rows)))
+                       % (sorted(got), sorted(rows)))
 
-          bad = [k for k in sorted(got) if got[k] != rows.get(k)]
+          bad = [k for k in sorted(set(got) | set(rows)) if got.get(k) != rows.get(k)]
           if bad:
               for k in bad:
-                  print('::error::%s: picker=%r README=%r' % (k, got[k], rows.get(k)))
+                  print('::error::%s: picker=%r README=%r' % (k, got.get(k), rows.get(k)))
               sys.exit(1)
 
           print('preset table agrees: %r' % got)

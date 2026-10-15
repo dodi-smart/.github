@@ -15,11 +15,10 @@
 # reading the changed files through the API with no checkout. `pr-checks` at the
 # bottom always runs and is the one context a ruleset should require.
 #
-# `pick` and `pr-checks` are helper jobs that run no caller code, so in a private
-# repo they run on the light pool and cost no GitHub-hosted minutes. A public
-# repo or a fork PR keeps ubuntu-latest. There is no switch to hosted: capacity
-# and runner monitoring keep the pool up instead. The expression is written out
-# in each job because `runs-on` cannot read `env`.
+# `pick` and `pr-checks` are helper jobs that run no caller code. In a private
+# repo they run on the `control` pool (see AGENTS.md for why); a public repo or a
+# fork PR keeps ubuntu-latest. There is no switch to hosted. The expression is
+# written out in each job because `runs-on` cannot read `env`.
 name: PR Checks
 
 # This workflow runs the caller's own code (install scripts, tests, builds), so
@@ -161,7 +160,7 @@ jobs:
   # and silently skips React Doctor, so the tool check below says so out loud.
   pick:
     name: Pick runner
-    runs-on: ${{ fromJSON((github.event.repository.private && !github.event.pull_request.head.repo.fork) && '["self-hosted","Linux","light"]' || '"ubuntu-latest"') }}
+    runs-on: ${{ fromJSON((github.event.repository.private && !github.event.pull_request.head.repo.fork) && '["self-hosted","Linux","control"]' || '"ubuntu-latest"') }}
     timeout-minutes: 10
     permissions:
       contents: read
@@ -665,14 +664,14 @@ jobs:
   # `zavet` and `react-doctor` stay out of `needs` and the loop below on purpose.
   #
   # Its name is the required status context (`<caller job> / PR Checks`), so it
-  # never changes. It runs no caller code, so it runs on the light pool of a
+  # never changes. It runs no caller code, so it runs on the control pool of a
   # private repo, and on ubuntu-latest for a public repo or a fork PR, like
   # `pick`.
   pr-checks:
     name: PR Checks
     needs: [pick, commitlint, checks, test, build, all, coverage]
     if: always()
-    runs-on: ${{ fromJSON((github.event.repository.private && !github.event.pull_request.head.repo.fork) && '["self-hosted","Linux","light"]' || '"ubuntu-latest"') }}
+    runs-on: ${{ fromJSON((github.event.repository.private && !github.event.pull_request.head.repo.fork) && '["self-hosted","Linux","control"]' || '"ubuntu-latest"') }}
     timeout-minutes: 2
     steps:
       - uses: dodi-smart/.github/actions/runner-report@v1

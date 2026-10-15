@@ -57,6 +57,9 @@ concurrency:
   group: triage-${{ github.repository }}-${{ inputs.issue-number || github.event.issue.number }}
   cancel-in-progress: true
 
+# Every job grants its own, so one added later starts with nothing.
+permissions: {}
+
 jobs:
   # The picker runs INSIDE this job, after the last step that can still say no.
   # It is itself a hosted job, so it must never run for an event that will not
@@ -160,7 +163,8 @@ jobs:
       id-token: write
     steps:
       # Credentials persist on purpose: the action runs `git fetch` from this checkout before the agent starts.
-      - uses: actions/checkout@v7 # zizmor: ignore[artipacked]
+      # jactionlint ignore=artipacked
+      - uses: actions/checkout@v7
         with: { fetch-depth: 1 }
 
       - name: Load repo area vocabulary

@@ -102,9 +102,25 @@ runs:
       run: |
         set -euo pipefail
         if ! command -v yq >/dev/null || ! yq --version 2>&1 | grep -q mikefarah; then
-          sudo curl -fsSL -o /usr/local/bin/yq \
-            "https://github.com/mikefarah/yq/releases/download/${YQ}/yq_linux_amd64"
-          sudo chmod +x /usr/local/bin/yq
+          # Runner labels carry no architecture, so ask the machine. The
+          # checksum is verified before the binary is installed or run.
+          if [ "$(uname -s)" != Linux ]; then
+            echo "::error::yq is missing and only a Linux build is installed here"; exit 1
+          fi
+          case "$(uname -m)" in
+            x86_64)        arch=amd64 ;;
+            aarch64|arm64) arch=arm64 ;;
+            *) echo "::error::no yq build for $(uname -m)"; exit 1 ;;
+          esac
+          base="https://github.com/mikefarah/yq/releases/download/${YQ}"
+          tmp="$(mktemp -d "${RUNNER_TEMP:-/tmp}/yq.XXXXXX")"
+          curl -fsSL -o "$tmp/yq_linux_${arch}" "$base/yq_linux_${arch}"
+          curl -fsSL "$base/checksums-bsd" \
+            | sed -n "s/^SHA256 (yq_linux_${arch}) = //p" \
+            | sed "s|\$|  yq_linux_${arch}|" > "$tmp/sha256"
+          (cd "$tmp" && sha256sum -c sha256)
+          sudo install -m 0755 "$tmp/yq_linux_${arch}" /usr/local/bin/yq
+          rm -rf "$tmp"
         fi
         yq --version
 

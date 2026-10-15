@@ -152,14 +152,17 @@ runs:
         fi
 
     # The org runner list is an org-level endpoint, so this token cannot be
-    # limited to one repository. It only ever reads that list.
+    # limited to one repository. It only ever reads that list, and asks for
+    # nothing but the permission that reads it.
     - id: app-token
       if: steps.have-app.outputs.yes == 'true'
-      uses: actions/create-github-app-token@v3 # zizmor: ignore[github-app]
+      uses: actions/create-github-app-token@v3
       with:
         client-id:   ${{ inputs.gh-app-client-id }}
         private-key: ${{ inputs.gh-app-private-key }}
+        # jactionlint ignore=github-app
         owner:       ${{ github.repository_owner }}
+        permission-organization-self-hosted-runners: read
 
     # Reads the fleet once. Only a listing that was really read is cached, so a
     # failed read is retried by the next call rather than remembered.

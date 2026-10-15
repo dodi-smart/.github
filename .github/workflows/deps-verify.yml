@@ -69,6 +69,9 @@ concurrency:
   group: deps-${{ github.repository }}-${{ github.event.pull_request.number }}
   cancel-in-progress: true
 
+# Every job grants its own, so one added later starts with nothing.
+permissions: {}
+
 jobs:
   # The picker runs INSIDE this job, after the last step that can still say
   # no. It is itself a hosted job, so it must never run for an event that will
@@ -527,7 +530,8 @@ jobs:
       # Not narrowed with permission-*: the push must satisfy the org rulesets the App bypasses.
       - id: app-token
         if: ${{ !cancelled() && env.HAS_APP == 'true' }}
-        uses: actions/create-github-app-token@v3 # zizmor: ignore[github-app]
+        # jactionlint ignore=github-app
+        uses: actions/create-github-app-token@v3
         with:
           client-id:    ${{ secrets.GH_APP_CLIENT_ID }}
           private-key:  ${{ secrets.GH_APP_PRIVATE_KEY }}

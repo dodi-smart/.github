@@ -784,41 +784,31 @@ There is no fallback and no `fell-back` logic. The large runners also carry the
 `light` label, so a light job waits for whichever light-capable runner frees up
 first, and a busy light pool overflows onto the large one by itself. `heavy`
 selects `large` only, which no light-only runner carries, so a heavy build can
-never land on a small host (exit 137). The `fallback`, `fallback-when`,
-`gh-app-client-id` and `gh-app-private-key` inputs, and the two `GH_APP_*`
-secrets of `pick-runner.yml`, are still accepted and ignored so no caller has to
-change. `fell-back` is always `false`.
+never land on a small host (exit 137). `fell-back` is always `false`.
 
-### The emergency switch
+`fallback` and `fallback-when` are deprecated: they change nothing, and a caller
+that still passes either gets a warning naming it. They are removed once no
+caller passes them. The `gh-app-client-id` and `gh-app-private-key` inputs, and
+the two `GH_APP_*` secrets of `pick-runner.yml`, are accepted and ignored.
 
-Org variables `DODI_RUNS_ON_LIGHT`, `DODI_RUNS_ON_HEAVY`, `DODI_RUNS_ON_AGENT`
-and `DODI_RUNS_ON_APPLE` override a weight's default with no release. The value
-is JSON, an array of labels or a single string:
+### No run-time switch
 
-```
-DODI_RUNS_ON_LIGHT = "ubuntu-latest"                      # everything light goes hosted
-DODI_RUNS_ON_HEAVY = ["self-hosted","Linux","docker"]    # pin heavy to the runners labelled docker
-```
-
-Helper jobs that run on `light` (`pr-checks.yml`'s `pick` and `PR Checks`, the
-`pick-runner.yml` job) read `DODI_RUNS_ON_LIGHT` in their `runs-on:` expression.
-A call to the action passes the variables as `runs-on-light|heavy|agent|apple`
-inputs, or exports them in the job's `env`; the input wins. `labels` beats an
-override, and an override that is not a JSON label or array of labels is reported
-with a warning and ignored, because failing every job over a typo in the switch
-would be worse. An unset variable changes nothing.
+Nothing repoints a weight at run time: no org or repository variable, no input.
+A pool's labels change in `pick.sh`, in a release that goes through `next` like
+any other. Keeping the self-hosted pools up is the job of their capacity and of
+the runner monitoring, not of an escape to hosted runners.
 
 Static `runs-on:` expression used by helper jobs that run no caller code:
 
 ```yaml
-runs-on: ${{ fromJSON((github.event.repository.private && !github.event.pull_request.head.repo.fork) && (vars.DODI_RUNS_ON_LIGHT || '["self-hosted","Linux","light"]') || '"ubuntu-latest"') }}
+runs-on: ${{ fromJSON((github.event.repository.private && !github.event.pull_request.head.repo.fork) && '["self-hosted","Linux","light"]' || '"ubuntu-latest"') }}
 ```
 
 Public repos and fork pull requests **always** get hosted runners, with no way to
 opt out. The runner group refuses public repos, and a fork PR would otherwise run
 attacker-authored code on our own hardware against a cache the next job inherits.
-That holds for the action and for the expression above, and `labels` and the
-overrides cannot change it.
+That holds for the action and for the expression above, and `labels` cannot
+change it.
 
 The tools on a self-hosted image are bash, git, gh, jq, curl and Node. A helper
 job that moves to `light` must not need anything else; `changed-files` also needs

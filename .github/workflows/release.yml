@@ -92,7 +92,7 @@ jobs:
     # The light pool of a private repository, a hosted runner for a public one.
     # Nothing here needs a hosted-only tool: git, gh, jq, curl and bash are in
     # the runner image, and Node comes from setup-node.
-    runs-on: ${{ fromJSON((github.event.repository.private && !github.event.pull_request.head.repo.fork) && (vars.DODI_RUNS_ON_LIGHT || '["self-hosted","Linux","light"]') || '"ubuntu-latest"') }}
+    runs-on: ${{ fromJSON((github.event.repository.private && !github.event.pull_request.head.repo.fork) && '["self-hosted","Linux","light"]' || '"ubuntu-latest"') }}
     permissions:
       contents: write
       issues: write
@@ -108,7 +108,7 @@ jobs:
     steps:
       - uses: dodi-smart/.github/actions/runner-report@v1
         with:
-          selector: ${{ vars.DODI_RUNS_ON_LIGHT || '["self-hosted","Linux","light"]' }}
+          selector: '["self-hosted","Linux","light"]'
 
       # The org App, not GITHUB_TOKEN, is the bypass actor on the org rulesets
       # that protect develop and main. GITHUB_TOKEN is not one, and cannot be

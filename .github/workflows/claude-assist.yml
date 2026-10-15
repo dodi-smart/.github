@@ -61,7 +61,7 @@ jobs:
       github.event.action != 'labeled'
       && !(endsWith(github.event.issue.user.login || github.event.pull_request.user.login, '[bot]') || startsWith(github.event.issue.user.login || github.event.pull_request.user.login, 'app/'))
       && contains(github.event.comment.body || github.event.review.body || format('{0} {1}', github.event.issue.title, github.event.issue.body), '@claude')
-    runs-on: ${{ fromJSON((github.event.repository.private && !github.event.pull_request.head.repo.fork) && (vars.DODI_RUNS_ON_LIGHT || '["self-hosted","Linux","light"]') || '"ubuntu-latest"') }}
+    runs-on: ${{ fromJSON((github.event.repository.private && !github.event.pull_request.head.repo.fork) && '["self-hosted","Linux","light"]' || '"ubuntu-latest"') }}
     timeout-minutes: 10   # the picker calls the org API and may retry
     permissions:
       contents: read

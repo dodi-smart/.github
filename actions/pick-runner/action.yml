@@ -21,10 +21,8 @@
 # group refuses public repos, and a fork PR would otherwise run attacker-authored
 # code on our hardware against a cache the next job inherits.
 #
-# The emergency switch: org variables DODI_RUNS_ON_LIGHT, _HEAVY, _AGENT and
-# _APPLE (JSON: an array of labels, or `"ubuntu-latest"`) repoint a weight with
-# no release. Pass them as the `runs-on-*` inputs (`${{ vars.DODI_RUNS_ON_LIGHT }}`)
-# or export them in the calling job's `env`; the input wins when both are set.
+# There is no switch to repoint a weight at run time. A weight's labels change
+# here, in a release, and pool health is watched instead of escaped.
 name: Pick runner
 description: Resolve a semantic runner weight to a runs-on selector, with no API call.
 
@@ -45,24 +43,9 @@ inputs:
     default: light
 
   # Escape hatch for a stack the presets do not describe, e.g. a job needing
-  # the `docker` label. Wins over `weight` and over the overrides below.
+  # the `docker` label. Wins over `weight`.
   labels:
     description: 'Comma-separated capability labels. Wins over weight when set.'
-    default: ""
-
-  # The emergency switch, one per weight. Empty falls back to the job's
-  # DODI_RUNS_ON_* environment variable, then to the default selector.
-  runs-on-light:
-    description: 'Override for light: JSON array of labels or one label. Pass vars.DODI_RUNS_ON_LIGHT.'
-    default: ""
-  runs-on-heavy:
-    description: 'Override for heavy: JSON array of labels or one label. Pass vars.DODI_RUNS_ON_HEAVY.'
-    default: ""
-  runs-on-agent:
-    description: 'Override for agent: JSON array of labels or one label. Pass vars.DODI_RUNS_ON_AGENT.'
-    default: ""
-  runs-on-apple:
-    description: 'Override for apple: JSON array of labels or one label. Pass vars.DODI_RUNS_ON_APPLE.'
     default: ""
 
   # The runner used whenever self-hosted is off the table: `weight: hosted`,
@@ -77,14 +60,15 @@ inputs:
     description: 'Force hosted on public repos and fork PRs. Leave true.'
     default: "true"
 
-  # Accepted and IGNORED, so a caller written for the fleet-listing picker keeps
-  # working unchanged. Overflow is the queue's job now, so there is no fallback to
-  # choose, and nothing reads the fleet, so there is no token to mint.
+  # DEPRECATED and ignored: setting either prints a warning that names it, and
+  # both are removed once no caller passes them. Overflow is the queue's job, so
+  # there is no fallback to choose, and nothing reads the fleet, so there is no
+  # token to mint.
   fallback:
-    description: 'Ignored. Kept so existing callers keep working.'
+    description: 'Deprecated and ignored; warns when set. Remove it from the caller.'
     default: ""
   fallback-when:
-    description: 'Ignored. Kept so existing callers keep working.'
+    description: 'Deprecated and ignored; warns when set. Remove it from the caller.'
     default: ""
   gh-app-client-id:
     description: 'Ignored. The picker no longer reads the org runner list.'
@@ -116,9 +100,7 @@ runs:
         GUARD:         ${{ inputs.guard-public }}
         PRIVATE:       ${{ github.event.repository.private }}
         FORK:          ${{ github.event.pull_request.head.repo.fork }}
-        RUNS_ON_LIGHT: ${{ inputs.runs-on-light }}
-        RUNS_ON_HEAVY: ${{ inputs.runs-on-heavy }}
-        RUNS_ON_AGENT: ${{ inputs.runs-on-agent }}
-        RUNS_ON_APPLE: ${{ inputs.runs-on-apple }}
+        FALLBACK:      ${{ inputs.fallback }}
+        FALLBACK_WHEN: ${{ inputs.fallback-when }}
         ACTION_PATH:   ${{ github.action_path }}
       run: '"$ACTION_PATH/pick.sh"'

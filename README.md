@@ -1032,8 +1032,7 @@ Which runner it takes:
   `pr-checks` run on the head commit once. While it has not finished, the run
   stops there, and the run's completion starts verification again with the
   verdict ready. A runner failure is re-run the same way, once. No job holds a
-  runner while CI runs: a job that waited used to hold one for up to 45 minutes,
-  and with enough open dependency PRs it took every slot `pr-checks` needed.
+  runner while CI runs; AGENTS.md has why.
 - **A green build reads on a light runner.** The `verify` job runs on the light
   pool when the verdict is green, so a green PR never holds a heavy slot. It
   takes the heavy pool only to build or fix: a red or infra verdict, or a repo
@@ -1053,7 +1052,7 @@ Which runner it takes:
 
 The caller listens for both events. `workflows:` names the caller's own PR
 Checks workflow by its `name:`. Without the `workflow_run` trigger nothing starts
-verification once `pr-checks` finishes, and the gate warns on every PR:
+verification once `pr-checks` finishes:
 
 ```yaml
 name: Dependency Verification

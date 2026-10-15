@@ -507,11 +507,8 @@ jobs:
       - name: deps-verify decides when a run is skipped
         run: ./actions/deps-intent/test.sh
 
-      # Nothing in deps-verify waits for pr-checks. A job that polled it held a
-      # runner for up to 45 minutes while the pr-checks run it waited on needed
-      # that same pool, and enough open dependency PRs at once took every slot
-      # and deadlocked. The verdict is read once, in the gate, from a finished
-      # run; the caller's workflow_run trigger starts it. verify takes heavy only
+      # Nothing in deps-verify waits for pr-checks (see deps-verify in AGENTS.md
+      # for why). The gate reads a finished run once; verify takes heavy only
       # when the verdict is not green, and the agent runs only when the judge
       # says so.
       - name: deps-verify never waits, and takes heavy only to build
@@ -527,8 +524,8 @@ jobs:
           if 'sleep ' in src:
               bad.append('deps-verify must not sleep: it reads a finished pr-checks run, it never polls one')
           gate, verify = jobs.get('gate') or {}, jobs.get('verify') or {}
-          go = [s for s in gate.get('steps', []) if s.get('id') == 'go']
-          if not go or \"steps.judge.outputs.judge != 'skip'\" not in str(go[0]) or \"steps.ci.outputs.ready == 'true'\" not in str(go[0]):
+          proceed = str((gate.get('outputs') or {}).get('proceed', ''))
+          if \"steps.judge.outputs.judge != 'skip'\" not in proceed or \"steps.ci.outputs.ready == 'true'\" not in proceed:
               bad.append('the gate must proceed only with a ready verdict and a judge that is not skip')
           if \"needs.gate.outputs.proceed == 'true'\" not in str(verify.get('if')):
               bad.append('verify must run only when the gate proceeds')

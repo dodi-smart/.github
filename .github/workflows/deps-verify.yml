@@ -56,9 +56,6 @@ on:
       # verification once it does:
       #   workflow_run: { workflows: [PR Checks], types: [completed] }
       ci-workflow:        { type: string, default: "dodi-smart/.github/.github/workflows/pr-checks.yml" }
-      # DEPRECATED and ignored: nothing waits for pr-checks any more. Kept so a
-      # caller that still passes it does not fail. Remove once none does.
-      ci-timeout-minutes: { type: number, default: 45 }
 
       java-version:    { type: string, default: "21" }
       node-version:    { type: string, default: "24" }
@@ -89,9 +86,7 @@ jobs:
   #                 stops here; that run's completion starts this again.
   #   workflow_run  the caller's PR Checks run completed. The verdict is read
   #                 from the finished run, once.
-  # A job that polled pr-checks used to hold a runner for up to 45 minutes, and
-  # with as many open dependency PRs as runners in the pool pr-checks needs,
-  # every slot held a waiting job and no pr-checks job could ever start.
+  # Why nothing may wait here: see deps-verify in AGENTS.md.
   gate:
     runs-on: ubuntu-latest
     timeout-minutes: 10   # the picker calls the org API and may retry
@@ -100,7 +95,7 @@ jobs:
       pull-requests: read   # the pull request and the verdict comment
       actions: write        # read the pr-checks run, and re-run it once after an infra failure
     outputs:
-      proceed: ${{ steps.go.outputs.proceed }}
+      proceed: ${{ steps.ci.outputs.ready == 'true' && steps.judge.outputs.judge != 'skip' }}
       dependency-bots: ${{ steps.gate.outputs.dependency-bots }}
       stack:    ${{ steps.stack.outputs.stack }}
       light:    ${{ steps.pick-light.outputs.runner }}
@@ -208,79 +203,73 @@ jobs:
       - id: ci
         if: steps.gate.outputs.proceed == 'true'
         env:
-          EVENT:        ${{ github.event_name }}
-          SHA:          ${{ steps.pr.outputs.head-sha }}
-          CI_WORKFLOW:  ${{ inputs.ci-workflow }}
-          WORKFLOW_REF: ${{ github.workflow_ref }}
+          EVENT:       ${{ github.event_name }}
+          SHA:         ${{ steps.pr.outputs.head-sha }}
+          CI_WORKFLOW: ${{ inputs.ci-workflow }}
+          # The finished run that started this one, on a workflow_run event.
+          WR_ID:         ${{ github.event.workflow_run.id }}
+          WR_CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+          WR_ATTEMPT:    ${{ github.event.workflow_run.run_attempt }}
+          WR_URL:        ${{ github.event.workflow_run.html_url }}
         run: |
           set -euo pipefail
           LOGS="$RUNNER_TEMP/deps-logs"
           mkdir -p "$LOGS"
           out() { echo "$1" >> "$GITHUB_OUTPUT"; }
-          # Who calls CI_WORKFLOW, read from the API at the PR head: no checkout,
-          # so nothing from the PR lands on the runner.
-          callers() {
-            gh api "/repos/$REPO/contents/.github/workflows?ref=$SHA" --jq '.[] | select(.name | test("\\.ya?ml$")) | .path' \
-              | xargs -I{} gh api -H "Accept: application/vnd.github.raw" "/repos/$REPO/contents/{}?ref=$SHA"
-          }
-          if [ -z "$CI_WORKFLOW" ] || ! callers 2>/dev/null | grep -F "$CI_WORKFLOW@" >/dev/null; then
-            out mode=own
-            out ready=true
-            echo "no workflow here calls ${CI_WORKFLOW:-a CI workflow}, so the verify job builds the PR itself"
-            exit 0
-          fi
-          out mode=ci
+          later() { out ready=false; echo "$1. The PR Checks run's completion starts verification."; exit 0; }
 
-          # Stops this run without a verdict. On a pull_request event it also
-          # checks that the caller listens for the PR Checks run to finish, or
-          # nothing would ever start the verification.
-          later() {
-            out ready=false
-            echo "$1. The PR Checks run's completion starts verification."
-            if [ "$EVENT" = pull_request ]; then
-              local path="${WORKFLOW_REF#"$REPO/"}"
-              path="${path%%@*}"
-              if ! gh api -H "Accept: application/vnd.github.raw" "/repos/$REPO/contents/$path?ref=$SHA" 2>/dev/null \
-                   | grep -qE '^[[:space:]]*workflow_run:'; then
-                echo "::warning title=Dependency verification will not run::$path has no workflow_run trigger, so nothing starts verification when PR Checks finishes. Add 'workflow_run: { workflows: [PR Checks], types: [completed] }' to its 'on:' block (see the deps-verify caller in the README)."
-              fi
+          if [ "$EVENT" = workflow_run ]; then
+            # Only a PR Checks run starts this, so the mode is ci and the run is
+            # the one in the payload: nothing to look up.
+            out mode=ci
+            id="$WR_ID" status=completed conclusion="$WR_CONCLUSION" attempt="$WR_ATTEMPT" url="$WR_URL"
+          else
+            # Who calls CI_WORKFLOW, read from the API at the PR head: no
+            # checkout, so nothing from the PR lands on the runner.
+            callers() {
+              gh api "/repos/$REPO/contents/.github/workflows?ref=$SHA" --jq '.[] | select(.name | test("\\.ya?ml$")) | .path' \
+                | xargs -I{} gh api -H "Accept: application/vnd.github.raw" "/repos/$REPO/contents/{}?ref=$SHA"
+            }
+            if [ -z "$CI_WORKFLOW" ] || ! callers 2>/dev/null | grep -F "$CI_WORKFLOW@" >/dev/null; then
+              out mode=own
+              out ready=true
+              echo "no workflow here calls ${CI_WORKFLOW:-a CI workflow}, so the verify job builds the PR itself"
+              exit 0
             fi
-            exit 0
-          }
-
-          # The newest run on this commit whose workflow calls CI_WORKFLOW. A
-          # skipped run (a draft, a filtered event) is not one.
-          id=$(gh api "/repos/$REPO/actions/runs?head_sha=$SHA&per_page=100" \
-                | jq -r --arg w "$CI_WORKFLOW" '
-                    [.workflow_runs[]
-                     | select(any(.referenced_workflows[]?; .path | startswith($w)))
-                     | select(.conclusion != "skipped")]
-                    | sort_by(.id) | last | .id // empty')
-          [ -n "$id" ] || later "No PR Checks run on $SHA yet"
-          # `|`, not a tab: read collapses adjacent tabs, and an in-progress
-          # run has an empty conclusion between two.
-          IFS='|' read -r status conclusion attempt url < <(gh api "/repos/$REPO/actions/runs/$id" \
-            --jq '[.status, (.conclusion // ""), .run_attempt, .html_url] | map(tostring) | join("|")')
-          [ "$status" = completed ] || later "PR Checks is $status on $SHA ($url)"
-          [ "$conclusion" != cancelled ] || later "PR Checks was cancelled on $SHA, so a newer run replaces it"
-
-          fetch_log() { gh run view "$id" --repo "$REPO" --log-failed > "$LOGS/ci.log" 2>&1 || true; }
-          infra() {
-            grep -qE 'exit code 137|signal SIGKILL|daemon disappeared unexpectedly|received a shutdown signal|lost communication with the server|No space left on device|ENOSPC|JavaScript heap out of memory' "$LOGS/ci.log"
-          }
-          if [ "$conclusion" != success ] && [ "$attempt" = 1 ] && { fetch_log; infra; }; then
-            echo "::notice title=Re-running CI::The pr-checks run failed on the runner, not the code. Re-running its failed jobs once."
-            gh run rerun "$id" --repo "$REPO" --failed
-            later "Re-ran the failed PR Checks jobs"
+            out mode=ci
+            # The newest run on this commit whose workflow calls CI_WORKFLOW.
+            # A skipped run (a draft, a filtered event) is not one.
+            id=$(gh api "/repos/$REPO/actions/runs?head_sha=$SHA&per_page=100" \
+                  | jq -r --arg w "$CI_WORKFLOW" '
+                      [.workflow_runs[]
+                       | select(any(.referenced_workflows[]?; .path | startswith($w)))
+                       | select(.conclusion != "skipped")]
+                      | sort_by(.id) | last | .id // empty')
+            [ -n "$id" ] || later "No PR Checks run on $SHA yet"
+            # `|`, not a tab: read collapses adjacent tabs, and an in-progress
+            # run has an empty conclusion between two.
+            IFS='|' read -r status conclusion attempt url < <(gh api "/repos/$REPO/actions/runs/$id" \
+              --jq '[.status, (.conclusion // ""), .run_attempt, .html_url] | map(tostring) | join("|")')
           fi
-          out ready=true
+          [ "$status" = completed ] || later "PR Checks is $status on $SHA ($url)"
+          case "$conclusion" in
+            cancelled) later "PR Checks was cancelled on $SHA, so a newer run replaces it" ;;
+            skipped)   later "PR Checks was skipped on $SHA" ;;
+          esac
 
           # One verdict string: green | red:<failed jobs> | red:infra (the runner
           # failed twice). Decided here so `verify` can pick its runner from it.
+          # A runner failure on the first attempt is re-run ONCE, failed jobs
+          # only, and that run's completion brings the verdict.
           v=green
           if [ "$conclusion" != success ]; then
-            fetch_log
-            if infra; then
+            gh run view "$id" --repo "$REPO" --log-failed > "$LOGS/ci.log" 2>&1 || true
+            if grep -qE 'exit code 137|signal SIGKILL|daemon disappeared unexpectedly|received a shutdown signal|lost communication with the server|No space left on device|ENOSPC|JavaScript heap out of memory' "$LOGS/ci.log"; then
+              if [ "$attempt" = 1 ]; then
+                echo "::notice title=Re-running CI::The pr-checks run failed on the runner, not the code. Re-running its failed jobs once."
+                gh run rerun "$id" --repo "$REPO" --failed
+                later "Re-ran the failed PR Checks jobs"
+              fi
               v=red:infra
             else
               failed=$(gh api "/repos/$REPO/actions/runs/$id/attempts/$attempt/jobs" \
@@ -288,6 +277,7 @@ jobs:
               v="red:${failed:-$conclusion}"
             fi
           fi
+          out ready=true
           out "verdict=$v"
           out "url=$url"
           out "run-id=$id"
@@ -307,11 +297,6 @@ jobs:
           labels:   ${{ steps.pr.outputs.labels }}
           verdict:  ${{ steps.ci.outputs.verdict }}
 
-      - id: go
-        env:
-          PROCEED: ${{ steps.ci.outputs.ready == 'true' && steps.judge.outputs.judge != 'skip' }}
-        run: echo "proceed=$PROCEED" >> "$GITHUB_OUTPUT"
-
       # Only when the run above is still proceeding: a human-authored PR (this
       # workflow runs for bots only) must never pay for a hosted picker.
       #
@@ -321,7 +306,7 @@ jobs:
       # An `apple` or `hosted` weight, or an explicit selector, has no lighter
       # pool (the light pool cannot run Xcode), so light follows it.
       - id: pick-light
-        if: steps.go.outputs.proceed == 'true'
+        if: steps.gate.outputs.proceed == 'true' && steps.ci.outputs.ready == 'true' && steps.judge.outputs.judge != 'skip'
         uses: dodi-smart/.github/actions/pick-runner@v1
         with:
           weight:             ${{ (inputs.runner-weight == 'apple' || inputs.runner-weight == 'hosted') && inputs.runner-weight || 'light' }}
@@ -330,7 +315,7 @@ jobs:
           gh-app-private-key: ${{ secrets.GH_APP_PRIVATE_KEY }}
 
       - id: pick-heavy
-        if: steps.go.outputs.proceed == 'true'
+        if: steps.gate.outputs.proceed == 'true' && steps.ci.outputs.ready == 'true' && steps.judge.outputs.judge != 'skip'
         uses: dodi-smart/.github/actions/pick-runner@v1
         with:
           weight:             ${{ inputs.runner-weight }}
@@ -460,14 +445,14 @@ jobs:
       - id: result
         env:
           MODE:        ${{ needs.gate.outputs.mode }}
-          WAIT_RESULT: ${{ needs.gate.outputs.verdict }}
+          CI_VERDICT:  ${{ needs.gate.outputs.verdict }}
           OWN_FAILED:  ${{ steps.steps.outputs.failed }}
         run: |
           set -euo pipefail
           if [ "$MODE" = own ]; then
             v=green; [ -n "${OWN_FAILED:-}" ] && v="red:$OWN_FAILED"
           else
-            v="$WAIT_RESULT"
+            v="$CI_VERDICT"
           fi
           echo "verdict=$v" >> "$GITHUB_OUTPUT"
           echo "verdict: $v"

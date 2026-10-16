@@ -139,14 +139,15 @@ jobs:
           private-key: ${{ secrets.GH_APP_PRIVATE_KEY }}
 
       # Labels and ready go through the App so the events they cause start
-      # workflows; GITHUB_TOKEN's do not.
+      # workflows; GITHUB_TOKEN's do not. Marking a PR ready needs contents
+      # write as well as pull-requests write.
       - id: app-token
         if: contains(fromJSON('["ready","review","land","handoff","give-up"]'), steps.decide.outputs.action)
         uses: dodi-smart/.github/actions/app-token@v1
         with:
           client-id:   ${{ secrets.GH_APP_CLIENT_ID }}
           private-key: ${{ secrets.GH_APP_PRIVATE_KEY }}
-          permissions: pull-requests:write issues:write
+          permissions: contents:write pull-requests:write issues:write
 
       - id: act
         if: contains(fromJSON('["ready","review","land","handoff","give-up"]'), steps.decide.outputs.action)
@@ -223,6 +224,8 @@ jobs:
           ROUNDS: ${{ needs.gate.outputs.rounds }}
         run: |
           set -euo pipefail
+          git config user.name 'claude[bot]'
+          git config user.email '41898282+claude[bot]@users.noreply.github.com'
           OUT="$RUNNER_TEMP/factory"
           echo "OUT=$OUT" >> "$GITHUB_ENV"
           mkdir -p "$OUT"
@@ -302,7 +305,11 @@ jobs:
           trailer-key:  Factory-Round
           author-name:  claude[bot]
           author-email: 41898282+claude[bot]@users.noreply.github.com
-          agent-emails: 41898282+claude[bot]@users.noreply.github.com
+          # The agent may set its own identity; the round is rewritten as
+          # claude[bot] either way, and only this job's agent committed here.
+          agent-emails: |
+            41898282+claude[bot]@users.noreply.github.com
+            claude@anthropic.com
           refuse-paths: ${{ steps.holdout.outputs.refuse-paths }}
           client-id:    ${{ secrets.GH_APP_CLIENT_ID }}
           private-key:  ${{ secrets.GH_APP_PRIVATE_KEY }}

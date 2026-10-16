@@ -226,6 +226,10 @@ jobs:
         run: |
           set -euo pipefail
           git switch -q -c "$BRANCH"
+          # The identity every factory commit carries, set before the agent so
+          # its commits start as it. The push step rewrites the round as it too.
+          git config user.name 'claude[bot]'
+          git config user.email '41898282+claude[bot]@users.noreply.github.com'
           OUT="$RUNNER_TEMP/factory"
           echo "OUT=$OUT" >> "$GITHUB_ENV"
           mkdir -p "$OUT"
@@ -346,6 +350,9 @@ jobs:
           round:     '0'
           head-ref:  ${{ needs.gate.outputs.branch }}
           subject:   ${{ steps.subject.outputs.subject }}
+          # The agent may set its own identity; round 0 is rewritten as
+          # claude[bot] either way, and only this job's agent committed here.
+          agent-emails: claude@anthropic.com
           app-token: ${{ steps.app-token.outputs.token }}
 
       # The PR is opened here, from the agent's files, never by the agent.

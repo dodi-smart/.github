@@ -7,7 +7,7 @@
 # other condition, and public repos and fork PRs never touch a self-hosted
 # runner.
 #
-# Five footguns are repeated below because the code reads as wrong without them:
+# Six footguns are repeated below because the code reads as wrong without them:
 #
 #   `--allowed-tools` is VARIADIC, space-separated, each entry quoted if it
 #   contains parentheses. A comma-joined list parses as one meaningless token:
@@ -32,6 +32,14 @@
 #   checkout, over whatever the caller configured earlier. A caller that checks
 #   who authored the agent's commits has to pass the identity it expects as
 #   `bot-name` and `bot-id`, or its own `git config` is silently replaced.
+#
+#   On a pull_request event claude-code-action restores `.claude/` from the
+#   base branch but keeps the PR head's working tree. A repo's own hooks are
+#   developer tooling, and the base's hooks can name a script the head branch
+#   does not have yet. A UserPromptSubmit hook that fails that way blocks the
+#   prompt, and the run "succeeds" after 0 turns. So every run passes
+#   `--settings '{"disableAllHooks":true}'`. It has to be the flag: the
+#   `settings` input is user settings, which a project's own value overrides.
 name: Run agent
 description: Invoke claude-code-action with the org's tool allowlist, model policy and reporting defaults.
 
@@ -334,6 +342,7 @@ runs:
         display_report: true
         claude_args: >-
           --model ${{ steps.model.outputs.model }}
+          --settings '{"disableAllHooks":true}'
           --allowed-tools ${{ inputs.allowed-tools }}
           ${{ steps.model.outputs.max-turns != '' && format('--max-turns {0}', steps.model.outputs.max-turns) || '' }}
           ${{ format('--append-system-prompt "{0} {1}"', inputs.house-style, inputs.append-system-prompt) }}
@@ -368,13 +377,17 @@ runs:
           echo "why=$why" >> "$GITHUB_OUTPUT"
           exit 0
         fi
-        IFS=$'\t' read -r subtype is_error turns text < <(jq -r '[.subtype // "", (.is_error // false), (.num_turns // ""),
+        # `unused`: 0 turns and no model usage, a session that never reached the
+        # model, which the action still calls a success. See the header on hooks.
+        IFS=$'\t' read -r subtype is_error unused turns text < <(jq -r '[.subtype // "", (.is_error // false),
+            ((.num_turns // 0) == 0 and ((.modelUsage // {}) | length) == 0), (.num_turns // ""),
             ((.result // ((.errors // []) | map(tostring) | join("; "))) | gsub("[\\t\\r\\n]+"; " ") | .[:300])] | @tsv' <<<"$r")
         cost=$(jq -r '.total_cost_usd // empty' <<<"$r")
-        case "$subtype" in
-          error_max_turns) why="The agent reached its turn cap after $turns turns." ;;
-          *) [ "$is_error" = true ] && why="The agent stopped with an error after $turns turn(s): ${text:-no message}." || why='' ;;
-        esac
+        why=''
+        if [ "$subtype" = error_max_turns ]; then why="The agent reached its turn cap after $turns turns."
+        elif [ "$is_error" = true ]; then why="The agent stopped with an error after $turns turn(s): ${text:-no message}."
+        elif [ "$unused" = true ]; then why="The session ended before the first turn; a hook or setting blocked the prompt.${text:+ It said: $text}"
+        fi
         {
           echo "turns=$turns"
           echo "cost=$cost"

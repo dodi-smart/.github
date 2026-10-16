@@ -1,3 +1,9 @@
+## [1.26.0](https://github.com/dodi-smart/.github/compare/v1.25.0...v1.26.0) (2026-10-16)
+
+### ✨ Features
+
+* **pr-review:** publish a machine-readable verdict and review automation commits on bot PRs ([0e4dec1](https://github.com/dodi-smart/.github/commit/0e4dec19a4fd51f130f4d4c255d98885d8dae9ae))
+
 ## [1.25.0](https://github.com/dodi-smart/.github/compare/v1.24.1...v1.25.0) (2026-10-16)
 
 ### ✨ Features

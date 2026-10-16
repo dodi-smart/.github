@@ -1,3 +1,9 @@
+## [1.24.1](https://github.com/dodi-smart/.github/compare/v1.24.0...v1.24.1) (2026-10-16)
+
+### 🐛 Bug Fixes
+
+* **deps-verify:** publish a real reason when the agent writes no report ([bace182](https://github.com/dodi-smart/.github/commit/bace182c41f7631e06e58dec71a6ccc17ef2567b))
+
 ## [1.24.0](https://github.com/dodi-smart/.github/compare/v1.23.0...v1.24.0) (2026-10-16)
 
 ### ✨ Features

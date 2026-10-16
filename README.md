@@ -226,7 +226,9 @@ The log shows the deployment id and commit before the routes are probed.
 | Action | Purpose |
 |---|---|
 | `actions/agent-gate` | Decides whether an agent may run. Evaluates `agent:no-touch` first, always. |
-| `actions/run-agent` | Invokes the agent with the org's tool allowlist and reporting defaults |
+| `actions/run-agent` | Invokes the agent with the org's tool allowlist and reporting defaults. Does not start it when the running workflow file differs from the default branch, says why a run stopped (`why`), and with `report-file` guarantees a valid report file on every path |
+| `actions/pr-facts` | Resolves the PR from a number or a pull_request, workflow_run or status event, and checks it is open, not a fork, and at the expected head |
+| `actions/app-token` | Mints the org App token for this repo, optionally narrowed; empty when no App is configured |
 | `actions/setup-stack` | Installs a toolchain, resolves cache isolation, supplies conventional commands |
 | `actions/sticky-comment` | One keyed comment per pull request, rewritten in place on every later run |
 | `actions/deps-intent` | Decides from a dependency PR's diff whether `deps-verify.yml` has anything new to judge. Internal to that workflow |
@@ -1076,6 +1078,8 @@ The rules on fixes:
 
 A red build is `needs-manual` even when the agent finds the cause was already on
 the base branch. The comment says so in one line.
+
+Every run that reaches the agent ends with a verdict that says why: when the agent leaves no report, `actions/run-agent` writes `needs-manual` with the cause. A PR merged or closed while the job queued gets nothing published.
 
 Which runner it takes:
 

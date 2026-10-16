@@ -576,6 +576,11 @@ jobs:
       - name: deps-verify decides when a run is skipped
         run: ./actions/deps-intent/test.sh
 
+      # Which PR a run is about, and whether it is still that open PR at the
+      # head it acted on. deps-verify reads it before and after its long job.
+      - name: pr-facts resolves the PR and refuses one that moved
+        run: ./actions/pr-facts/test.sh
+
       # Nothing in deps-verify waits for pr-checks (see deps-verify in AGENTS.md
       # for why). The gate reads a finished run once; verify takes heavy only
       # when the verdict is not green, and the agent runs only when the judge

@@ -1,0 +1,62 @@
+# Mint the org App's installation token for this repository, or hand back an
+# empty token when the caller has no App configured.
+#
+# One place for the pattern every App-using job repeated: hoist the secret
+# check, mint for this repo only, and degrade to "no token" with a warning the
+# caller words. A step that needs the App reads `token` and refuses on empty,
+# so a missing App is a refusal with a reason, never a GITHUB_TOKEN fallback:
+# GITHUB_TOKEN pushes start no checks, its labels start no workflows, and the
+# org rulesets do not accept it as a bypass actor.
+name: App token
+description: Mint the org App's token for this repository, or return an empty one when no App is configured.
+
+inputs:
+  client-id:
+    description: 'secrets.GH_APP_CLIENT_ID. Empty means no App: the token comes back empty.'
+    default: ''
+  private-key:
+    description: 'secrets.GH_APP_PRIVATE_KEY'
+    default: ''
+  permissions:
+    description: >-
+      Space-separated `name:level` pairs, e.g. "contents:write pull-requests:write".
+      Empty means every permission the App holds, which a push past the org
+      rulesets needs. Narrow it whenever the step only labels, comments or merges.
+    default: ''
+
+outputs:
+  token:
+    description: 'The installation token, or empty when no App is configured'
+    value: ${{ steps.mint.outputs.token }}
+
+runs:
+  using: composite
+  steps:
+    - id: perms
+      if: inputs.client-id != ''
+      shell: bash
+      env:
+        PERMISSIONS: ${{ inputs.permissions }}
+      run: |
+        set -euo pipefail
+        for p in contents pull-requests statuses issues checks actions; do
+          level=$(tr ' ' '\n' <<<"$PERMISSIONS" | sed -n "s/^$p://p" | head -n 1)
+          echo "$p=$level" >> "$GITHUB_OUTPUT"
+        done
+
+    - id: mint
+      if: inputs.client-id != ''
+      # Unnarrowed when `permissions` is empty, on purpose: see the input.
+      # jactionlint ignore=github-app
+      uses: actions/create-github-app-token@v3
+      with:
+        client-id:    ${{ inputs.client-id }}
+        private-key:  ${{ inputs.private-key }}
+        owner:        ${{ github.repository_owner }}
+        repositories: ${{ github.event.repository.name }}
+        permission-contents:      ${{ steps.perms.outputs.contents }}
+        permission-pull-requests: ${{ steps.perms.outputs.pull-requests }}
+        permission-statuses:      ${{ steps.perms.outputs.statuses }}
+        permission-issues:        ${{ steps.perms.outputs.issues }}
+        permission-checks:        ${{ steps.perms.outputs.checks }}
+        permission-actions:       ${{ steps.perms.outputs.actions }}

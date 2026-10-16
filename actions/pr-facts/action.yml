@@ -1,0 +1,44 @@
+# Which pull request, and is it still the same open, same-repo pull request at
+# the head the caller acted on. Thin wrapper; the rules are in facts.sh.
+name: PR facts
+description: Resolve a pull request from a number or the event, and check it is open, not a fork, and at the expected head.
+
+inputs:
+  number:
+    description: 'PR number. Empty resolves it from a pull_request, workflow_run or status event.'
+    default: ''
+  expected-sha:
+    description: "The head the caller acted on. Empty takes the event's own head, or skips the check."
+    default: ''
+  repository:
+    description: 'owner/repo'
+    default: ${{ github.repository }}
+  token:
+    description: 'Reads pull requests and commits.'
+    default: ${{ github.token }}
+
+outputs:
+  found:    { description: '"true" for an open same-repo PR at the expected head', value: '${{ steps.facts.outputs.found }}' }
+  why:      { description: 'Why found is false',               value: '${{ steps.facts.outputs.why }}' }
+  number:   { description: 'PR number',                        value: '${{ steps.facts.outputs.number }}' }
+  head-sha: { description: 'Head commit',                      value: '${{ steps.facts.outputs.head-sha }}' }
+  head-ref: { description: 'Head branch',                      value: '${{ steps.facts.outputs.head-ref }}' }
+  base-ref: { description: 'Base branch',                      value: '${{ steps.facts.outputs.base-ref }}' }
+  author:   { description: 'PR author login',                  value: '${{ steps.facts.outputs.author }}' }
+  draft:    { description: '"true" for a draft',               value: '${{ steps.facts.outputs.draft }}' }
+  title:    { description: 'Title, on one line',               value: '${{ steps.facts.outputs.title }}' }
+  labels:   { description: "JSON array of the PR's live labels", value: '${{ steps.facts.outputs.labels }}' }
+
+runs:
+  using: composite
+  steps:
+    - id: facts
+      shell: bash
+      env:
+        REPO:         ${{ inputs.repository }}
+        NUMBER:       ${{ inputs.number }}
+        EXPECTED_SHA: ${{ inputs.expected-sha }}
+        EVENT:        ${{ github.event_name }}
+        GH_TOKEN:     ${{ inputs.token }}
+        ACTION_PATH:  ${{ github.action_path }}
+      run: '"$ACTION_PATH/facts.sh"'

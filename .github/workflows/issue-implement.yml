@@ -83,13 +83,13 @@ jobs:
       priority: ${{ steps.fields.outputs.priority }}
       branch:  ${{ steps.branch.outputs.branch }}
     steps:
-      - uses: dodi-smart/.github/actions/runner-report@v1
+      - uses: dodi-smart/.github/actions/runner-report@pinned/v1.29.0
         with:
           selector: light
 
       # agent:no-touch first, unconditionally.
       - id: gate
-        uses: dodi-smart/.github/actions/agent-gate@v1
+        uses: dodi-smart/.github/actions/agent-gate@pinned/v1.29.0
         with:
           labels:        ${{ toJson(github.event.issue.labels.*.name) }}
           event-name:    ${{ github.event_name }}
@@ -107,7 +107,7 @@ jobs:
       # which also gives the autonomy tier pr-iterate computes the same way.
       - id: fields
         if: steps.gate.outputs.proceed == 'true'
-        uses: dodi-smart/.github/actions/factory@v1
+        uses: dodi-smart/.github/actions/factory@pinned/v1.29.0
         with:
           command: fields
           issue:   ${{ github.event.issue.number }}
@@ -175,7 +175,7 @@ jobs:
       # The branch name, from the issue type and title.
       - id: branch
         if: steps.check.outputs.proceed == 'true'
-        uses: dodi-smart/.github/actions/factory@v1
+        uses: dodi-smart/.github/actions/factory@pinned/v1.29.0
         with:
           command: branch
           args: |-
@@ -187,7 +187,7 @@ jobs:
       # refused actor must never pay for a hosted picker.
       - id: pick
         if: steps.check.outputs.proceed == 'true'
-        uses: dodi-smart/.github/actions/pick-runner@v1
+        uses: dodi-smart/.github/actions/pick-runner@pinned/v1.29.0
         with:
           weight:             ${{ inputs.runner-weight }}
           labels:             ${{ inputs.runner-labels }}
@@ -210,7 +210,7 @@ jobs:
       BRANCH:   ${{ needs.gate.outputs.branch }}
       TIER:     ${{ needs.gate.outputs.tier }}
     steps:
-      - uses: dodi-smart/.github/actions/runner-report@v1
+      - uses: dodi-smart/.github/actions/runner-report@pinned/v1.29.0
         with:
           selector: ${{ needs.gate.outputs.runner }}
 
@@ -245,7 +245,7 @@ jobs:
       # and posts a "Create PR" link. Here the agent only commits; the steps
       # below push and open the PR.
       - id: agent
-        uses: dodi-smart/.github/actions/run-agent@v1
+        uses: dodi-smart/.github/actions/run-agent@pinned/v1.29.0
         with:
           oauth-token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           stage:    implement
@@ -334,7 +334,7 @@ jobs:
       # Not narrowed with permission-*: the push must satisfy the org rulesets the App bypasses.
       - id: app-token
         if: ${{ !cancelled() }}
-        uses: dodi-smart/.github/actions/app-token@v1
+        uses: dodi-smart/.github/actions/app-token@pinned/v1.29.0
         with:
           client-id:   ${{ secrets.GH_APP_CLIENT_ID }}
           private-key: ${{ secrets.GH_APP_PRIVATE_KEY }}
@@ -350,7 +350,7 @@ jobs:
       # not exist yet. See actions/factory/factory.sh for every refusal.
       - id: push
         if: ${{ !cancelled() && steps.agent.outcome != 'skipped' }}
-        uses: dodi-smart/.github/actions/factory@v1
+        uses: dodi-smart/.github/actions/factory@pinned/v1.29.0
         with:
           command:   push
           issue:     ${{ github.event.issue.number }}

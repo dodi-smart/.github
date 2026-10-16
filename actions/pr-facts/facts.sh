@@ -51,5 +51,6 @@ head=$(f .head.sha)
 [ -z "$expected" ] || [ "$expected" = "$head" ] || none "#$n has moved from $expected to $head"
 jq -r '"found=true", "why=", "number=\(.number)", "head-sha=\(.head.sha)", "head-ref=\(.head.ref)",
        "base-ref=\(.base.ref)", "author=\(.user.login)", "draft=\(.draft)",
-       "title=\(.title | gsub("[\r\n]"; " "))", "labels=\([.labels[].name] | tojson)"' <<<"$pr" >> "$GITHUB_OUTPUT"
+       "title=\(.title | gsub("[\r\n]"; " "))", "labels=\([.labels[].name] | tojson)",
+       "mergeable-state=\(.mergeable_state // "")"' <<<"$pr" >> "$GITHUB_OUTPUT"
 echo "#$n at $head"

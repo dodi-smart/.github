@@ -64,7 +64,7 @@ caller keeps working.
 |---|---|---|
 | `pr-checks.yml` | pull request | Lint, typecheck, test, build, per stack |
 | `deps-verify.yml` | Renovate/Dependabot PRs | Reads the PR checks result, reads upstream changelogs, fixes code the update broke, posts a one-comment verdict. Never merges. |
-| `deps-automerge.yml` | verdict labels, `review / verdict`, PR Checks done | Merges a dependency bot's minor, patch or lock file PR once it is `deps:verified`, or `deps:fixed` and approved, and the required check is green. No agent |
+| `deps-automerge.yml` | verdict labels, `review / verdict`, `renovate/stability-days`, PR Checks done | Merges a dependency bot's minor, patch or lock file PR once it is `deps:verified`, or `deps:fixed` and approved, and the required check is green. No agent |
 | `pr-review.yml` | `ready_for_review`, `agent:review` | Second-opinion review, deeper on sensitive paths. Publishes the `review / verdict` status and a `review-verdict.json` artifact |
 | `issue-triage.yml` | issue opened or reopened, `agent:triage`, `@claude triage`, manual dispatch with `issue-number` | Classifies, sets fields, then plans or asks blocking questions |
 | `issue-implement.yml` | `agent:implement`, `@claude implement` | Holdout tests from the plan's acceptance criteria, then code. A step pushes one commit to `feat\|fix\|chore/<n>-<slug>` and opens a draft PR. Requires a plan. |
@@ -232,7 +232,7 @@ The log shows the deployment id and commit before the routes are probed.
 | `actions/run-agent` | Invokes the agent with the org's tool allowlist and reporting defaults, on the model `actions/pick-model` chooses for its `stage`. Does not start it when the running workflow file differs from the default branch, says why a run stopped (`why`), and with `report-file` guarantees a valid report file on every path |
 | `actions/pr-facts` | Resolves the PR from a number or a pull_request, workflow_run or status event, and checks it is open, not a fork, and at the expected head |
 | `actions/request-review` | Applies `agent:review` with the App token when the head commit has no `review / verdict` yet |
-| `actions/merge-gate` | The one unattended merge: resolves the PR, runs `agent-gate`, decides by policy (`deps` or `factory`) from labels, the required check, `review / verdict` and commit authors, and merges with the App token |
+| `actions/merge-gate` | The one unattended merge: resolves the PR, runs `agent-gate`, decides by policy (`deps` or `factory`) from labels, the required check, `review / verdict`, Renovate's release-age status, mergeability and commit authors, and merges with the App token. A conflicted Renovate PR gets its rebase box ticked instead |
 | `actions/push-round` | Checks an agent's commits on a PR branch, regenerates lockfiles, and pushes them as one trailered commit with the App token, or refuses with a reason |
 | `actions/app-token` | Mints the org App token for this repo, optionally narrowed; empty when no App is configured |
 | `actions/factory` | The deterministic half of `issue-implement.yml` and `pr-iterate.yml`: the autonomy tier from `Agent mode`, `Risk` and `Effort`, the branch name, round 0's push, the holdout pattern fix rounds give `push-round`, and the fix loop's next step |
@@ -1276,7 +1276,11 @@ an approving `review / verdict`, the required check green on the head, only
 allowed commit authors, no `agent:no-touch`, and `DEPS_AUTOMERGE` not `false`.
 Majors never merge. The merge uses the org App's token, `--rebase`, pinned to
 the head it read. Minor and patch updates also wait three days after release,
-from the preset's `minimumReleaseAge`.
+from the preset's `minimumReleaseAge`: the gate holds a PR while Renovate's
+`renovate/stability-days` status is pending, because no branch rule requires
+that status and GitHub would merge past it. A PR that conflicts with its base
+does not merge either; the gate ticks Renovate's rebase box with the App token,
+and the rebased head goes through deps-verify again.
 
 The caller listens for every event that can complete the evidence:
 
@@ -1286,7 +1290,8 @@ on:
   # deps-verify set deps:verified or deps:fixed (with the App, so it fires).
   pull_request:
     types: [labeled]
-  # pr-review posted review / verdict on a deps:fixed PR.
+  # pr-review posted review / verdict on a deps:fixed PR, or Renovate's
+  # renovate/stability-days turned green.
   status:
   # The required check finished after the verdict was set.
   workflow_run:

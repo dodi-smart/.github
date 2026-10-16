@@ -68,6 +68,7 @@ runs:
         SHA:             ${{ steps.pr.outputs.head-sha }}
         LABELS:          ${{ steps.pr.outputs.labels }}
         TITLE:           ${{ steps.pr.outputs.title }}
+        MERGEABLE:       ${{ steps.pr.outputs.mergeable-state }}
         KILL:            ${{ inputs.kill-switch }}
         REQUIRED_CHECK:  ${{ inputs.required-check }}
         ALLOWED_AUTHORS: ${{ steps.gate.outputs.dependency-bots }},${{ inputs.authors }}
@@ -76,7 +77,7 @@ runs:
       run: '"$ACTION_PATH/gate.sh" run'
 
     - id: token
-      if: steps.decide.outputs.merge == 'true'
+      if: steps.decide.outputs.merge == 'true' || steps.decide.outputs.rebase == 'true'
       uses: dodi-smart/.github/actions/app-token@v1
       with:
         client-id:   ${{ inputs.client-id }}
@@ -106,6 +107,32 @@ runs:
         GH_TOKEN="$APP_TOKEN" gh pr merge "$PR" --repo "$REPO" --rebase --match-head-commit "$SHA"
         echo "merged=true" >> "$GITHUB_OUTPUT"
         echo "::notice title=Merged::#$PR ($KIND): $REASON"
+
+    # Renovate honours its own rebase box even on a branch it sees as edited.
+    # Dependabot has no box and rebases a conflict by itself.
+    - id: rebase
+      if: steps.decide.outputs.rebase == 'true'
+      shell: bash
+      env:
+        APP_TOKEN:   ${{ steps.token.outputs.token }}
+        REPO:        ${{ github.repository }}
+        PR:          ${{ steps.pr.outputs.number }}
+        ACTION_PATH: ${{ github.action_path }}
+      run: |
+        set -euo pipefail
+        if [ -z "${APP_TOKEN:-}" ]; then
+          echo "::warning title=No rebase asked::GH_APP_CLIENT_ID is not set, so Renovate's rebase box stays as it is."
+          exit 0
+        fi
+        # Read fresh, right before the edit, so a Renovate update is not overwritten.
+        body=$(GH_TOKEN="$APP_TOKEN" gh api "/repos/$REPO/pulls/$PR" --jq '.body // ""')
+        rc=0; ticked=$("$ACTION_PATH/gate.sh" tick <<<"$body") || rc=$?
+        case "$rc" in
+          0) jq -n --arg b "$ticked" '{body: $b}' | GH_TOKEN="$APP_TOKEN" gh api -X PATCH "/repos/$REPO/pulls/$PR" --input - > /dev/null
+             echo "::notice title=Rebase asked::#$PR conflicts with its base; ticked Renovate's rebase box." ;;
+          3) echo "#$PR: the rebase box is already ticked; Renovate acts on it at its next run." ;;
+          *) echo "#$PR has no Renovate rebase box; Dependabot rebases a conflict by itself." ;;
+        esac
 
     - if: always()
       shell: bash

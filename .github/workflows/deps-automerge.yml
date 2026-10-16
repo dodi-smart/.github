@@ -56,11 +56,11 @@ jobs:
       checks: read          # the required check run
       statuses: read        # review / verdict
     steps:
-      - uses: dodi-smart/.github/actions/runner-report@v1
+      - uses: dodi-smart/.github/actions/runner-report@pinned/v1.28.0
         with:
           selector: '["self-hosted","Linux","light"]'
 
-      - uses: dodi-smart/.github/actions/merge-gate@v1
+      - uses: dodi-smart/.github/actions/merge-gate@pinned/v1.28.0
         with:
           policy:         deps
           required-check: ${{ inputs.required-check }}

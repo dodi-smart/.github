@@ -1,3 +1,9 @@
+## [1.28.2](https://github.com/dodi-smart/.github/compare/v1.28.1...v1.28.2) (2026-10-16)
+
+### 🐛 Bug Fixes
+
+* **factory:** let the App mark PRs ready, and accept the agent's own git identity ([a94c7c8](https://github.com/dodi-smart/.github/commit/a94c7c890a6128c52d0479f569f29d4482cbbd4d))
+
 ## [1.28.1](https://github.com/dodi-smart/.github/compare/v1.28.0...v1.28.1) (2026-10-16)
 
 ### 🐛 Bug Fixes

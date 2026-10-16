@@ -75,13 +75,13 @@ jobs:
       proceed: ${{ steps.check.outputs.proceed }}
       runner:  ${{ steps.pick.outputs.runner }}
     steps:
-      - uses: dodi-smart/.github/actions/runner-report@v1
+      - uses: dodi-smart/.github/actions/runner-report@pinned/v1.26.0
         with:
           selector: light
 
       # agent:no-touch first, unconditionally.
       - id: gate
-        uses: dodi-smart/.github/actions/agent-gate@v1
+        uses: dodi-smart/.github/actions/agent-gate@pinned/v1.26.0
         with:
           labels:        ${{ toJson(github.event.issue.labels.*.name) }}
           event-name:    ${{ github.event_name }}
@@ -167,7 +167,7 @@ jobs:
       # refused actor must never pay for a hosted picker.
       - id: pick
         if: steps.check.outputs.proceed == 'true'
-        uses: dodi-smart/.github/actions/pick-runner@v1
+        uses: dodi-smart/.github/actions/pick-runner@pinned/v1.26.0
         with:
           weight:             ${{ inputs.runner-weight }}
           labels:             ${{ inputs.runner-labels }}
@@ -185,7 +185,7 @@ jobs:
       issues: write            # to report back and clear the request label
       id-token: write
     steps:
-      - uses: dodi-smart/.github/actions/runner-report@v1
+      - uses: dodi-smart/.github/actions/runner-report@pinned/v1.26.0
         with:
           selector: ${{ needs.gate.outputs.runner }}
 
@@ -196,7 +196,7 @@ jobs:
           fetch-depth: 0
           ref: ${{ inputs.base-branch }}
 
-      - uses: dodi-smart/.github/actions/run-agent@v1
+      - uses: dodi-smart/.github/actions/run-agent@pinned/v1.26.0
         with:
           oauth-token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           model: ${{ inputs.model }}

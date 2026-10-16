@@ -1,0 +1,49 @@
+# Ask pr-review for a verdict on a pull request's head, unless that head has
+# one already. The request is `agent:review` applied with the org App token:
+# an App's label event starts the caller's PR Review workflow, and pr-review
+# admits a bot-authored PR only when a bot applied the label. A GITHUB_TOKEN
+# label starts nothing.
+name: Request review
+description: Apply agent:review with the App token when the head commit has no review / verdict status yet.
+
+inputs:
+  number:      { description: 'PR number', required: true }
+  sha:         { description: 'The head commit the review must cover', required: true }
+  client-id:   { description: 'secrets.GH_APP_CLIENT_ID', default: '' }
+  private-key: { description: 'secrets.GH_APP_PRIVATE_KEY', default: '' }
+
+outputs:
+  requested: { description: '"true" when the label was applied', value: '${{ steps.request.outputs.requested }}' }
+
+runs:
+  using: composite
+  steps:
+    - id: token
+      uses: dodi-smart/.github/actions/app-token@v1
+      with:
+        client-id:   ${{ inputs.client-id }}
+        private-key: ${{ inputs.private-key }}
+        permissions: issues:write pull-requests:write statuses:read
+
+    - id: request
+      shell: bash
+      env:
+        GH_TOKEN: ${{ steps.token.outputs.token }}
+        REPO:     ${{ github.repository }}
+        PR:       ${{ inputs.number }}
+        SHA:      ${{ inputs.sha }}
+      run: |
+        set -euo pipefail
+        echo "requested=false" >> "$GITHUB_OUTPUT"
+        if [ -z "${GH_TOKEN:-}" ]; then
+          echo "::warning title=No review requested::GH_APP_CLIENT_ID is not set, and only an App label starts PR Review."
+          exit 0
+        fi
+        # The context name is the contract; see the README's Review verdict section.
+        if [ "$(gh api "/repos/$REPO/commits/$SHA/status" --jq 'any(.statuses[]; .context == "review / verdict")')" = true ]; then
+          echo "review / verdict already on $SHA"
+          exit 0
+        fi
+        gh api "/repos/$REPO/issues/$PR/labels" -f "labels[]=agent:review" >/dev/null
+        echo "requested=true" >> "$GITHUB_OUTPUT"
+        echo "requested a review of #$PR at $SHA"

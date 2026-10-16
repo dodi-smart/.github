@@ -134,6 +134,10 @@ jobs:
       # The fix was to stop asking the agent to publish and start requiring a file.
       # If the prompt stops naming the file, or the verdict step stops reading the
       # same path, the silence comes straight back.
+      # Other workflows merge on review / verdict, so the verdict fails closed.
+      - name: PR Review's verdict fails closed
+        run: ./scripts/pr-review.test.sh
+
       - name: PR Review publishes through a file, not through the agent
         run: |
           set -euo pipefail
@@ -142,7 +146,12 @@ jobs:
           steps = yaml.safe_load(open('.github/workflows/pr-review.yml'))['jobs']['review']['steps']
 
           agent = [s for s in steps if 'run-agent@' in str(s.get('uses', ''))][0]
-          prompt = str((agent.get('with') or {}).get('prompt', ''))
+          env = agent.get('env') or {}
+          prompt = str(env.get('FULL_PROMPT', ''))
+          for name in ('FULL_PROMPT', 'SCOPED_PROMPT'):
+              for f in ('review-body.md', 'review-verdict.json'):
+                  if f not in str(env.get(name, '')):
+                      sys.exit('::error::the PR Review %s no longer asks the agent to write %s.' % (name, f))
           if 'review-body.md' not in prompt:
               sys.exit('::error::the PR Review prompt no longer asks the agent to write review-body.md. '
                        'That file is the only thing that reaches the pull request, so the review goes silent.')

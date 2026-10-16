@@ -8,8 +8,10 @@
 #   1. the kill switch (the caller's org variable) is not 'false'
 #   2. the policy's own rule:
 #        deps  the update is minor, patch or lockfile (deps-intent's `kind`),
-#              no `deps:needs-manual`, and `deps:verified`, or `deps:fixed`
-#              with `review / verdict` approving the head
+#              no `deps:needs-manual`, `renovate/stability-days` not pending, no
+#              conflict with the base (a conflict asks for a rebase instead), and
+#              `deps:verified`, or `deps:fixed` with `review / verdict`
+#              approving the head
 #        factory  the PR carries `agent:iterate`, its issue has no
 #              `agent:no-touch`, the issue's fields put it on the `merge` tier
 #              (actions/factory, the one place the tier is computed), and
@@ -17,7 +19,8 @@
 #   3. the required check is `success` on the head commit
 #   4. every commit on the PR is by an allowed author
 #
-# `run` reads the inputs from the API and writes merge/reason/kind to
+# `tick` is the rebase request's text edit, kept here so test.sh covers it.
+# `run` reads the inputs from the API and writes merge/rebase/reason/kind to
 # $GITHUB_OUTPUT; `decide` is the part test.sh runs on fixed inputs.
 # LABELS, the input, and labels, its lines, are two names on purpose.
 # shellcheck disable=SC2153
@@ -26,15 +29,18 @@ set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # The review contract: the context pr-review posts. Not an input, on purpose.
 REVIEW_CONTEXT='review / verdict'
+# Renovate's minimumReleaseAge status. No branch rule requires it.
+AGE_CONTEXT='renovate/stability-days'
 
 has() { grep -qxF "$1" <<<"$labels"; }
 
-# Sets merge, reason and kind from POLICY, LABELS, TITLE, KILL, CHECK, REVIEW,
-# FOREIGN (commit authors outside the allowed list), and for factory TIER and
-# ISSUE_NO_TOUCH.
+# Sets merge, rebase, reason and kind from POLICY, LABELS, TITLE, KILL, CHECK,
+# REVIEW, FOREIGN (commit authors outside the allowed list), for deps AGE (the
+# stability-days state) and MERGEABLE (the PR's mergeable_state), and for
+# factory TIER and ISSUE_NO_TOUCH.
 decide() {
   labels=$(jq -r '.[]' <<<"$LABELS")
-  merge=false
+  merge=false rebase=false
   kind=$(LABELS="$LABELS" TITLE="${TITLE:-}" "$HERE/../deps-intent/intent.sh" kind)
   if [ "${KILL:-}" = false ]; then reason="the kill switch is 'false'"; return; fi
   case "$POLICY" in
@@ -45,6 +51,10 @@ decide() {
         *)     reason="the update kind cannot be told from labels or title"; return ;;
       esac
       if has deps:needs-manual; then reason="deps:needs-manual"; return; fi
+      # Before the conflict rule: Renovate will not rebase before the age is met.
+      if [ "${AGE:-}" = pending ]; then reason="Renovate's minimum release age is not met yet ($AGE_CONTEXT is pending)"; return; fi
+      # The rebased head is judged again by deps-verify, whose label returns it here.
+      if [ "${MERGEABLE:-}" = dirty ]; then rebase=true; reason="the branch conflicts with its base, so Renovate is asked to rebase it"; return; fi
       if has deps:fixed; then
         [ "$REVIEW" = success ] || { reason="deps:fixed waits for $REVIEW_CONTEXT to approve (it is ${REVIEW:-missing})"; return; }
       elif ! has deps:verified; then
@@ -66,14 +76,24 @@ decide() {
   esac
 }
 
+# tick: Renovate's PR body on stdin, the body with its rebase box ticked on
+# stdout. Exits 3 when the box is already ticked and 4 when there is none.
+tick() {
+  local body; body=$(cat)
+  [[ $body == *'- [x] <!-- rebase-check -->'* ]] && return 3
+  [[ $body == *'- [ ] <!-- rebase-check -->'* ]] || return 4
+  printf '%s\n' "${body/'- [ ] <!-- rebase-check -->'/'- [x] <!-- rebase-check -->'}"
+}
+
 case "${1:-run}" in
+  tick) tick; exit $? ;;
   decide) : "${LABELS:?}" "${POLICY:?}"; CHECK="${CHECK:-}" REVIEW="${REVIEW:-}" FOREIGN="${FOREIGN:-}" TIER="${TIER:-}"
-          decide; printf 'merge=%s\nkind=%s\nreason=%s\n' "$merge" "$kind" "$reason"; exit 0 ;;
+          decide; printf 'merge=%s\nrebase=%s\nkind=%s\nreason=%s\n' "$merge" "$rebase" "$kind" "$reason"; exit 0 ;;
 esac
 
 : "${REPO:?}" "${PR:?}" "${SHA:?}" "${POLICY:?}" "${REQUIRED_CHECK:?}"
 labels=$(jq -r '.[]' <<<"$LABELS")
-CHECK='' REVIEW='' FOREIGN='' TIER='' ISSUE_NO_TOUCH=''
+CHECK='' REVIEW='' FOREIGN='' TIER='' ISSUE_NO_TOUCH='' AGE='' MERGEABLE="${MERGEABLE:-}"
 # factory: the issue the PR closes, its kill switch and its tier. Implement
 # writes `Closes #n` itself, so this reads our own output. No issue is draft.
 if [ "$POLICY" = factory ] && has agent:iterate; then
@@ -96,15 +116,19 @@ if has deps:verified || has deps:fixed || [ -n "$TIER" ]; then
               | sort -u | grep -vxF -f <(tr ',' '\n' <<<"$ALLOWED_AUTHORS") | tr '\n' ' ' || true)
   FOREIGN="${FOREIGN% }"
 fi
-if has deps:fixed || [ "$TIER" = merge ]; then
-  REVIEW=$(gh api "/repos/$REPO/commits/$SHA/status" \
-             --jq "[.statuses[] | select(.context == \"$REVIEW_CONTEXT\")][0].state // empty" 2>/dev/null || true)
+if has deps:fixed || [ -n "$TIER" ] || { [ "$POLICY" = deps ] && has deps:verified; }; then
+  # One read of the head's statuses; decide uses what its policy needs.
+  STATUSES=$(gh api "/repos/$REPO/commits/$SHA/status" --jq '[.statuses[] | {context, state}]' 2>/dev/null || echo '[]')
+  state_of() { jq -r --arg c "$1" '[.[] | select(.context == $c)][0].state // empty' <<<"$STATUSES" 2>/dev/null || true; }
+  REVIEW=$(state_of "$REVIEW_CONTEXT")
+  AGE=$(state_of "$AGE_CONTEXT")
 fi
 decide
 {
   echo "merge=$merge"
+  echo "rebase=$rebase"
   echo "kind=$kind"
   echo "reason=$reason"
 } >> "$GITHUB_OUTPUT"
-echo "#$PR at $SHA: kind=$kind check=${CHECK:-missing} review=${REVIEW:-missing} foreign=${FOREIGN:-none} tier=${TIER:-none}"
+echo "#$PR at $SHA: kind=$kind check=${CHECK:-missing} review=${REVIEW:-missing} age=${AGE:-none} mergeable=${MERGEABLE:-unknown} foreign=${FOREIGN:-none} tier=${TIER:-none}"
 echo "merge=$merge: $reason"

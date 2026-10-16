@@ -7,7 +7,8 @@
 # The caller listens for every event that can complete the evidence, and each
 # run decides once and exits. Nothing waits:
 #   pull_request labeled        deps-verify set `deps:verified` or `deps:fixed`
-#   status                      pr-review posted `review / verdict`
+#   status                      pr-review posted `review / verdict`, or
+#                               Renovate's minimum release age was met
 #   workflow_run (PR Checks)    the required check finished
 name: Dependency Automerge
 
@@ -32,7 +33,7 @@ jobs:
   merge:
     # Payload-only pre-filter, so a person's push never books a runner. Every
     # case it drops is one the gate would refuse: a PR by a non-bot or a label
-    # that is not a verdict, a status other than an approving review, a PR
+    # that is not a verdict, a status other than an approving review or a met release age, a PR
     # Checks run that did not succeed, and any branch a dependency bot did not
     # name. It tests the SHAPE of a bot login and the bots' branch prefixes;
     # the bot list stays in actions/agent-gate/gate.sh.
@@ -41,7 +42,7 @@ jobs:
         && endsWith(github.event.pull_request.user.login, '[bot]')
         && (github.event.label.name == 'deps:verified' || github.event.label.name == 'deps:fixed'))
       || (github.event_name == 'status'
-        && github.event.context == 'review / verdict' && github.event.state == 'success'
+        && contains(fromJson('["review / verdict","renovate/stability-days"]'), github.event.context) && github.event.state == 'success'
         && (startsWith(github.event.branches[0].name, 'renovate/') || startsWith(github.event.branches[0].name, 'dependabot/')))
       || (github.event_name == 'workflow_run'
         && github.event.workflow_run.event == 'pull_request'

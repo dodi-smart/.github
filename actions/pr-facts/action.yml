@@ -27,6 +27,7 @@ outputs:
   author:   { description: 'PR author login',                  value: '${{ steps.facts.outputs.author }}' }
   draft:    { description: '"true" for a draft',               value: '${{ steps.facts.outputs.draft }}' }
   title:    { description: 'Title, on one line',               value: '${{ steps.facts.outputs.title }}' }
+  mergeable-state: { description: 'GitHub''s mergeable_state (clean, dirty, blocked, unknown, ...); computed lazily, so a fresh PR may read unknown', value: '${{ steps.facts.outputs.mergeable-state }}' }
   labels:   { description: "JSON array of the PR's live labels", value: '${{ steps.facts.outputs.labels }}' }
 
 runs:

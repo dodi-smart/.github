@@ -14,6 +14,7 @@
 # Outputs go to $GITHUB_OUTPUT as key=value lines, and are echoed for the log.
 set -euo pipefail
 
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # The identity every factory commit carries. claude-code-action commits as this
 # by default, and the push step writes each round as it whatever the agent used.
 FACTORY_NAME='claude[bot]'
@@ -177,6 +178,12 @@ decide() {
   [ "$fork" = false ] || finish stop "#$pr is from a fork"
   grep -q '"agent:no-touch"' <<<"$labels" && finish stop "agent:no-touch on #$pr"
   grep -q '"agent:iterate"' <<<"$labels" || finish stop "#$pr does not carry agent:iterate"
+  # A dependency bot's PR belongs to deps-verify and deps-automerge. The loop
+  # would push agent commits onto a branch Renovate rebases, and judge a tier
+  # with no issue behind it, so a hand-added label stops here.
+  if [ "$("$HERE/../agent-gate/gate.sh" kind "$(jq -r '.user.login // ""' <<<"$json")")" = dependency ]; then
+    finish stop "#$pr is a dependency-bot PR; deps-verify owns it, not the fix loop"
+  fi
   if [ -n "${EVENT_SHA:-}" ] && [ "$EVENT_SHA" != "$head" ]; then
     finish stop "the event was for $EVENT_SHA, and #$pr has moved to $head"
   fi

@@ -173,6 +173,20 @@ live_ true  "no number makes no gh call"              '["bug"]' ''  '["agent:no-
 live_ false "override number is used"                 '["bug"]' 9   '["agent:no-touch"]'       no  1
 if ! grep -q '/issues/9/labels' "$TMP/gh.log"; then echo "  FAIL override number not queried"; fail=$((fail+1)); fi
 
+echo "== kind: the one dependency-bot list, read by other scripts =="
+kind_() {
+  local got mark; got="$(bash "$HERE/gate.sh" kind "$2")"
+  if [ "$got" = "$1" ]; then mark="ok  "; pass=$((pass+1)); else mark="FAIL"; fail=$((fail+1)); fi
+  printf '  %s %-46s kind=%s\n' "$mark" "kind ${2:-<empty>}" "$got"
+}
+kind_ dependency 'renovate[bot]'
+kind_ dependency 'app/renovate'
+kind_ dependency 'Dependabot[bot]'
+kind_ agent      'claude[bot]'
+kind_ automation 'dodi-smart-github-assistant[bot]'
+kind_ human      'alice'
+kind_ human      ''
+
 echo
 echo "pass=$pass fail=$fail"
 [ "$fail" -eq 0 ]

@@ -48,20 +48,25 @@ go() {
 #   agent       claude[bot], the org's own agent
 #   automation  any other bot, such as github-actions[bot] or an org app
 #   human       everything else
+#
+# `gate.sh kind LOGIN` prints the kind and exits, for a script that has a login
+# and needs the same answer without running the gate.
 DEPENDENCY_BOTS='renovate[bot],dependabot[bot],app/renovate,app/dependabot'
-login="$(printf '%s' "${AUTHOR:-}" | tr '[:upper:]' '[:lower:]')"
-if [ -z "$login" ]; then
-  kind=human
-else
+author_kind() {
+  local login
+  login="$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')"
+  [ -n "$login" ] || { echo human; return; }
   case ",$DEPENDENCY_BOTS," in
-    *",$login,"*) kind=dependency ;;
+    *",$login,"*) echo dependency ;;
     *) case "$login" in
-         'claude[bot]'|app/claude) kind=agent ;;
-         *'[bot]'|app/*)           kind=automation ;;
-         *)                        kind=human ;;
+         'claude[bot]'|app/claude) echo agent ;;
+         *'[bot]'|app/*)           echo automation ;;
+         *)                        echo human ;;
        esac ;;
   esac
-fi
+}
+if [ "${1:-}" = kind ]; then author_kind "${2:-}"; exit 0; fi
+kind="$(author_kind "${AUTHOR:-}")"
 {
   echo "author-kind=$kind"
   echo "dependency-bots=$DEPENDENCY_BOTS"

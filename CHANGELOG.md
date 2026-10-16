@@ -1,3 +1,9 @@
+## [1.27.0](https://github.com/dodi-smart/.github/compare/v1.26.0...v1.27.0) (2026-10-16)
+
+### ✨ Features
+
+* **deps-automerge:** merge verified minor, patch and lockfile dependency PRs through one merge gate ([d4e2506](https://github.com/dodi-smart/.github/commit/d4e2506b32dac78b256605690b6800474cdc224a))
+
 ## [1.26.0](https://github.com/dodi-smart/.github/compare/v1.25.0...v1.26.0) (2026-10-16)
 
 ### ✨ Features

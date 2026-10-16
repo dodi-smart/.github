@@ -42,14 +42,40 @@ inputs:
   prompt:
     description: 'The prompt, or a plugin slash command'
     required: true
-  model:
+  stage:
     description: >-
-      Which model. Judgement work (reading unfamiliar code, deciding plan-vs-questions,
-      reviewing a diff) earns opus. Mechanical work against an answer the deterministic
-      gate already produced does not.
-    default: 'claude-opus-5'
+      What the agent is doing, for the model policy in actions/pick-model:
+      triage | implement | fix-ci | fix-review | review | deps-verify |
+      fleet-sync | assist. The policy picks the model and the turn cap from it
+      and the facts below, so a caller never names a model id. Empty only for
+      a caller written before stages, which then runs on its own `model`.
+    default: ''
+  effort:
+    description: "The issue's Effort field, empty when unknown."
+    default: ''
+  priority:
+    description: "The issue's Priority field, empty when unknown."
+    default: ''
+  risk:
+    description: "The issue's Risk field, empty when unknown."
+    default: ''
+  signals:
+    description: 'Space-separated facts the gate established. The words pick-model knows are listed in its pick.sh; an unknown one fails.'
+    default: ''
+  round:
+    description: 'The fix round about to run, 1 is the first.'
+    default: ''
+  model:
+    description: 'Caller override of the policy. Leave empty unless a repo has a reason.'
+    default: ''
+  model-pin:
+    description: >-
+      Emergency pin that wins over the policy and any override. Every shared
+      workflow forwards vars.AGENT_MODEL_PIN here, so one org variable moves
+      every agent run when a model misbehaves.
+    default: ''
   max-turns:
-    description: 'Cap on agent turns. Empty means the action default. A cap is what stops a stuck agent from spending a whole job timeout.'
+    description: "Cap on agent turns, over the policy's. Empty means the policy's cap, or the action default when it has none. A cap is what stops a stuck agent from spending a whole job timeout."
     default: ''
   allowed-tools:
     description: 'Variadic, space-separated. See the header before changing.'
@@ -150,10 +176,37 @@ outputs:
   report:
     description: '`agent` when the agent wrote a valid report-file, `fallback` when run-agent wrote it, empty without a report-file.'
     value: ${{ steps.report.outputs.source }}
+  model:
+    description: 'The model the agent ran on.'
+    value: ${{ steps.model.outputs.model }}
+  route:
+    description: 'Which policy rule chose the model, one line.'
+    value: ${{ steps.model.outputs.route }}
+  turns:
+    description: 'Turns the agent took. Empty when it never ran.'
+    value: ${{ steps.outcome.outputs.turns }}
+  cost-usd:
+    description: 'Cost claude-code-action reported for the run. Empty when it never ran.'
+    value: ${{ steps.outcome.outputs.cost }}
 
 runs:
   using: composite
   steps:
+    # The model and the turn cap. The ids live in pick-model and nowhere else.
+    - id: model
+      shell: bash
+      env:
+        STAGE:     ${{ inputs.stage }}
+        EFFORT:    ${{ inputs.effort }}
+        PRIORITY:  ${{ inputs.priority }}
+        RISK:      ${{ inputs.risk }}
+        SIGNALS:   ${{ inputs.signals }}
+        ROUND:     ${{ inputs.round }}
+        MODEL:     ${{ inputs.model }}
+        PIN:       ${{ inputs.model-pin }}
+        MAX_TURNS: ${{ inputs.max-turns }}
+      run: '"$GITHUB_ACTION_PATH/../pick-model/pick.sh"'
+
     # Fail fast on the combination that silently posts nothing. See the header.
     - name: Reject a sticky comment agent mode will ignore
       if: inputs.sticky-comment == 'true' && inputs.prompt != ''
@@ -249,9 +302,9 @@ runs:
         # Never optional. See the header.
         display_report: true
         claude_args: >-
-          --model ${{ inputs.model }}
+          --model ${{ steps.model.outputs.model }}
           --allowed-tools ${{ inputs.allowed-tools }}
-          ${{ inputs.max-turns != '' && format('--max-turns {0}', inputs.max-turns) || '' }}
+          ${{ steps.model.outputs.max-turns != '' && format('--max-turns {0}', steps.model.outputs.max-turns) || '' }}
           ${{ format('--append-system-prompt "{0} {1}"', inputs.house-style, inputs.append-system-prompt) }}
 
     # Read even when the agent step failed, which is when it matters most.
@@ -263,6 +316,9 @@ runs:
       env:
         EXECUTION_FILE: ${{ steps.agent.outputs.execution_file }}
         OUTCOME:        ${{ steps.agent.outcome }}
+        STAGE:          ${{ inputs.stage }}
+        MODEL:          ${{ steps.model.outputs.model }}
+        ROUTE:          ${{ steps.model.outputs.route }}
       run: |
         set -euo pipefail
         exe="${EXECUTION_FILE:-$RUNNER_TEMP/claude-execution-output.json}"
@@ -275,14 +331,18 @@ runs:
         fi
         IFS=$'\t' read -r subtype is_error turns text < <(jq -r '[.subtype // "", (.is_error // false), (.num_turns // ""),
             ((.result // ((.errors // []) | map(tostring) | join("; "))) | gsub("[\\t\\r\\n]+"; " ") | .[:300])] | @tsv' <<<"$r")
+        cost=$(jq -r '.total_cost_usd // empty' <<<"$r")
         case "$subtype" in
           error_max_turns) why="The agent reached its turn cap after $turns turns." ;;
           *) [ "$is_error" = true ] && why="The agent stopped with an error after $turns turn(s): ${text:-no message}." || why='' ;;
         esac
         {
           echo "turns=$turns"
+          echo "cost=$cost"
           echo "why=$why"
         } >> "$GITHUB_OUTPUT"
+        # One line per run, the same shape everywhere, for comparing models.
+        echo "::notice title=Agent run::stage=${STAGE:-} model=${MODEL:-} turns=${turns:-?} cost=${cost:-?} (${ROUTE:-})"
 
     # The report contract. The agent is told to write the file; this makes
     # sure it exists and passes `report-valid` on every path, the skipped and

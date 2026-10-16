@@ -52,6 +52,45 @@ jobs:
       - name: Pick-runner policy
         run: ./actions/pick-runner/test.sh
 
+      # The model policy as a matrix: stage, fields and signals in, model and
+      # turn cap out. A wrong row is an expensive run or a weak one.
+      - name: Pick-model policy
+        run: ./actions/pick-model/test.sh
+
+      # The model ids live in pick-model. A workflow that names one, or calls
+      # run-agent without a stage or the org pin, drifts from the policy
+      # without anyone deciding it.
+      - name: Every agent run goes through the model policy
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import glob, re, yaml
+          bad = []
+          expr = lambda e: '$' + '{{ ' + e + ' }}'
+          files = glob.glob('.github/workflows/*.yml') + glob.glob('actions/*/action.yml')
+          for f in files:
+              if f.startswith('actions/pick-model/'):
+                  continue
+              text = open(f).read()
+              for n, line in enumerate(text.splitlines(), 1):
+                  if re.search(r'claude-(opus|sonnet|haiku)-', line):
+                      bad.append('%s:%d names a model id; the ids live in actions/pick-model' % (f, n))
+              doc = yaml.safe_load(text) or {}
+              steps = [s for j in (doc.get('jobs') or {}).values() if isinstance(j, dict) for s in j.get('steps', [])]
+              for s in steps:
+                  if 'actions/run-agent@' not in str(s.get('uses', '')):
+                      continue
+                  w = s.get('with') or {}
+                  if not w.get('stage'):
+                      bad.append('%s: a run-agent step passes no stage' % f)
+                  # Built at run time: Actions would expand a literal expression in this script.
+                  if w.get('model-pin') != expr('vars.AGENT_MODEL_PIN'):
+                      bad.append('%s: a run-agent step does not forward vars.AGENT_MODEL_PIN' % f)
+          if bad:
+              print('\n'.join(bad)); raise SystemExit(1)
+          print('every run-agent call passes a stage and the pin, and no file names a model id')
+          PY
+
       # The kill switch is a claim about behaviour. Assert it.
       - name: Agent gate behaviour
         run: ./actions/agent-gate/test.sh

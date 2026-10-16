@@ -106,6 +106,7 @@ jobs:
       mode:    ${{ steps.level.outputs.mode }}      # full | scoped
       scope:   ${{ steps.level.outputs.scope }}     # the scoped commits, space-separated
       level:   ${{ steps.level.outputs.level }}
+      elevated: ${{ steps.level.outputs.elevated }}  # true: sensitive paths or a sec: label
       reason:  ${{ steps.level.outputs.reason }}
       ci:      ${{ steps.ci.outputs.summary }}
       runner:  ${{ steps.pick.outputs.runner }}
@@ -161,7 +162,7 @@ jobs:
           ELEVATED:  ${{ inputs.elevated-level }}
         run: |
           set -euo pipefail
-          proceed="$PROCEED"; level="$LEVEL"; reason="$REASON"; mode=full; scope=''
+          proceed="$PROCEED"; level="$LEVEL"; reason="$REASON"; mode=full; scope=''; elevated=false
 
           # A bot's PR: only on a bot's request, and only its trailered
           # commits when it has any.
@@ -190,10 +191,10 @@ jobs:
             # Collapse the multi-line default into one ERE before matching.
             pattern=$(printf '%s' "$SENSITIVE" | tr -d '[:space:]')
             if printf '%s\n' "$files" | grep -qiE "$pattern"; then
-              level="$ELEVATED"; reason="sensitive paths touched"
+              level="$ELEVATED"; reason="sensitive paths touched"; elevated=true
             fi
             if printf '%s' "$LABELS" | grep -q '"sec:'; then
-              level="$ELEVATED"; reason="sec: label"
+              level="$ELEVATED"; reason="sec: label"; elevated=true
             fi
           fi
 
@@ -202,6 +203,7 @@ jobs:
             echo "mode=$mode"
             echo "scope=$scope"
             echo "level=$level"
+            echo "elevated=$elevated"
             echo "reason=$reason"
           } >> "$GITHUB_OUTPUT"
           echo "decision: proceed=$proceed mode=$mode level=$level ${reason:+($reason)}"
@@ -396,7 +398,9 @@ jobs:
                 Do not post comments, approve, merge or push.
         with:
           oauth-token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          model: ${{ needs.gate.outputs.mode == 'scoped' && 'claude-sonnet-5' || 'claude-opus-5' }}
+          stage:   review
+          signals: ${{ needs.gate.outputs.mode }} ${{ needs.gate.outputs.elevated == 'true' && 'elevated' || '' }}
+          model-pin: ${{ vars.AGENT_MODEL_PIN }}
           prompt: ${{ needs.gate.outputs.mode == 'scoped' && env.SCOPED_PROMPT || env.FULL_PROMPT }}
           # A bot's PR is labelled by the org App, and claude-code-action
           # refuses a bot actor it is not told about. The gate has already

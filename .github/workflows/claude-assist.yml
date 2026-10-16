@@ -31,7 +31,7 @@ on:
         default: "triage plan implement"
       model:
         type: string
-        default: "claude-opus-5"
+        default: ""       # empty: actions/pick-model chooses by stage and the issue's fields
       timeout-minutes:
         type: number
         default: 20
@@ -132,7 +132,9 @@ jobs:
       - uses: dodi-smart/.github/actions/run-agent@v1
         with:
           oauth-token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          stage: assist
           model: ${{ inputs.model }}
+          model-pin: ${{ vars.AGENT_MODEL_PIN }}
           prompt: ''
           additional-permissions: |
             actions: read

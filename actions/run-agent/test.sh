@@ -61,6 +61,23 @@ EOF
 }
 expect "run-agent forwards branch-prefix, defaulting to a conventional one, never claude/" prefix_wired
 
+# The model comes from pick-model, never from a literal or straight from inputs.
+model_wired() {
+python3 - "$ROOT" <<'EOF'
+import sys, yaml
+doc = yaml.safe_load(open(sys.argv[1] + '/actions/run-agent/action.yml'))
+assert doc['inputs']['model']['default'] == '', doc['inputs']['model']
+steps = doc['runs']['steps']
+pick = [s for s in steps if s.get('id') == 'model'][0]
+assert 'pick-model/pick.sh' in pick['run'], pick
+assert steps.index(pick) == 0, 'the model step runs first'
+call = [s for s in steps if 'claude-code-action@' in str(s.get('uses', ''))][0]['with']
+assert '--model ${{ steps.model.outputs.model }}' in call['claude_args'], call['claude_args']
+assert 'steps.model.outputs.max-turns' in call['claude_args'] and 'inputs.max-turns' not in call['claude_args'], call['claude_args']
+EOF
+}
+expect "run-agent runs on the model and cap pick-model chose" model_wired
+
 # 2. Lift the steps out of the workflow. The push itself is actions/push-round,
 # tested there.
 python3 - "$ROOT" "$WORK" <<'EOF' || { echo 'cannot read the deps-verify steps'; exit 1; }
@@ -208,6 +225,9 @@ expect "the hidden error text is read from the execution file" test "$(out_why)"
 outcome success '[{"type":"result","subtype":"success","is_error":false,"num_turns":12,"result":"done"}]'
 expect "a normal finish has no why" test -z "$(out_why)"
 expect "and reports its turns" grep -qx 'turns=12' "$WORK/out"
+outcome success '[{"type":"result","subtype":"success","is_error":false,"num_turns":3,"total_cost_usd":0.42,"result":""}]'
+expect "the cost is read, an empty result text does not shift it" bash -c 'grep -qx "cost=0.42" "$1" && grep -qx "turns=3" "$1"' _ "$WORK/out"
+expect "and one Agent run notice carries it" grep -q '::notice title=Agent run::.*turns=3 cost=0.42' "$WORK/log"
 outcome failure '[{"type":"result","subtype":"error_during_execution","is_error":true,"num_turns":2,"errors":[{"m":"x"}]}]'
 expect "structured errors do not break the step" grep -q 'error after 2 turn(s)' <(out_why)
 outcome success

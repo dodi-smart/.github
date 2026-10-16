@@ -837,10 +837,10 @@ that matches wins.
 |---|---|---|---|
 | triage, assist | always | | action default |
 | implement | Effort High, Risk High or Critical, Priority Urgent, or Risk or Effort unset | Sonnet | action default |
-| fix-ci | round 2 or later, Risk High or Critical, Effort High | Haiku on round 1 when only `hk check --all` failed, else Sonnet | 30 Haiku, 60 else |
+| fix-ci | round 2 or later, Risk High or Critical, Effort High, Priority Urgent | Haiku on round 1 when only `hk check --all` failed, else Sonnet | 30 Haiku, 60 else |
 | fix-review | always | | 60 |
 | review | full review, sensitive paths or a `sec:` label | Sonnet for a review scoped to trailered commits | action default |
-| deps-verify | CI red, or a major update | Haiku for a green patch or lockfile update, Sonnet for a green minor | 80 red, 40 Sonnet, 30 Haiku |
+| deps-verify | CI red, or a major update | Haiku for a green patch or lockfile update, Sonnet for a green minor | 80 red, 40 major or Sonnet, 30 Haiku |
 | fleet-sync | never | Sonnet | 40 |
 
 Haiku runs only where a deterministic step already knows the answer and the

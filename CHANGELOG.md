@@ -1,3 +1,9 @@
+## [1.25.0](https://github.com/dodi-smart/.github/compare/v1.24.1...v1.25.0) (2026-10-16)
+
+### ✨ Features
+
+* **deps-verify:** let fixes bump companion versions and regenerate lockfiles ([f67a3aa](https://github.com/dodi-smart/.github/commit/f67a3aa4e75795bfb11536f8341f16461fbcad29))
+
 ## [1.24.1](https://github.com/dodi-smart/.github/compare/v1.24.0...v1.24.1) (2026-10-16)
 
 ### 🐛 Bug Fixes

@@ -154,7 +154,8 @@ scenario() {
   local mode="$1" checks="$2" verdict="$3" draft="${4:-false}" labels="${5:-[\"agent:iterate\"]}" rounds="${6:-0}"
   api /repos/o/r/pulls/5 "{\"state\":\"open\",\"draft\":$draft,\"labels\":$(jq -c '[.[]|{name:.}]' <<<"$labels"),
     \"head\":{\"sha\":\"abc\",\"ref\":\"feat/1-x\",\"repo\":{\"full_name\":\"o/r\"}},
-    \"base\":{\"ref\":\"main\",\"repo\":{\"full_name\":\"o/r\"}},\"body\":\"text\n\nCloses #1\"}"
+    \"base\":{\"ref\":\"main\",\"repo\":{\"full_name\":\"o/r\"}},\"body\":\"text\n\nCloses #1\",
+    \"user\":{\"login\":\"${AUTHOR:-dodi-smart-github-assistant[bot]}\"}}"
   api /repos/o/r/issues/1/labels '[]'
   local m r e; read -r m r e <<<"$mode"
   api graphql-issue "{\"data\":{\"repository\":{\"issue\":{\"issueFieldValues\":{\"nodes\":[
@@ -182,6 +183,11 @@ decide() {  # decide [EVENT_SHA] -> action
   val action
 }
 
+AUTHOR='renovate[bot]' scenario 'Autonomous Low Low' 'completed failure' ''
+expect "a Renovate PR with agent:iterate stops" test "$(decide)" = stop
+expect "and says deps-verify owns it"         grep -q 'dependency-bot PR' "$WORK/out"
+AUTHOR='dependabot[bot]' scenario 'Autonomous Low Low' 'completed success' 'success'
+expect "a green, approved Dependabot PR is not landed" test "$(decide)" = stop
 scenario 'Autonomous Low Low' 'completed failure' ''
 expect "red checks start a fix round"         test "$(decide)" = fix-ci
 expect "and the failed run is named"          test "$(val run-id)" = 77

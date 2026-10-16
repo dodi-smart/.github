@@ -68,7 +68,7 @@ caller keeps working.
 | `pr-review.yml` | `ready_for_review`, `agent:review` | Second-opinion review, deeper on sensitive paths. Publishes the `review / verdict` status and a `review-verdict.json` artifact |
 | `issue-triage.yml` | issue opened or reopened, `agent:triage`, `@claude triage`, manual dispatch with `issue-number` | Classifies, sets fields, then plans or asks blocking questions |
 | `issue-implement.yml` | `agent:implement`, `@claude implement` | Holdout tests from the plan's acceptance criteria, then code. A step pushes one commit to `feat\|fix\|chore/<n>-<slug>` and opens a draft PR. Requires a plan. |
-| `pr-iterate.yml` | `agent:iterate`, PR Checks completed, the review verdict status | The agent fix loop: up to 3 fix rounds on red checks or a `changes` verdict, then ready for review, then a rebase merge when the issue is `Autonomous` with Risk and Effort `Low`. Every push, ready and merge is a step, not the agent |
+| `pr-iterate.yml` | `agent:iterate`, PR Checks completed, the review verdict status | The agent fix loop: up to 3 fix rounds on red checks or a `changes` verdict, then ready for review, then a rebase merge when the issue is `Autonomous` with Risk and Effort `Low`. Every push, ready and merge is a step, not the agent. A Renovate or Dependabot PR stops, label or not: deps-verify owns it |
 | `claude-assist.yml` | `@claude <anything else>` | The general assistant |
 | `release.yml` | push to a release branch | semantic-release, single or multi-module |
 | `supabase-deploy.yml` | called after `release.yml` | Pushes a Supabase project's schema and functions for the tag a release just cut |
@@ -282,7 +282,7 @@ token needs `pull-requests: read`.
 | input `bots` | `reject` (default): stop on any non-human author. `only`: proceed for dependency bots only. `allow`: ignore the author. |
 | input `number` | Override for the issue or PR number. The gate reads it from the event payload, so set it only where the payload has none (a `workflow_dispatch`). Before a run proceeds, the gate reads the item's current labels and stops on `agent:no-touch` added after the event. A failed read warns and proceeds. Needs `issues: read` or `pull-requests: read` on the gate job. |
 | input `events` | Space-separated `github.event_name` values the workflow handles, checked right after `agent:no-touch`. Any other event stops the run. Empty (default) allows every event. `issue-triage.yml` passes `issues issue_comment workflow_dispatch`, so a person's PR review never reaches it. |
-| output `author-kind` | `dependency` (Renovate, Dependabot), `agent` (`claude[bot]`), `automation` (any other `[bot]` or `app/` login) or `human`. Written before every rule, `agent:no-touch` included, so it is set on a stopped run too. A workflow that needs only the classification can call the gate for it and ignore `proceed`. |
+| output `author-kind` | `dependency` (Renovate, Dependabot), `agent` (`claude[bot]`), `automation` (any other `[bot]` or `app/` login) or `human`. Written before every rule, `agent:no-touch` included, so it is set on a stopped run too. A workflow that needs only the classification can call the gate for it and ignore `proceed`; a script runs `gate.sh kind LOGIN`. |
 | output `dependency-bots` | The comma-separated dependency-bot logins, for `claude-code-action`'s `allowed_bots`. `deps-verify.yml` reads it. |
 
 The dependency-bot list lives in `actions/agent-gate/gate.sh` and nowhere else.

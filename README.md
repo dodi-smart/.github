@@ -63,7 +63,7 @@ caller keeps working.
 |---|---|---|
 | `pr-checks.yml` | pull request | Lint, typecheck, test, build, per stack |
 | `deps-verify.yml` | Renovate/Dependabot PRs | Reads the PR checks result, reads upstream changelogs, fixes code the update broke, posts a one-comment verdict. Never merges. |
-| `pr-review.yml` | `ready_for_review`, `agent:review` | Second-opinion review, deeper on sensitive paths |
+| `pr-review.yml` | `ready_for_review`, `agent:review` | Second-opinion review, deeper on sensitive paths. Publishes the `review / verdict` status and a `review-verdict.json` artifact |
 | `issue-triage.yml` | issue opened or reopened, `agent:triage`, `@claude triage`, manual dispatch with `issue-number` | Classifies, sets fields, then plans or asks blocking questions |
 | `issue-implement.yml` | `agent:implement`, `@claude implement` | Branch, code, draft PR. Requires a plan. Never merges. |
 | `claude-assist.yml` | `@claude <anything else>` | The general assistant |
@@ -228,6 +228,7 @@ The log shows the deployment id and commit before the routes are probed.
 | `actions/agent-gate` | Decides whether an agent may run. Evaluates `agent:no-touch` first, always. |
 | `actions/run-agent` | Invokes the agent with the org's tool allowlist and reporting defaults. Does not start it when the running workflow file differs from the default branch, says why a run stopped (`why`), and with `report-file` guarantees a valid report file on every path |
 | `actions/pr-facts` | Resolves the PR from a number or a pull_request, workflow_run or status event, and checks it is open, not a fork, and at the expected head |
+| `actions/request-review` | Applies `agent:review` with the App token when the head commit has no `review / verdict` yet |
 | `actions/push-round` | Checks an agent's commits on a PR branch, regenerates lockfiles, and pushes them as one trailered commit with the App token, or refuses with a reason |
 | `actions/app-token` | Mints the org App token for this repo, optionally narrowed; empty when no App is configured |
 | `actions/setup-stack` | Installs a toolchain, resolves cache isolation, supplies conventional commands |
@@ -1004,6 +1005,41 @@ line, the reusable release workflow's `modules` path, replaces the config's
 own `extends` entirely. A path sidesteps all three. Both usage modes are
 covered by real dry runs in the package's end-to-end test, run through the
 installer.
+
+## Review verdict
+
+Every `pr-review.yml` run ends in a verdict that a workflow can read, besides
+the comment a person reads. This is a contract: other workflows merge on it.
+
+- **Commit status `review / verdict`** on the head commit the review read.
+  `success` means approve. `failure` means changes, with the number of
+  blocking findings in the description. No status means not reviewed, which
+  every consumer treats as not approved. A push moves the head, so a new
+  commit is unreviewed until reviewed again.
+- **Artifact `review-verdict`** holding `review-verdict.json`:
+
+  ```json
+  {"verdict": "approve", "blocking": [], "sha": "<head sha>", "mode": "full"}
+  ```
+
+  `blocking` lists `{"path", "line", "summary"}` entries, the findings the
+  reviewer would not merge with. `mode` is `full` for a whole pull request and
+  `scoped` for a bot's trailered commits.
+
+The job writes both from the agent's file and fails closed: a missing or
+malformed file, an unknown verdict, or `approve` with a blocking finding all
+become `changes`. The status is posted with the org App's token, because asking
+for `statuses: write` in the workflow would break every caller that does not
+grant it. The App needs the Commit statuses permission (read and write). Without
+it the run warns and posts no status.
+
+A bot's pull request is reviewed only when a bot applied `agent:review`, which
+is what `actions/request-review` does with the org App token when the head has
+no verdict yet. When the PR's commits carry a `scope-trailers` trailer
+(`Deps-Verify-Round` by default), only those commits are reviewed, on sonnet
+from their diff: the automation's own changes on top of another bot's work.
+deps-verify requests one for every `deps:fixed` PR. No caller change is needed:
+the caller's `labeled` trigger already covers it.
 
 ## Renovate
 

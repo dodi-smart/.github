@@ -821,6 +821,7 @@ jobs:
           done
           gh api "/repos/$REPO/issues/$PR/labels" -f "labels[]=deps:$label" >/dev/null
           echo "verdict label: deps:$label"
+          echo "label=$label" >> "$GITHUB_OUTPUT"
           # Red after the comment, so the PR says why: no report at all, or one
           # run-agent had to write. The deliberate skip (the workflow file
           # mismatch) is a reason, not a failure.
@@ -838,6 +839,18 @@ jobs:
           key:       deps-verify
           number:    ${{ needs.gate.outputs.number }}
           body-file: ${{ runner.temp }}/deps-comment.md
+
+      # A `deps:fixed` PR merges only after pr-review approves the fix commits
+      # (deps-automerge reads `review / verdict`). Asked for after the comment,
+      # so the run the label also starts here reads the new intent hash and
+      # skips.
+      - if: ${{ !cancelled() && steps.publish.outputs.label == 'fixed' }}
+        uses: dodi-smart/.github/actions/request-review@v1
+        with:
+          sha:         ${{ needs.gate.outputs.head-sha }}
+          number:      ${{ needs.gate.outputs.number }}
+          client-id:   ${{ secrets.GH_APP_CLIENT_ID }}
+          private-key: ${{ secrets.GH_APP_PRIVATE_KEY }}
 
       # Red after the comment is up; publish decides when.
       - if: ${{ !cancelled() && steps.publish.outputs.failed == 'true' }}

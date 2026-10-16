@@ -1,0 +1,82 @@
+# Check, relock and push one round of an agent's commits to a PR branch, or
+# refuse it with a reason. The rules are in round.sh. The App token is minted
+# between the check (which runs lock tooling) and the push, so nothing the lock
+# command starts can read it.
+name: Push round
+description: Check an agent's commits, regenerate lockfiles, and push them as one trailered commit, or refuse with a reason.
+
+inputs:
+  base-sha:      { description: 'The head before the agent ran', required: true }
+  head-ref:      { description: 'The branch to push to', required: true }
+  rounds:        { description: 'Rounds already on the branch', required: true }
+  max-rounds:    { description: 'Round cap', default: '2' }
+  trailer-key:   { description: 'Round trailer, e.g. Deps-Verify-Round. Its count is how rounds are counted, so never rename it.', required: true }
+  author-name:   { description: 'The identity the round is written as', required: true }
+  author-email:  { description: 'Its email; also the author whose lines KEEP_RANGE does not protect', required: true }
+  agent-emails:  { description: 'Newline-separated authors an agent commit may carry', required: true }
+  allowed:       { description: "'true' when the caller's own precondition holds", default: 'true' }
+  denied-why:    { description: 'Why it does not, for the refusal', default: '' }
+  refuse-paths:  { description: 'ERE of paths a round may never touch (lockfiles, a holdout list)', default: '' }
+  keep-range:    { description: "git range whose other authors' added lines a round may not remove, e.g. origin/develop..<base-sha>", default: '' }
+  record-paths:  { description: 'ERE of paths a round may change only with a record in records-file', default: '' }
+  records-file:  { description: 'JSON array of {name, from, to, why} the agent wrote', default: '' }
+  record-trailer: { description: 'Trailer written per record, e.g. Deps-Verify-Bump', default: '' }
+  lock:          { description: 'Command that regenerates a lockfile, run in its directory when a record path changed', default: '' }
+  lockfiles:     { description: 'ERE of lockfiles; the only paths the lock command may change', default: '' }
+  env-file:      { description: 'Sourced before the lock command (setup-stack env-file)', default: '' }
+  client-id:     { description: 'secrets.GH_APP_CLIENT_ID', default: '' }
+  private-key:   { description: 'secrets.GH_APP_PRIVATE_KEY', default: '' }
+
+outputs:
+  pushed:  { description: '"true" when a round was pushed', value: '${{ steps.push.outputs.pushed }}' }
+  refused: { description: 'Why the round was refused; empty otherwise', value: '${{ steps.check.outputs.refused || steps.push.outputs.refused }}' }
+
+runs:
+  using: composite
+  steps:
+    - id: check
+      shell: bash
+      env:
+        BASE_SHA: ${{ inputs.base-sha }}
+        ROUNDS: ${{ inputs.rounds }}
+        MAX_ROUNDS: ${{ inputs.max-rounds }}
+        ALLOWED: ${{ inputs.allowed }}
+        DENIED_WHY: ${{ inputs.denied-why }}
+        AGENT_EMAILS: ${{ inputs.agent-emails }}
+        AUTHOR_NAME: ${{ inputs.author-name }}
+        AUTHOR_EMAIL: ${{ inputs.author-email }}
+        REFUSE_PATHS: ${{ inputs.refuse-paths }}
+        KEEP_RANGE: ${{ inputs.keep-range }}
+        RECORD_PATHS: ${{ inputs.record-paths }}
+        RECORDS: ${{ inputs.records-file }}
+        LOCK: ${{ inputs.lock }}
+        LOCKFILES: ${{ inputs.lockfiles }}
+        ENV_FILE: ${{ inputs.env-file }}
+        ACTION_PATH: ${{ github.action_path }}
+      run: '"$ACTION_PATH/round.sh" check'
+
+    # Not narrowed: the push must satisfy the org rulesets the App bypasses.
+    - id: token
+      if: steps.check.outputs.ready == 'true'
+      uses: dodi-smart/.github/actions/app-token@v1
+      with:
+        client-id:   ${{ inputs.client-id }}
+        private-key: ${{ inputs.private-key }}
+
+    - id: push
+      if: steps.check.outputs.ready == 'true'
+      shell: bash
+      env:
+        BASE_SHA: ${{ inputs.base-sha }}
+        ROUNDS: ${{ inputs.rounds }}
+        TRAILER_KEY: ${{ inputs.trailer-key }}
+        RECORD_TRAILER: ${{ inputs.record-trailer }}
+        RECORDS: ${{ inputs.records-file }}
+        RECORDED: ${{ steps.check.outputs.recorded }}
+        AUTHOR_NAME: ${{ inputs.author-name }}
+        AUTHOR_EMAIL: ${{ inputs.author-email }}
+        HEAD_REF: ${{ inputs.head-ref }}
+        REPO: ${{ github.repository }}
+        APP_TOKEN: ${{ steps.token.outputs.token }}
+        ACTION_PATH: ${{ github.action_path }}
+      run: '"$ACTION_PATH/round.sh" push'

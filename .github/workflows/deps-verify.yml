@@ -1,11 +1,12 @@
 # Reusable: verify a Renovate/Dependabot PR from the repo's own CI result and
 # what upstream changed, and fix the code when the update broke it.
 #
-# It never merges and never approves, so Renovate's own automerge rules stay
-# the sole merge policy. It may push fix commits to the dependency branch:
-# code only, never a version Renovate chose, at most two rounds, each one a
-# plain commit anyone can read or revert. A fix is still evidence. Merging is
-# not.
+# It never merges and never approves; deps-automerge.yml merges from the label
+# this sets. It may push fix commits to the dependency branch through
+# actions/push-round: code, and the companion versions the update needs from
+# the stack's version files, never a version Renovate chose and never a
+# hand-edited lockfile, at most two rounds, each one a plain commit anyone can
+# read or revert. A fix is still evidence.
 name: Dependency Verification
 
 on:
@@ -131,8 +132,8 @@ jobs:
       proceed: ${{ steps.ci.outputs.ready == 'true' && steps.judge.outputs.judge != 'skip' }}
       dependency-bots: ${{ steps.gate.outputs.dependency-bots }}
       stack:    ${{ steps.stack.outputs.stack }}
-      light:    ${{ steps.pick-light.outputs.runner }}
-      heavy:    ${{ steps.pick-heavy.outputs.runner }}
+      # light for a green verdict (reading notes), heavy to build or fix.
+      runner:   ${{ steps.ci.outputs.verdict == 'green' && steps.pick-light.outputs.runner || steps.pick-heavy.outputs.runner }}
       number:   ${{ steps.pr.outputs.number }}
       head-ref: ${{ steps.pr.outputs.head-ref }}
       head-sha: ${{ steps.pr.outputs.head-sha }}
@@ -328,7 +329,7 @@ jobs:
   verify:
     needs: [gate]
     if: needs.gate.outputs.proceed == 'true'
-    runs-on: ${{ fromJson(needs.gate.outputs.verdict == 'green' && needs.gate.outputs.light || needs.gate.outputs.heavy) }}
+    runs-on: ${{ fromJson(needs.gate.outputs.runner) }}
     timeout-minutes: 120
     permissions:
       contents: read
@@ -353,7 +354,7 @@ jobs:
     steps:
       - uses: dodi-smart/.github/actions/runner-report@v1
         with:
-          selector: ${{ needs.gate.outputs.verdict == 'green' && needs.gate.outputs.light || needs.gate.outputs.heavy }}
+          selector: ${{ needs.gate.outputs.runner }}
 
       # The PR's head commit, not the merge ref: a fix is committed on top of
       # it. By SHA, not branch, so a PR merged or closed while the job queued
@@ -614,14 +615,32 @@ jobs:
                while fix rounds are under 2 and a fix can be pushed here. When
                it cannot, commit nothing: the verdict is `needs-manual`, and
                its blocker line names the fix you would have made.
-               - Make the smallest change that fixes it. Code only.
-               - NEVER edit a lockfile, a version catalog, or a dependency
-                 version in a manifest. Renovate chose those. A fix that needs
-                 a different version is a `needs-manual`, not a fix.
+               - Make the smallest change that fixes it.
+               - NEVER edit a lockfile. The job regenerates lockfiles with the
+                 stack's own command after you finish.
+               - NEVER change a version this PR's update set. Renovate chose it.
+               - You MAY change another version declaration when the update's
+                 notes or the build require it: a companion bump, such as the
+                 Gradle wrapper a new AGP needs, a peer dependency, or the
+                 Kotlin that pairs with a Compose compiler. Only in a file
+                 matching `${{ steps.setup.outputs.version-files }}`. Pick the
+                 lowest version that satisfies the requirement and cite the
+                 note or log line that requires it. Record every such change in
+                 `${{ runner.temp }}/deps-bumps.json`:
+                   [{"name": "gradle", "from": "9.5.0", "to": "9.6.0", "why": "AGP 9.4.1 requires Gradle 9.6"}]
                - Re-run the failed commands until they pass.
                - Commit with `git commit -m "chore(deps): adapt to <pkg> <version>"`
                  and a body of one or two lines naming what changed.
                - Do NOT push. A later step checks and pushes your commits.
+            5a. For a major (update kind `major`), also find the migration
+               guide (release notes, a MIGRATION, UPGRADING or CHANGELOG file
+               upstream, or the project's upgrade docs) and read the section
+               between the two versions. When it names a codemod or migration
+               command, run it rather than editing by hand. After you change
+               code, run the repo's typecheck and test commands above. A green
+               build you did not change needs no re-run. A major is never
+               merged by automation, so say plainly in the comment what a
+               reviewer has to check.
             6. Write `${{ runner.temp }}/deps-verdict.json`:
                  {"verdict": "verified" | "fixed" | "needs-manual", "reason": "<one line>"}
                - `verified`: build green, nothing breaking reaches this repo.
@@ -641,6 +660,7 @@ jobs:
                - Add `+ N transitive lockfile updates` under the table if any.
                - More than 8 rows: put the table in `<details><summary>N packages</summary>`.
                - For each fix commit, one line: `Fixed: <what changed> (<short sha>)`.
+               - For each companion bump, one line: `Bumped: <name> <from> → <to>, <why>`.
                - For needs-manual, one line naming the blocker and the log line
                  that shows it, in backticks.
                - A major may add at most two sentences and a release-notes link.
@@ -674,81 +694,50 @@ jobs:
           number:       ${{ needs.gate.outputs.number }}
           expected-sha: ${{ needs.gate.outputs.head-sha }}
 
-      # Minted after the agent, so no dependency script ever ran beside it.
-      # Not narrowed: the push must satisfy the org rulesets the App bypasses.
+      # The only push, through actions/push-round, which checks every commit
+      # before any token exists, regenerates lockfiles with the stack's lock
+      # command, then mints the App token and pushes one commit per round with
+      # a Deps-Verify-Round trailer and a Deps-Verify-Bump per recorded
+      # companion bump. Renovate's own lines (`keep-range`) are never changed.
+      # A repo whose Renovate config does not ignore the fix author refuses
+      # here (`renovate` step). AGENT_EMAILS is the fix identity and
+      # claude-code-action's own, which it falls back to; anything else is
+      # refused, never rewritten.
+      - id: push
+        if: ${{ !cancelled() && steps.open.outputs.found == 'true' && needs.gate.outputs.judge == 'agent' }}
+        uses: dodi-smart/.github/actions/push-round@v1
+        with:
+          base-sha:       ${{ steps.facts.outputs.base-sha }}
+          head-ref:       ${{ needs.gate.outputs.head-ref }}
+          rounds:         ${{ steps.facts.outputs.fix-rounds }}
+          trailer-key:    Deps-Verify-Round
+          author-name:    ${{ env.FIX_NAME }}
+          author-email:   ${{ env.FIX_EMAIL }}
+          agent-emails: |
+            ${{ env.FIX_EMAIL }}
+            41898282+claude[bot]@users.noreply.github.com
+          allowed:        ${{ steps.renovate.outputs.fix-push }}
+          denied-why:     ${{ steps.renovate.outputs.why }}
+          refuse-paths:   ${{ steps.setup.outputs.lockfiles }}
+          keep-range:     origin/${{ needs.gate.outputs.base-ref }}..${{ steps.facts.outputs.base-sha }}
+          record-paths:   ${{ steps.setup.outputs.version-files }}
+          records-file:   ${{ runner.temp }}/deps-bumps.json
+          record-trailer: Deps-Verify-Bump
+          lock:           ${{ steps.setup.outputs.lock }}
+          lockfiles:      ${{ steps.setup.outputs.lockfiles }}
+          env-file:       ${{ steps.setup.outputs.env-file }}
+          client-id:      ${{ secrets.GH_APP_CLIENT_ID }}
+          private-key:    ${{ secrets.GH_APP_PRIVATE_KEY }}
+
+      # For publish's labels, so a repo that has never seen a verdict label
+      # gets it created. After push-round, which ran the lock tooling.
       - id: app-token
         if: ${{ !cancelled() && steps.open.outputs.found == 'true' }}
         uses: dodi-smart/.github/actions/app-token@v1
         with:
           client-id:   ${{ secrets.GH_APP_CLIENT_ID }}
           private-key: ${{ secrets.GH_APP_PRIVATE_KEY }}
-
-      # Only this step pushes. A push is refused, never forced, when:
-      #   - the repo's Renovate config does not ignore the fix author (`renovate`),
-      #   - the fix-round cap is reached,
-      #   - a commit carries an author outside AGENT_EMAILS (a person's, or
-      #     Renovate's, if one landed on the branch between checkout and now),
-      #   - a fix touches a file Renovate's own commits changed, or any
-      #     lockfile or version catalog: the versions are Renovate's choice,
-      #   - the branch moved since checkout (Renovate pushed; the next run redoes it).
-      # A push with GITHUB_TOKEN would not start the checks on the new commit
-      # and is rejected by the rulesets, so no App means no push.
-      - id: push
-        if: ${{ !cancelled() && steps.open.outputs.found == 'true' && needs.gate.outputs.judge == 'agent' }}
-        env:
-          BASE_SHA: ${{ steps.facts.outputs.base-sha }}
-          ROUNDS:   ${{ steps.facts.outputs.fix-rounds }}
-          APP_TOKEN: ${{ steps.app-token.outputs.token }}
-          FIX_PUSH: ${{ steps.renovate.outputs.fix-push }}
-          FIX_PUSH_WHY: ${{ steps.renovate.outputs.why }}
-          # The authors a commit by the agent may carry. FIX_EMAIL is what the
-          # agent is told to use. The second is claude-code-action's own default,
-          # which it falls back to whenever the identity above is not applied.
-          # Anything else is refused, never rewritten: re-attributing a stranger's
-          # commit to the bot would hide who wrote it.
-          AGENT_EMAILS: |
-            ${{ env.FIX_EMAIL }}
-            41898282+claude[bot]@users.noreply.github.com
-        run: |
-          set -euo pipefail
-          git reset -q --hard HEAD   # uncommitted edits are not part of a fix
-          new=$(git rev-list --count "$BASE_SHA..HEAD")
-          echo "pushed=false" >> "$GITHUB_OUTPUT"
-          if [ "$new" = 0 ]; then echo "no fix commits"; exit 0; fi
-          refuse() { echo "refused=$1" >> "$GITHUB_OUTPUT"; echo "::warning title=Fix not pushed::$1"; exit 0; }
-          # Empty when the renovate step did not run: refuse rather than guess.
-          [ "${FIX_PUSH:-}" = true ] || refuse "${FIX_PUSH_WHY:-the Renovate config was not read}"
-          [ "$ROUNDS" -ge 2 ] && refuse "fix-round cap of 2 reached"
-          others=$(git log --format='%ae' "$BASE_SHA..HEAD" | grep -vxF -f <(printf '%s' "$AGENT_EMAILS") || true)
-          [ -n "$others" ] && refuse "a commit carries another author: $others"
-          renovate=$(git log --format='%H %ae' "origin/$BASE_REF..$BASE_SHA" \
-                     | while read -r c e; do [ "$e" = "$FIX_EMAIL" ] || git show --format= --name-only "$c"; done)
-          clash=$(git diff --name-only "$BASE_SHA" HEAD | while read -r f; do
-                    if printf '%s\n' "$renovate" | grep -qxF "$f" \
-                       || printf '%s' "$f" | grep -qE '(^|/)(bun\.lockb?|package-lock\.json|pnpm-lock\.yaml|yarn\.lock|Cargo\.lock|pubspec\.lock|Podfile\.lock|Package\.resolved|gradle\.lockfile|libs\.versions\.toml)$'; then
-                      echo "$f"
-                    fi
-                  done)
-          [ -n "$clash" ] && refuse "a fix touched a file whose versions Renovate owns: $(printf '%s ' "$clash" | tr '\n' ' ')"
-          # One commit per round, carrying the trailer the facts step counts.
-          first=$(git log --reverse --format='%s' "$BASE_SHA..HEAD" | head -n 1)
-          rest=$(git log --reverse --format='- %s' "$BASE_SHA..HEAD" | tail -n +2)
-          args=(-m "$first")
-          [ -n "$rest" ] && args+=(-m "$rest")
-          args+=(-m "Deps-Verify-Round: $(( ROUNDS + 1 ))")
-          # The author is set outright, never read from git config: the agent
-          # action rewrites that config, and the facts step's value did not
-          # survive it. Renovate's gitIgnoredAuthors matches this exact author.
-          git reset -q --soft "$BASE_SHA"
-          GIT_COMMITTER_NAME="$FIX_NAME" GIT_COMMITTER_EMAIL="$FIX_EMAIL" \
-            git commit -q --author="$FIX_NAME <$FIX_EMAIL>" "${args[@]}"
-          [ -z "${APP_TOKEN:-}" ] && refuse "GH_APP_CLIENT_ID is not set, and a GITHUB_TOKEN push starts no checks"
-          url="https://x-access-token:${APP_TOKEN}@github.com/${REPO}.git"
-          remote=$(git ls-remote "$url" "refs/heads/$HEAD_REF" | cut -f1)
-          [ "$remote" != "$BASE_SHA" ] && refuse "the branch moved since checkout"
-          git push -q "$url" "HEAD:refs/heads/$HEAD_REF"
-          echo "pushed=true" >> "$GITHUB_OUTPUT"
-          echo "::notice title=Fix pushed::Round $(( ROUNDS + 1 )). The push starts a fresh verification of the new head, which publishes the verdict."
+          permissions: issues:write pull-requests:write
 
       # The label and the comment are set HERE, from the verdict files, never by
       # the agent. One label, the others removed, so a PR never carries two
@@ -825,7 +814,7 @@ jobs:
               echo "keeping deps:needs-manual: $PR_AUTHOR applied it"
             fi
           fi
-          for old in deps:verified deps:fixed deps:breaking deps:needs-manual; do
+          for old in deps:verified deps:fixed deps:needs-manual; do
             [ "$old" = "deps:$label" ] && continue
             [ "$old" = "$keep" ] && continue
             gh api -X DELETE "/repos/$REPO/issues/$PR/labels/$old" >/dev/null 2>&1 || true

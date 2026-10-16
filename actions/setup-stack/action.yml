@@ -109,6 +109,19 @@ inputs:
       @shadcn/lint). Empty means no step. No `@stack` default: this is opt-in
       per repo.
     default: ''
+  lock:
+    description: >-
+      The command that rewrites this stack's lockfile from its manifests, run
+      in the lockfile's directory. "@stack" is the default below; override it
+      for a node repo on pnpm or yarn. Empty means the stack has none.
+    default: '@stack'
+  version-files:
+    description: >-
+      ERE over repo paths of the version declarations a dependency fix may
+      change for this stack (manifests, toolchain pins). "@stack" is the
+      default below.
+    default: '@stack'
+
 
 outputs:
   env-file:
@@ -139,6 +152,15 @@ outputs:
   design-lint:
     description: 'Resolved design-lint command. Empty means skip.'
     value: ${{ steps.defaults.outputs.design-lint }}
+  lock:
+    description: 'Resolved lock command. Empty means the stack has none.'
+    value: ${{ steps.defaults.outputs.lock }}
+  version-files:
+    description: 'Resolved ERE of version declarations a dependency fix may change.'
+    value: ${{ steps.defaults.outputs.version-files }}
+  lockfiles:
+    description: 'ERE of every lockfile, whatever the stack. Never hand-edited. The one list; deps-intent reads the same file.'
+    value: ${{ steps.defaults.outputs.lockfiles }}
 
 runs:
   using: composite
@@ -371,34 +393,45 @@ runs:
         O_TEST:      ${{ inputs.test }}
         O_BUILD:     ${{ inputs.build }}
         O_DESIGN_LINT: ${{ inputs.design-lint }}
+        O_LOCK:      ${{ inputs.lock }}
+        O_VERSION_FILES: ${{ inputs.version-files }}
+        ACTION_PATH: ${{ github.action_path }}
       run: |
         set -euo pipefail
-        install=""; lint=""; typecheck=""; test=""; build=""
+        install=""; lint=""; typecheck=""; test=""; build=""; lock=""; versions=""
+        js='package\.json|\.nvmrc|\.node-version|\.bun-version'
+        gradle='gradle/wrapper/gradle-wrapper\.properties|gradle/libs\.versions\.toml|[^/]+\.gradle(\.kts)?|gradle\.properties'
         case "$STACK" in
           bun)
             install="bun install --frozen-lockfile"
             lint="bun run lint"; typecheck="bun run typecheck"
-            test="bun run test:run"; build="bun run build" ;;
+            test="bun run test:run"; build="bun run build"
+            lock="bun install --lockfile-only"; versions="$js" ;;
           node)
             install="npm ci"
             lint="npm run lint"; typecheck="npm run typecheck"
-            test="npm test"; build="npm run build" ;;
+            test="npm test"; build="npm run build"
+            lock="npm install --package-lock-only --ignore-scripts"; versions="$js" ;;
           gradle|android)
             # Gradle resolves on demand; there is no separate install step.
             lint="./gradlew ktlintCheck"
-            test="./gradlew test"; build="./gradlew assemble" ;;
+            test="./gradlew test"; build="./gradlew assemble"
+            lock="./gradlew dependencies --write-locks"; versions="$gradle" ;;
           flutter)
             install="flutter pub get"
             lint="flutter analyze"
-            test="flutter test"; build="flutter build apk --debug" ;;
+            test="flutter test"; build="flutter build apk --debug"
+            lock="flutter pub get"; versions="pubspec\.yaml|$gradle" ;;
           rust)
             lint="cargo clippy --all-targets -- -D warnings"
             typecheck="cargo check --all-targets"
-            test="cargo test --all"; build="cargo build --release" ;;
+            test="cargo test --all"; build="cargo build --release"
+            lock="cargo update --workspace"; versions='Cargo\.toml|rust-toolchain(\.toml)?' ;;
           xcode)
             lint="swiftlint --strict"
             test="xcodebuild test -scheme \"\$SCHEME\" -destination 'platform=iOS Simulator,name=iPhone 15'"
-            build="xcodebuild build -scheme \"\$SCHEME\"" ;;
+            build="xcodebuild build -scheme \"\$SCHEME\""
+            lock="swift package resolve"; versions="Package\.swift|$gradle" ;;
           none) : ;;
         esac
         # "@stack" -> the conventional command above. Anything else, empty
@@ -421,3 +454,7 @@ runs:
         emit build     "$(pick "$O_BUILD" "$build")"
         # No conventional command for any stack: this is opt-in only.
         emit design-lint "$(pick "$O_DESIGN_LINT" "")"
+        emit lock      "$(pick "$O_LOCK" "$lock")"
+        # Toolchain pins in mise apply to every stack.
+        emit version-files "$(pick "$O_VERSION_FILES" "(^|/)(${versions:+$versions|}mise\.toml|\.tool-versions)\$")"
+        emit lockfiles "$(cat "$ACTION_PATH/lockfiles.re")"

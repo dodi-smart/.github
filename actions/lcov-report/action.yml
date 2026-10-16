@@ -39,7 +39,7 @@ runs:
   steps:
     # No patterns: the whole list, not a filtered one.
     - id: files
-      uses: dodi-smart/.github/actions/changed-files@v1
+      uses: dodi-smart/.github/actions/changed-files@pinned/v1.24.0
       with:
         number: ${{ inputs.number }}
         token:  ${{ inputs.token }}
@@ -58,7 +58,7 @@ runs:
 
     # Post before failing, so the comment says why the job is red.
     - if: ${{ inputs.number != '' }}
-      uses: dodi-smart/.github/actions/sticky-comment@v1
+      uses: dodi-smart/.github/actions/sticky-comment@pinned/v1.24.0
       with:
         key:       coverage
         body-file: ${{ runner.temp }}/lcov-report.md

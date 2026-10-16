@@ -67,6 +67,7 @@ on:
       CLAUDE_CODE_OAUTH_TOKEN: { required: true }
       GH_APP_CLIENT_ID:        { required: false }
       GH_APP_PRIVATE_KEY:      { required: false }
+      AGENT_ENV_SECRET:        { required: false }   # KEY=VALUE lines for the agent alone
 
 concurrency:
   group: review-${{ github.repository }}-${{ github.event.pull_request.number }}
@@ -401,6 +402,10 @@ jobs:
           stage:   review
           signals: ${{ needs.gate.outputs.mode }} ${{ needs.gate.outputs.elevated == 'true' && 'elevated' || '' }}
           model-pin: ${{ vars.AGENT_MODEL_PIN }}
+          org-plugins:             ${{ vars.AGENT_PLUGINS }}
+          org-plugin-marketplaces: ${{ vars.AGENT_PLUGIN_MARKETPLACES }}
+          agent-env:               ${{ vars.AGENT_ENV }}
+          agent-env-secret:        ${{ secrets.AGENT_ENV_SECRET }}
           prompt: ${{ needs.gate.outputs.mode == 'scoped' && env.SCOPED_PROMPT || env.FULL_PROMPT }}
           # A bot's PR is labelled by the org App, and claude-code-action
           # refuses a bot actor it is not told about. The gate has already

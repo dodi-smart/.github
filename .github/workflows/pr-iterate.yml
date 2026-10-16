@@ -48,6 +48,7 @@ on:
       CLAUDE_CODE_OAUTH_TOKEN: { required: true }
       GH_APP_CLIENT_ID:        { required: false }
       GH_APP_PRIVATE_KEY:      { required: false }
+      AGENT_ENV_SECRET:        { required: false }   # KEY=VALUE lines for the agent alone
 
 # One loop per PR at a time, keyed on its branch, which every one of the three
 # events names. Never kill a run that may be pushing.
@@ -287,6 +288,10 @@ jobs:
           signals:  ${{ needs.gate.outputs.signals }}
           model:    ${{ inputs.model }}
           model-pin: ${{ vars.AGENT_MODEL_PIN }}
+          org-plugins:             ${{ vars.AGENT_PLUGINS }}
+          org-plugin-marketplaces: ${{ vars.AGENT_PLUGIN_MARKETPLACES }}
+          agent-env:               ${{ vars.AGENT_ENV }}
+          agent-env-secret:        ${{ secrets.AGENT_ENV_SECRET }}
           allowed-bots: ${{ endsWith(github.actor, '[bot]') && github.actor || '' }}
           allowed-tools: 'Bash "Bash(gh:*)" Read Write Edit Grep Glob'
           prompt: |

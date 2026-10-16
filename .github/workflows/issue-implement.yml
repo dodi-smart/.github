@@ -47,6 +47,7 @@ on:
       CLAUDE_CODE_OAUTH_TOKEN: { required: true }
       GH_APP_CLIENT_ID:        { required: false }
       GH_APP_PRIVATE_KEY:      { required: false }
+      AGENT_ENV_SECRET:        { required: false }   # KEY=VALUE lines for the agent alone
 
 concurrency:
   group: implement-${{ github.repository }}-${{ github.event.issue.number }}
@@ -254,6 +255,10 @@ jobs:
           risk:     ${{ needs.gate.outputs.risk }}
           model:    ${{ inputs.model }}
           model-pin: ${{ vars.AGENT_MODEL_PIN }}
+          org-plugins:             ${{ vars.AGENT_PLUGINS }}
+          org-plugin-marketplaces: ${{ vars.AGENT_PLUGIN_MARKETPLACES }}
+          agent-env:               ${{ vars.AGENT_ENV }}
+          agent-env-secret:        ${{ secrets.AGENT_ENV_SECRET }}
           allowed-tools: 'Bash "Bash(gh:*)" Read Write Edit Grep Glob'
           # run-agent guarantees this file on every path, with `why` when the
           # agent left none, so the steps below read one file.

@@ -1,3 +1,13 @@
+## [1.24.0](https://github.com/dodi-smart/.github/compare/v1.23.0...v1.24.0) (2026-10-16)
+
+### ✨ Features
+
+* **promote:** announce a promotion that moved the major tag with a repository_dispatch ([ea79e9a](https://github.com/dodi-smart/.github/commit/ea79e9aa65fe13a03b1f1c9d866440dea69320c5))
+
+### 🐛 Bug Fixes
+
+* **zavet-check:** skip release bot version bumps in the guard trailer step ([62a3eee](https://github.com/dodi-smart/.github/commit/62a3eee701c071ea3b590fbc30ceb8a57adf4b80))
+
 ## [1.23.0](https://github.com/dodi-smart/.github/compare/v1.22.4...v1.23.0) (2026-10-15)
 
 ### ✨ Features

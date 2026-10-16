@@ -61,39 +61,28 @@ EOF
 }
 expect "run-agent forwards branch-prefix, defaulting to a conventional one, never claude/" prefix_wired
 
-# 2. Lift the push and publish steps out of the workflow.
+# 2. Lift the steps out of the workflow. The push itself is actions/push-round,
+# tested there.
 python3 - "$ROOT" "$WORK" <<'EOF' || { echo 'cannot read the deps-verify steps'; exit 1; }
 import sys, yaml
 root, work = sys.argv[1:3]
 job = yaml.safe_load(open(root + '/.github/workflows/deps-verify.yml'))['jobs']['verify']
 steps = {s.get('id'): s for s in job['steps'] if s.get('id')}
 fix = job['env']
-# The only expression the allowlist uses; everything else the step reads is a variable.
-emails = steps['push']['env']['AGENT_EMAILS'].replace('${{ env.FIX_EMAIL }}', fix['FIX_EMAIL'])
-open(work + '/push.sh', 'w').write(steps['push']['run'])
-open(work + '/publish.sh', 'w').write(steps['publish']['run'])
-open(work + '/actor.sh', 'w').write(steps['actor']['run'])
-open(work + '/renovate.sh', 'w').write(steps['renovate']['run'])
+for sid in ('publish', 'actor', 'renovate'):
+    open('%s/%s.sh' % (work, sid), 'w').write(steps[sid]['run'])
 ra = {s.get('id'): s for s in yaml.safe_load(open(root + '/actions/run-agent/action.yml'))['runs']['steps']}
-open(work + '/outcome.sh', 'w').write(ra['outcome']['run'])
-open(work + '/validate.sh', 'w').write(ra['validate']['run'])
-open(work + '/report.sh', 'w').write(ra['report']['run'])
+for sid in ('outcome', 'validate', 'report'):
+    open('%s/%s.sh' % (work, sid), 'w').write(ra[sid]['run'])
 open(work + '/fix.env', 'w').write('FIX_NAME=%r\nFIX_EMAIL=%r\n' % (fix['FIX_NAME'], fix['FIX_EMAIL']))
-open(work + '/agent-emails', 'w').write(emails)
+push = steps['push']['with']
+assert push['author-email'] == '${{ env.FIX_EMAIL }}' and push['trailer-key'] == 'Deps-Verify-Round', push
+assert 'deps-verify' not in push.get('refuse-paths', ''), push
 EOF
 # shellcheck disable=SC1091
 . "$WORK/fix.env"
-AGENT_EMAILS="$(cat "$WORK/agent-emails")"
-CLAUDE_EMAIL='41898282+claude[bot]@users.noreply.github.com'
-expect "the allowlist holds the fix identity and claude[bot], and nothing else" \
-  test "$(printf '%s\n' "$AGENT_EMAILS" | sort | tr '\n' ' ')" = "$(printf '%s\n%s\n' "$CLAUDE_EMAIL" "$FIX_EMAIL" | sort | tr '\n' ' ')"
-expect "the push step writes the round with an explicit --author" \
-  grep -qF -- '--author="$FIX_NAME <$FIX_EMAIL>"' "$WORK/push.sh"
-expect "the push step sets the committer too" \
-  grep -qE 'GIT_COMMITTER_NAME="\$FIX_NAME" GIT_COMMITTER_EMAIL="\$FIX_EMAIL"' "$WORK/push.sh"
 
-# A repo with Renovate's commit on a branch, as the step finds it after checkout.
-# Sets BASE (the head before the agent) and leaves the work tree on the branch.
+# A repo with Renovate's commit on a branch, for the actor step below.
 repo() {
   local r="$WORK/r"
   rm -rf "$r" "$WORK/origin.git"
@@ -106,84 +95,12 @@ repo() {
   echo '{"x":"2"}' > "$r/package.json"
   git -C "$r" add -A
   git -C "$r" -c user.name=renovate -c user.email=renovate@example.com commit -q -m 'chore(deps): bump x'
-  BASE="$(git -C "$r" rev-parse HEAD)"
-  # What claude-code-action leaves in the checkout: its own identity, over ours.
-  git -C "$r" config user.name 'claude[bot]'
-  git -C "$r" config user.email "$CLAUDE_EMAIL"
 }
-
-# agent_commit EMAIL FILE: a commit as the agent would leave it.
-agent_commit() {
-  mkdir -p "$(dirname "$WORK/r/$2")"
-  echo "$RANDOM" > "$WORK/r/$2"
-  git -C "$WORK/r" add -A
-  git -C "$WORK/r" -c user.name=who -c "user.email=$1" commit -q -m "fix: adapt to x ($2)"
+# fix_round: a round as push-round writes it.
+fix_round() {
+  echo "$RANDOM" > "$WORK/r/a.ts"; git -C "$WORK/r" add -A
+  git -C "$WORK/r" -c user.name="$FIX_NAME" -c user.email="$FIX_EMAIL" commit -q -m 'fix: adapt' -m 'Deps-Verify-Round: 1'
 }
-
-# push [ROUNDS]: runs the push step; leaves its outputs in $WORK/out.
-# FIX_PUSH and FIX_PUSH_WHY stand in for the renovate step (default: allowed).
-push() {
-  : > "$WORK/out"
-  ( cd "$WORK/r" && env -i PATH="$PATH" HOME="$WORK" GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null \
-      FIX_NAME="$FIX_NAME" FIX_EMAIL="$FIX_EMAIL" AGENT_EMAILS="$AGENT_EMAILS" \
-      FIX_PUSH="${FIX_PUSH-true}" FIX_PUSH_WHY="${FIX_PUSH_WHY:-}" \
-      BASE_SHA="$BASE" ROUNDS="${1:-0}" BASE_REF=main HEAD_REF=renovate/x REPO=o/r APP_TOKEN='' \
-      GITHUB_OUTPUT="$WORK/out" bash "$WORK/push.sh" ) > "$WORK/log" 2>&1
-}
-head_field() { git -C "$WORK/r" log -1 --format="$1"; }
-refused()    { grep -F "refused=" "$WORK/out" | sed 's/^refused=//'; }
-
-# 3. The agent committed as claude[bot], the case the job was refusing.
-repo; agent_commit "$CLAUDE_EMAIL" src/a.ts; agent_commit "$CLAUDE_EMAIL" src/b.ts
-push
-expect "claude[bot] commits are not refused for their author" bash -c '! grep -q "another author" "$1"' _ "$WORK/out"
-expect "the round is one commit on the base" test "$(git -C "$WORK/r" rev-list --count "$BASE..HEAD")" = 1
-expect "its author is the fix identity" test "$(head_field '%an <%ae>')" = "$FIX_NAME <$FIX_EMAIL>"
-expect "its committer is the fix identity" test "$(head_field '%cn <%ce>')" = "$FIX_NAME <$FIX_EMAIL>"
-expect "it carries the round trailer" grep -q 'Deps-Verify-Round: 1' <(git -C "$WORK/r" log -1 --format=%B)
-expect "it keeps both fixes" test "$(git -C "$WORK/r" show --format= --name-only HEAD | sort | tr '\n' ' ')" = 'src/a.ts src/b.ts '
-expect "with no App token it stops after the commit, before any push" test "$(refused)" = 'GH_APP_CLIENT_ID is not set, and a GITHUB_TOKEN push starts no checks'
-
-# 4. The agent used the identity it was told to use.
-repo; agent_commit "$FIX_EMAIL" src/a.ts
-push
-expect "fix-identity commits pass the guard" test "$(refused)" = 'GH_APP_CLIENT_ID is not set, and a GITHUB_TOKEN push starts no checks'
-expect "and are still one commit by the fix identity" test "$(head_field '%ae')" = "$FIX_EMAIL"
-
-# 5. Any other author is refused, and the history is left as it was.
-repo; agent_commit 'person@example.com' src/a.ts
-before="$(git -C "$WORK/r" rev-parse HEAD)"
-push
-expect "a person's commit is refused" test "$(refused)" = 'a commit carries another author: person@example.com'
-expect "and nothing is rewritten" test "$(git -C "$WORK/r" rev-parse HEAD)" = "$before"
-
-repo; agent_commit "$CLAUDE_EMAIL" src/a.ts; agent_commit 'renovate@example.com' src/b.ts
-push
-expect "one stranger among agent commits refuses the round" test "$(refused)" = 'a commit carries another author: renovate@example.com'
-
-# 6. The other guards are unchanged.
-repo; agent_commit "$CLAUDE_EMAIL" src/a.ts
-push 2
-expect "the round cap still refuses" test "$(refused)" = 'fix-round cap of 2 reached'
-
-repo; agent_commit "$CLAUDE_EMAIL" package.json
-push
-expect "a file Renovate changed is still refused" grep -q 'versions Renovate owns: package.json' "$WORK/out"
-
-repo; agent_commit "$CLAUDE_EMAIL" yarn.lock
-push
-expect "a lockfile is still refused" grep -q 'versions Renovate owns: yarn.lock' "$WORK/out"
-
-# 6b. The Renovate guard is checked before anything is rewritten.
-repo; agent_commit "$CLAUDE_EMAIL" src/a.ts
-before="$(git -C "$WORK/r" rev-parse HEAD)"
-FIX_PUSH=false FIX_PUSH_WHY='Renovate does not ignore the fix author here' push
-expect "a repo whose Renovate config does not ignore the fix author refuses the push" \
-  test "$(refused)" = 'Renovate does not ignore the fix author here'
-expect "and leaves the agent's commits as they were" test "$(git -C "$WORK/r" rev-parse HEAD)" = "$before"
-repo; agent_commit "$CLAUDE_EMAIL" src/a.ts
-FIX_PUSH='' push
-expect "an unread Renovate config refuses rather than guesses" test "$(refused)" = 'the Renovate config was not read'
 
 # 7. Publish. `gh` is a stub: it records the call and answers the events read.
 mkdir -p "$WORK/bin"
@@ -328,12 +245,12 @@ actor() {
   sed -n 's/^fix-pusher=//p' "$WORK/out"
 }
 # A fix round as the push step writes it, on top of Renovate's commit.
-repo; agent_commit "$CLAUDE_EMAIL" src/a.ts; push
+repo; fix_round
 expect "a fix round's pusher is allowed when it is a bot" test "$(actor 'some-app[bot]')" = ',some-app[bot]'
 expect "a person needs no allowance (the action checks people itself)" test "$(actor 'someone')" = ''
 repo
 expect "a bot that pushed anything but a fix round is not allowed" test "$(actor 'some-app[bot]')" = ''
-repo; agent_commit "$FIX_EMAIL" src/a.ts
+repo; echo x > "$WORK/r/a.ts"; git -C "$WORK/r" add -A; git -C "$WORK/r" -c user.name="$FIX_NAME" -c user.email="$FIX_EMAIL" commit -q -m 'fix: no trailer'
 expect "the fix author without the round trailer is not a fix round" test "$(actor 'some-app[bot]')" = ''
 
 # 10. The renovate step: which configs let a fix be pushed.

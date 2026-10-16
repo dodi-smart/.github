@@ -27,7 +27,8 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # Lockfiles only. A version catalog or manifest is a change, so this is not the
 # list deps-verify's push step refuses to edit, which does include the catalog.
-LOCK_RE='(^|/)([^/]*\.(lock|lockb|lockfile)|package-lock\.json|npm-shrinkwrap\.json|pnpm-lock\.yaml|go\.sum|Package\.resolved)$'
+# The one lockfile list, shared with setup-stack's `lockfiles` output.
+LOCK_RE="$(cat "$HERE/../setup-stack/lockfiles.re")"
 
 sha() { if command -v sha256sum >/dev/null; then sha256sum; else shasum -a 256; fi | cut -d' ' -f1; }
 

@@ -466,19 +466,19 @@ jobs:
           python3 -c "
           import sys, yaml
 
-          # Each workflow picks one pool, named runner. deps-verify picks two, because
-          # its verify job runs on light for a green verdict and takes heavy only
-          # to build: light and heavy, each read by runs-on.
+          # Each workflow's gate hands its agent job one output, runner. deps-verify
+          # picks two pools to choose from, because its verify job runs on light
+          # for a green verdict and takes heavy only to build.
           agent_workflows = [
-              ('issue-triage.yml',   'triage',    ['runner']),
-              ('issue-implement.yml','implement', ['runner']),
-              ('claude-assist.yml',  'assist',    ['runner']),
-              ('pr-review.yml',      'review',    ['runner']),
-              ('deps-verify.yml',    'verify',    ['light', 'heavy']),
+              ('issue-triage.yml',   'triage',    ['runner'], 1),
+              ('issue-implement.yml','implement', ['runner'], 1),
+              ('claude-assist.yml',  'assist',    ['runner'], 1),
+              ('pr-review.yml',      'review',    ['runner'], 1),
+              ('deps-verify.yml',    'verify',    ['runner'], 2),
           ]
 
           bad = []
-          for f, agent_job, pools in agent_workflows:
+          for f, agent_job, pools, picks in agent_workflows:
               path = '.github/workflows/' + f
               jobs = yaml.safe_load(open(path))['jobs']
 
@@ -493,8 +493,8 @@ jobs:
 
               steps = gate.get('steps') or []
               pick = [s for s in steps if 'pick-runner@' in str(s.get('uses', ''))]
-              if len(pick) != len(pools):
-                  bad.append(f + ': gate job must have exactly %d pick-runner step(s), found %d' % (len(pools), len(pick)))
+              if len(pick) != picks:
+                  bad.append(f + ': gate job must have exactly %d pick-runner step(s), found %d' % (picks, len(pick)))
                   continue
 
               for step in pick:
@@ -586,6 +586,11 @@ jobs:
       - name: pr-facts resolves the PR and refuses one that moved
         run: ./actions/pr-facts/test.sh
 
+      # The one guarded push of an agent's round: deps-verify uses it, and so
+      # will any workflow that pushes agent commits to a PR branch.
+      - name: push-round refuses what a round may not do
+        run: ./actions/push-round/test.sh
+
       # Nothing in deps-verify waits for pr-checks (see deps-verify in AGENTS.md
       # for why). The gate reads a finished run once; verify takes heavy only
       # when the verdict is not green, and the agent runs only when the judge
@@ -608,9 +613,11 @@ jobs:
               bad.append('the gate must proceed only with a ready verdict and a judge that is not skip')
           if \"needs.gate.outputs.proceed == 'true'\" not in str(verify.get('if')):
               bad.append('verify must run only when the gate proceeds')
-          ro = str(verify.get('runs-on'))
-          if 'needs.gate.outputs.verdict' not in ro or 'green' not in ro or 'needs.gate.outputs.light' not in ro or 'needs.gate.outputs.heavy' not in ro:
-              bad.append('verify runs-on must choose light for a green verdict and heavy otherwise')
+          runner = str((gate.get('outputs') or {}).get('runner', ''))
+          if \"verdict == 'green'\" not in runner or 'pick-light' not in runner or 'pick-heavy' not in runner:
+              bad.append('the gate runner output must choose light for a green verdict and heavy otherwise')
+          if 'needs.gate.outputs.runner' not in str(verify.get('runs-on')):
+              bad.append('verify must run on the gate runner output')
           agent = [s for s in verify.get('steps', []) if s.get('id') == 'agent']
           if not agent or \"needs.gate.outputs.judge == 'agent'\" not in str(agent[0].get('if', '')):
               bad.append('the agent step must run only when the judge says agent')

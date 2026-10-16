@@ -76,5 +76,40 @@ check "mise latest passes through" "latest mise.toml" "$(resolve "$d" auto)"
 d="$(fx)"; printf '[settings]\nbun = "7.7.7"\n' > "$d/mise.toml"
 check "no bun under [tools] -> latest" "latest none" "$(resolve "$d" auto)"
 
+# --- the defaults step: lock command, version files and the lockfile list.
+python3 - "$HERE/action.yml" "$TMP/defaults.sh" <<'EOF'
+import sys, yaml
+steps = yaml.safe_load(open(sys.argv[1]))['runs']['steps']
+open(sys.argv[2], 'w').write([s for s in steps if s.get('id') == 'defaults'][0]['run'])
+EOF
+defaults() { # stack output [VAR=VALUE...] -> that output's value
+  local stack="$1" key="$2"; shift 2
+  : > "$TMP/defaults.out"
+  env -i PATH="$PATH" STACK="$stack" O_INSTALL=@stack O_LINT=@stack O_TYPECHECK=@stack O_TEST=@stack O_BUILD=@stack \
+    O_DESIGN_LINT=@stack O_LOCK=@stack O_VERSION_FILES=@stack ACTION_PATH="$HERE" GITHUB_OUTPUT="$TMP/defaults.out" "$@" \
+    bash "$TMP/defaults.sh" >/dev/null 2>&1
+  awk -v k="$key" '$0 == k "<<__SETUP_STACK_EOF__" { on = 1; next } $0 == "__SETUP_STACK_EOF__" { on = 0 } on' "$TMP/defaults.out"
+}
+listed() { printf '%s' "$2" | grep -qE "$(defaults "$1" version-files)" && echo yes || echo no; }
+locked() { printf '%s' "$1" | grep -qE "$(defaults none lockfiles)" && echo yes || echo no; }
+check "bun locks with --lockfile-only"         'bun install --lockfile-only' "$(defaults bun lock)"
+check "node locks with scripts off"            'npm install --package-lock-only --ignore-scripts' "$(defaults node lock)"
+check "a node repo on pnpm overrides lock"     'pnpm install --lockfile-only' "$(defaults node lock O_LOCK='pnpm install --lockfile-only')"
+check "none has no lock command"               '' "$(defaults none lock)"
+check "android lists the wrapper properties"   yes "$(listed android gradle/wrapper/gradle-wrapper.properties)"
+check "gradle lists the version catalog"       yes "$(listed gradle gradle/libs.versions.toml)"
+check "android lists a module build file"      yes "$(listed android app/build.gradle.kts)"
+check "bun lists a workspace package.json"     yes "$(listed bun packages/web/package.json)"
+check "flutter lists pubspec.yaml"             yes "$(listed flutter pubspec.yaml)"
+check "rust lists a crate's Cargo.toml"        yes "$(listed rust crates/a/Cargo.toml)"
+check "every stack lists mise.toml"            yes "$(listed none mise.toml)"
+check "no stack lists source code"             no  "$(listed android app/src/main/Main.kt)"
+check "a stack's manifests are not another's"  no  "$(listed rust package.json)"
+check "version files never include a lockfile" no  "$(listed bun bun.lock)"
+for f in bun.lock bun.lockb package-lock.json pnpm-lock.yaml yarn.lock pubspec.lock Cargo.lock Podfile.lock Package.resolved app/gradle.lockfile go.sum; do
+  check "lockfiles covers $f" yes "$(locked "$f")"
+done
+check "lockfiles does not cover a manifest"    no  "$(locked package.json)"
+
 echo "setup-stack: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

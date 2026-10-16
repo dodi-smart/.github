@@ -228,6 +228,7 @@ The log shows the deployment id and commit before the routes are probed.
 | `actions/agent-gate` | Decides whether an agent may run. Evaluates `agent:no-touch` first, always. |
 | `actions/run-agent` | Invokes the agent with the org's tool allowlist and reporting defaults. Does not start it when the running workflow file differs from the default branch, says why a run stopped (`why`), and with `report-file` guarantees a valid report file on every path |
 | `actions/pr-facts` | Resolves the PR from a number or a pull_request, workflow_run or status event, and checks it is open, not a fork, and at the expected head |
+| `actions/push-round` | Checks an agent's commits on a PR branch, regenerates lockfiles, and pushes them as one trailered commit with the App token, or refuses with a reason |
 | `actions/app-token` | Mints the org App token for this repo, optionally narrowed; empty when no App is configured |
 | `actions/setup-stack` | Installs a toolchain, resolves cache isolation, supplies conventional commands |
 | `actions/sticky-comment` | One keyed comment per pull request, rewritten in place on every later run |
@@ -1058,12 +1059,20 @@ Why it reads CI instead of building:
 
 The rules on fixes:
 
-- Fix commits are code only. A commit that touches a lockfile or a version
-  catalog is not pushed, because the versions are Renovate's choice.
+- A fix is code, plus the companion versions the update needs: the Gradle
+  wrapper a new AGP requires, a peer dependency, the Kotlin that pairs with a
+  Compose compiler. Only in the stack's version files (`setup-stack`'s
+  `version-files`), each recorded and carried as a `Deps-Verify-Bump:`
+  trailer. A version this update set is never changed.
+- Lockfiles are never edited by hand. The stack's `lock` command regenerates
+  the one next to a changed declaration, and the result goes into the round.
+- For a major, the agent reads the migration guide between the two versions,
+  runs a codemod when the guide names one, and runs typecheck and test after
+  changing code. Majors are never merged by automation.
 - At most two fix rounds per PR. After that the job reports and stops.
-- The job pushes, never the agent. It checks every commit's author and files
-  first, and pushes with the org App's token, so the checks run on the new
-  commit.
+- The job pushes, never the agent, through `actions/push-round`. It checks
+  every commit's author and files first, and pushes with the org App's token,
+  so the checks run on the new commit.
 - The commits carry the author the preset lists under `gitIgnoredAuthors`, so
   Renovate still owns the branch. If Renovate rebases and drops the fix, the next
   run makes it again.

@@ -133,6 +133,26 @@ prev "hash read from the comment"      "$H1" "$(printf '**deps:verified** ok\n<!
 prev "comment from before the marker"  ""    "**deps:verified** ok"
 prev "a short or malformed hash"       ""    "<!-- deps-intent: abc -->"
 
+# The update kind, from labels first and a Dependabot title otherwise. Nothing
+# merges on `unknown`, so a doubt must land there, never on minor or patch.
+kind() {
+  local name="$1" want="$2" got; shift 2
+  got="$(env -i PATH="$PATH" LABELS='[]' TITLE='' "$@" "$HERE/intent.sh" kind)"
+  if [ "$got" = "$want" ]; then ok "$(printf '%-52s -> %s' "$name" "$got")"
+  else bad "$(printf '%-52s -> %s (wanted %s)' "$name" "$got" "$want")"; fi
+}
+kind "deps:major wins over everything"          major    'LABELS=["deps:minor","deps:major"]'
+kind "deps:lockfile"                            lockfile 'LABELS=["deps:lockfile"]'
+kind "the lock file maintenance title"          lockfile TITLE='chore(deps): Lock file maintenance'
+kind "deps:minor beside deps:patch is minor"    minor    'LABELS=["deps:patch","deps:minor"]'
+kind "deps:patch"                               patch    'LABELS=["deps:patch"]'
+kind "Dependabot patch title"                   patch    TITLE='Bump lodash from 4.17.20 to 4.17.21'
+kind "Dependabot minor title"                   minor    TITLE='Bump the npm group with 2 updates from 1.2.3 to 1.3.0'
+kind "Dependabot major title, with a v prefix"  major    TITLE='Bump actions/checkout from v4 to v5'
+kind "Dependabot title in a directory"          minor    TITLE='Bump react from 19.0.0 to 19.1.0 in /web'
+kind "no labels and no versions"                unknown  TITLE='Update dependencies'
+kind "a Renovate title without a kind label"    unknown  TITLE='chore(deps): update x to v1.3.0'
+
 echo
 echo "pass=$pass fail=$fail"
 [ "$fail" -eq 0 ]

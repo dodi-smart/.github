@@ -145,7 +145,7 @@ jobs:
       run-id:   ${{ steps.ci.outputs.run-id }}
       judge:    ${{ steps.judge.outputs.judge }}    # skip | lockfile | agent
       intent:   ${{ steps.judge.outputs.intent }}
-      update:   ${{ steps.judge.outputs.update }}   # major | lockfile | other
+      update:   ${{ steps.judge.outputs.update }}   # major | minor | patch | lockfile | unknown
     env:
       GH_TOKEN: ${{ github.token }}
       REPO:     ${{ github.repository }}

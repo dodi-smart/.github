@@ -61,6 +61,30 @@ previous_hash() {
   sed -n 's/.*<!-- deps-intent: \([0-9a-f]\{64\}\) -->.*/\1/p' | head -n 1
 }
 
+# The update kind: major | minor | patch | lockfile | unknown, from the shared
+# preset's labels (deps:major, deps:minor, deps:patch, deps:lockfile), the lock
+# file maintenance title, or a Dependabot "from A to B" title. A grouped PR
+# carries every member's label, so one major makes it major. deps-verify and
+# actions/merge-gate both read this one answer.
+kind() {
+  local labels from to a1 b1 a2 b2
+  labels=$(jq -r '.[]' <<<"${LABELS:-[]}" 2>/dev/null || true)
+  has() { grep -qxF "$1" <<<"$labels"; }
+  if has deps:major; then echo major
+  elif has deps:lockfile || printf '%s' "${TITLE:-}" | grep -qi 'lock file maintenance'; then echo lockfile
+  elif has deps:minor; then echo minor
+  elif has deps:patch; then echo patch
+  else
+    read -r from to < <(printf '%s' "${TITLE:-}" \
+      | sed -nE 's/.* from v?([0-9]+(\.[0-9]+){0,2})[^ ]* to v?([0-9]+(\.[0-9]+){0,2}).*/\1 \3/p' | head -n 1) || true
+    if [ -z "${from:-}" ] || [ -z "${to:-}" ]; then echo unknown; return; fi
+    IFS=. read -r a1 b1 _ <<<"$from"; IFS=. read -r a2 b2 _ <<<"$to"
+    if [ "$a1" != "$a2" ]; then echo major
+    elif [ "${b1:-0}" != "${b2:-0}" ]; then echo minor
+    else echo patch; fi
+  fi
+}
+
 # Sets judge and reason from VERDICT, UPDATE, LABELS (a JSON array), ROUNDS,
 # INTENT and PREVIOUS.
 decide() {
@@ -83,6 +107,7 @@ decide() {
 }
 
 case "${1:-run}" in
+  kind)     kind; exit 0 ;;
   hash)     hash_diff; exit 0 ;;
   rounds)   count_rounds; exit 0 ;;
   previous) previous_hash; exit 0 ;;
@@ -103,9 +128,7 @@ if ! live="$(gh api "/repos/$REPO/issues/$NUMBER/labels?per_page=100" --jq '[.[]
 fi
 LABELS="$live"
 
-UPDATE=other
-printf '%s' "${TITLE:-}" | grep -qi 'lock file maintenance' && UPDATE=lockfile
-printf '%s' "$LABELS" | jq -e 'index("deps:major")' >/dev/null && UPDATE=major
+UPDATE=$(kind)
 
 compare="$(gh api "/repos/$REPO/compare/$BASE_REF...$HEAD_SHA?per_page=100" --paginate)"
 INTENT="$(printf '%s' "$compare" | hash_diff)"

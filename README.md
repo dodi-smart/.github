@@ -63,6 +63,7 @@ caller keeps working.
 |---|---|---|
 | `pr-checks.yml` | pull request | Lint, typecheck, test, build, per stack |
 | `deps-verify.yml` | Renovate/Dependabot PRs | Reads the PR checks result, reads upstream changelogs, fixes code the update broke, posts a one-comment verdict. Never merges. |
+| `deps-automerge.yml` | verdict labels, `review / verdict`, PR Checks done | Merges a dependency bot's minor, patch or lock file PR once it is `deps:verified`, or `deps:fixed` and approved, and the required check is green. No agent |
 | `pr-review.yml` | `ready_for_review`, `agent:review` | Second-opinion review, deeper on sensitive paths. Publishes the `review / verdict` status and a `review-verdict.json` artifact |
 | `issue-triage.yml` | issue opened or reopened, `agent:triage`, `@claude triage`, manual dispatch with `issue-number` | Classifies, sets fields, then plans or asks blocking questions |
 | `issue-implement.yml` | `agent:implement`, `@claude implement` | Branch, code, draft PR. Requires a plan. Never merges. |
@@ -229,6 +230,7 @@ The log shows the deployment id and commit before the routes are probed.
 | `actions/run-agent` | Invokes the agent with the org's tool allowlist and reporting defaults. Does not start it when the running workflow file differs from the default branch, says why a run stopped (`why`), and with `report-file` guarantees a valid report file on every path |
 | `actions/pr-facts` | Resolves the PR from a number or a pull_request, workflow_run or status event, and checks it is open, not a fork, and at the expected head |
 | `actions/request-review` | Applies `agent:review` with the App token when the head commit has no `review / verdict` yet |
+| `actions/merge-gate` | The one unattended merge: resolves the PR, runs `agent-gate`, decides by policy (`deps` today) from labels, the required check, `review / verdict` and commit authors, and merges with the App token |
 | `actions/push-round` | Checks an agent's commits on a PR branch, regenerates lockfiles, and pushes them as one trailered commit with the App token, or refuses with a reason |
 | `actions/app-token` | Mints the org App token for this repo, optionally narrowed; empty when no App is configured |
 | `actions/setup-stack` | Installs a toolchain, resolves cache isolation, supplies conventional commands |
@@ -351,11 +353,11 @@ early return silently stops covering that path. One implementation in
 `actions/agent-gate`, with tests across every workflow shape.
 
 **No agent merges anything.** Dependency verification posts a verdict, and may
-push a fix commit for code the update broke, but leaves merge policy to
-Renovate's own rules. The implement workflow opens a draft pull
-request and stops. Evidence is only useful if it is allowed to be wrong, and
-merging on a clean verdict forces conservative tuning, which produces noise,
-which gets the report ignored.
+push a fix commit for code the update broke. The implement workflow opens a
+draft pull request and stops. The one thing that merges is `deps-automerge.yml`,
+and it is not an agent: a deterministic rule over labels, the required check and
+the review status, for minor, patch and lock file updates only. Majors always
+wait for a person.
 
 ## Labels are requests, fields are state
 
@@ -1205,6 +1207,48 @@ the caller's `pr-checks` block across:
 
 Commands run one per subshell, so `install: cd app && bun install` does not
 leave the next step inside `app/`.
+
+### Dependency automerge
+
+`deps-automerge.yml` merges a dependency PR when the evidence is complete. It
+runs no agent. Each run decides once through `actions/merge-gate`, the one
+place any unattended merge in the org is decided; its rules and their order are
+in `actions/merge-gate/gate.sh`. In short: a dependency bot's minor, patch or
+lock file update (`deps-intent`'s `kind`), `deps:verified` or `deps:fixed` with
+an approving `review / verdict`, the required check green on the head, only
+allowed commit authors, no `agent:no-touch`, and `DEPS_AUTOMERGE` not `false`.
+Majors never merge. The merge uses the org App's token, `--rebase`, pinned to
+the head it read. Minor and patch updates also wait three days after release,
+from the preset's `minimumReleaseAge`.
+
+The caller listens for every event that can complete the evidence:
+
+```yaml
+name: Dependency Automerge
+on:
+  # deps-verify set deps:verified or deps:fixed (with the App, so it fires).
+  pull_request:
+    types: [labeled]
+  # pr-review posted review / verdict on a deps:fixed PR.
+  status:
+  # The required check finished after the verdict was set.
+  workflow_run:
+    workflows: [PR Checks]
+    types: [completed]
+    branches: ['renovate/**', 'dependabot/**']
+jobs:
+  merge:
+    uses: dodi-smart/.github/.github/workflows/deps-automerge.yml@v1
+    secrets: inherit
+    permissions:
+      contents: read
+      pull-requests: read
+      checks: read
+      statuses: read
+```
+
+`required-check` takes another check run name when the repo's PR Checks caller
+job is not called `checks`.
 
 ## Issue templates
 

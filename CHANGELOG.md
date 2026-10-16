@@ -1,3 +1,9 @@
+## [1.28.0](https://github.com/dodi-smart/.github/compare/v1.27.0...v1.28.0) (2026-10-16)
+
+### ✨ Features
+
+* **factory:** agent fix loop, holdout tests and a merge policy keyed on the issue's fields ([8fcfff7](https://github.com/dodi-smart/.github/commit/8fcfff7e6111109b393699af321a766536e8bd3f))
+
 ## [1.27.0](https://github.com/dodi-smart/.github/compare/v1.26.0...v1.27.0) (2026-10-16)
 
 ### ✨ Features

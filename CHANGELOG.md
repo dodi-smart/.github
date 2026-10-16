@@ -1,3 +1,9 @@
+## [1.30.0](https://github.com/dodi-smart/.github/compare/v1.29.0...v1.30.0) (2026-10-16)
+
+### ✨ Features
+
+* **run-agent:** add the org's plugins and agent env to every agent run ([9ebadb7](https://github.com/dodi-smart/.github/commit/9ebadb7fa362b47e129ea065e7498fad4f4b0d36))
+
 ## [1.29.0](https://github.com/dodi-smart/.github/compare/v1.28.3...v1.29.0) (2026-10-16)
 
 ### ✨ Features

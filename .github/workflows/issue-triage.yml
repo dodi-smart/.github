@@ -51,6 +51,7 @@ on:
       CLAUDE_CODE_OAUTH_TOKEN: { required: true }
       GH_APP_CLIENT_ID:        { required: false }
       GH_APP_PRIVATE_KEY:      { required: false }
+      AGENT_ENV_SECRET:        { required: false }   # KEY=VALUE lines for the agent alone
 
 # One triage per issue. A second request supersedes the first rather than racing it.
 concurrency:
@@ -202,6 +203,10 @@ jobs:
           oauth-token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           stage: triage
           model-pin: ${{ vars.AGENT_MODEL_PIN }}
+          org-plugins:             ${{ vars.AGENT_PLUGINS }}
+          org-plugin-marketplaces: ${{ vars.AGENT_PLUGIN_MARKETPLACES }}
+          agent-env:               ${{ vars.AGENT_ENV }}
+          agent-env-secret:        ${{ secrets.AGENT_ENV_SECRET }}
           # Live progress comment, so a run in flight is visible. Silence reads
           # the same whether the job is working or broken.
           track-progress: 'true'

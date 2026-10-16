@@ -39,6 +39,7 @@ on:
       CLAUDE_CODE_OAUTH_TOKEN: { required: true }
       GH_APP_CLIENT_ID:        { required: false }
       GH_APP_PRIVATE_KEY:      { required: false }
+      AGENT_ENV_SECRET:        { required: false }   # KEY=VALUE lines for the agent alone
 
 concurrency:
   group: assist-${{ github.repository }}-${{ github.event.issue.number || github.event.pull_request.number || github.ref }}
@@ -135,6 +136,10 @@ jobs:
           stage: assist
           model: ${{ inputs.model }}
           model-pin: ${{ vars.AGENT_MODEL_PIN }}
+          org-plugins:             ${{ vars.AGENT_PLUGINS }}
+          org-plugin-marketplaces: ${{ vars.AGENT_PLUGIN_MARKETPLACES }}
+          agent-env:               ${{ vars.AGENT_ENV }}
+          agent-env-secret:        ${{ secrets.AGENT_ENV_SECRET }}
           prompt: ''
           additional-permissions: |
             actions: read

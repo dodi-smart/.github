@@ -78,6 +78,20 @@ EOF
 }
 expect "run-agent runs on the model and cap pick-model chose" model_wired
 
+# The org's plugins and env reach the action, and the settings file is removed.
+org_wired() {
+python3 - "$ROOT" <<'EOF'
+import sys, yaml
+steps = yaml.safe_load(open(sys.argv[1] + '/actions/run-agent/action.yml'))['runs']['steps']
+call = [s for s in steps if 'claude-code-action@' in str(s.get('uses', ''))][0]['with']
+assert call['plugins'] == '${{ steps.org.outputs.plugins }}', call['plugins']
+assert call['plugin_marketplaces'] == '${{ steps.org.outputs.marketplaces }}', call['plugin_marketplaces']
+assert call['settings'] == '${{ steps.org.outputs.settings }}', call.get('settings')
+assert any('rm -f "$SETTINGS"' in str(s.get('run', '')) and 'always()' in str(s.get('if', '')) for s in steps), 'no cleanup'
+EOF
+}
+expect "run-agent passes the org's plugins and the agent env, and removes the file after" org_wired
+
 # 2. Lift the steps out of the workflow. The push itself is actions/push-round,
 # tested there.
 python3 - "$ROOT" "$WORK" <<'EOF' || { echo 'cannot read the deps-verify steps'; exit 1; }
@@ -234,6 +248,34 @@ outcome success
 expect "no result after a success is the action skipping itself" grep -q 'skipped itself' <(out_why)
 outcome failure
 expect "no result after a failure says the action failed first" grep -q 'failed before the agent produced a result' <(out_why)
+
+# 8d2. agent-env.sh: the org's plugins on top of the caller's, and env for the agent alone.
+# agent_env [ENV=value ...]: runs it, outputs in $WORK/out, log in $WORK/log.
+agent_env() {
+  : > "$WORK/out"; rm -rf "$WORK/rt"; mkdir -p "$WORK/rt"
+  env -i PATH="$PATH" HOME="$WORK" RUNNER_TEMP="$WORK/rt" GITHUB_OUTPUT="$WORK/out" "$@" \
+    bash "$ROOT/actions/run-agent/agent-env.sh" > "$WORK/log" 2>&1
+}
+multi_out() { sed -n "/^$1<<__AGENT_ENV_EOF__$/,/^__AGENT_ENV_EOF__$/p" "$WORK/out" | sed '1d;$d'; }
+agent_env PLUGINS='code-review@claude-code-plugins' ORG_PLUGINS=$'knowledge@org\ncode-review@claude-code-plugins' \
+  MARKETPLACES='https://x/a.git' ORG_MARKETPLACES='https://x/b.git'
+expect "org plugins are added to the caller's, once each" test "$(multi_out plugins)" = $'code-review@claude-code-plugins\nknowledge@org'
+expect "and their marketplaces too" test "$(multi_out marketplaces)" = $'https://x/a.git\nhttps://x/b.git'
+expect "no env means no settings file" grep -qx 'settings=' "$WORK/out"
+agent_env
+expect "nothing set at all gives empty lists" test -z "$(multi_out plugins)$(multi_out marketplaces)"
+agent_env AGENT_ENV=$'# a comment\nTOOL_RUNTIME=github-actions\nTOOL_EMAIL=a@b.c\nTOOL_TOKEN=plain' AGENT_ENV_SECRET=$'TOOL_TOKEN=s3cret\r'
+expect "env lines become the agent's settings file, the secret's line winning without its CR" test "$(jq -c .env "$WORK/rt/agent-settings.json")" = '{"TOOL_RUNTIME":"github-actions","TOOL_EMAIL":"a@b.c","TOOL_TOKEN":"s3cret"}'
+expect "and its value is masked" grep -qx '::add-mask::s3cret' "$WORK/log"
+expect "a plain value is not masked" bash -c '! grep -q "add-mask::github-actions" "$1"' _ "$WORK/log"
+expect "the log names keys, never values" bash -c 'grep -q "agent env: TOOL_EMAIL TOOL_RUNTIME TOOL_TOKEN" "$1" && ! grep -q "s3cret$" <(grep -v add-mask "$1")' _ "$WORK/log"
+expect "the file is readable by the runner user only" test "$(stat -c %a "$WORK/rt/agent-settings.json" 2>/dev/null || stat -f %Lp "$WORK/rt/agent-settings.json")" = 600
+for k in GH_TOKEN PATH ANTHROPIC_API_KEY CLAUDE_CODE_OAUTH_TOKEN GITHUB_TOKEN LD_PRELOAD NODE_OPTIONS GIT_SSH_COMMAND; do
+  agent_env AGENT_ENV_SECRET="$k=x"; rc=$?
+  expect "$k is refused, and fails the step" bash -c '[ "$1" != 0 ] && grep -q "Agent env key refused" "$2"' _ "$rc" "$WORK/log"
+done
+agent_env AGENT_ENV='not a key value line'
+expect "a line that is not KEY=VALUE fails" grep -q 'Agent env line refused' "$WORK/log"
 
 # 8e. run-agent's validate step: only a differing file stops the agent.
 # validate HERE DEFAULT: the two copies gh returns; empty means unreadable.

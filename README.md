@@ -51,6 +51,7 @@ fleet changes.
 |---|---|
 | `CLAUDE_CODE_OAUTH_TOKEN` | every agent workflow |
 | `GH_APP_CLIENT_ID` + `GH_APP_PRIVATE_KEY` | the App token other workflows mint (release pushes, deps-verify). The runner picker no longer uses them |
+| `AGENT_ENV_SECRET` | optional; secret env for every agent run, see [Org additions to agent runs](#org-additions-to-agent-runs) |
 
 `GH_APP_CLIENT_ID` is the one name for that secret. Migrate a repo still carrying
 the older `GH_APP_ID`. The runner picker is static and makes no API call, so it
@@ -855,6 +856,28 @@ Every shared workflow forwards it to run-agent, and it wins over the policy
 and over a caller's `model` input. A workflow that calls run-agent directly
 forwards `model-pin: ${{ vars.AGENT_MODEL_PIN }}` itself. Unset it to go back to
 the policy.
+
+### Org additions to agent runs
+
+Four org settings reach every agent run that a shared workflow starts, so a
+tool the org uses in its agents is switched on once, not per repo.
+
+| Setting | Kind | What it does |
+|---|---|---|
+| `AGENT_PLUGINS` | variable | Plugins added to the workflow's own, newline-separated |
+| `AGENT_PLUGIN_MARKETPLACES` | variable | Marketplaces for those plugins |
+| `AGENT_ENV` | variable | `KEY=VALUE` lines set for the agent |
+| `AGENT_ENV_SECRET` | secret | The same, with the values masked. Its line wins when both name a key |
+
+The env reaches the agent and its hooks through claude-code-action's settings,
+and never `GITHUB_ENV`, so the steps that publish after the agent do not see
+it. run-agent refuses a key that would change the runner, the action or the
+agent's credentials (`GITHUB_*`, `RUNNER_*`, `ANTHROPIC_*`, `CLAUDE_CODE_*`,
+`PATH`, `HOME`, `GH_TOKEN`, `GIT_*`, `LD_*` and similar) and fails the step,
+because a wrong key would be ignored without anyone noticing. The settings file
+is deleted after the run. A workflow that calls run-agent directly forwards the
+four itself, as `org-plugins`, `org-plugin-marketplaces`, `agent-env` and
+`agent-env-secret`.
 
 ## Versioning
 

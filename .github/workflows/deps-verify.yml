@@ -68,6 +68,7 @@ on:
       CLAUDE_CODE_OAUTH_TOKEN: { required: true }
       GH_APP_CLIENT_ID:        { required: false }
       GH_APP_PRIVATE_KEY:      { required: false }
+      AGENT_ENV_SECRET:        { required: false }   # KEY=VALUE lines for the agent alone
 
 # Keyed by branch, the one thing both events carry. A workflow_run has no
 # pull_request, and keying on its number would put every PR in one group.
@@ -553,6 +554,10 @@ jobs:
           stage:   deps-verify
           signals: ${{ needs.gate.outputs.update }} ${{ steps.result.outputs.verdict != 'green' && 'red' || '' }}
           model-pin: ${{ vars.AGENT_MODEL_PIN }}
+          org-plugins:             ${{ vars.AGENT_PLUGINS }}
+          org-plugin-marketplaces: ${{ vars.AGENT_PLUGIN_MARKETPLACES }}
+          agent-env:               ${{ vars.AGENT_ENV }}
+          agent-env-secret:        ${{ secrets.AGENT_ENV_SECRET }}
           allowed-bots: ${{ needs.gate.outputs.dependency-bots }}${{ steps.actor.outputs.fix-pusher }}
           # claude-code-action sets its own git identity on the checkout, over
           # the `git config` of the facts step, so without these the agent

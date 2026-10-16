@@ -60,7 +60,7 @@ jobs:
       # The model ids live in pick-model. A workflow that names one, or calls
       # run-agent without a stage or the org pin, drifts from the policy
       # without anyone deciding it.
-      - name: Every agent run goes through the model policy
+      - name: Every agent run goes through the model policy and gets the org's plugins and env
         run: |
           set -euo pipefail
           python3 - <<'PY'
@@ -86,9 +86,16 @@ jobs:
                   # Built at run time: Actions would expand a literal expression in this script.
                   if w.get('model-pin') != expr('vars.AGENT_MODEL_PIN'):
                       bad.append('%s: a run-agent step does not forward vars.AGENT_MODEL_PIN' % f)
+                  org = {'org-plugins': expr('vars.AGENT_PLUGINS'),
+                         'org-plugin-marketplaces': expr('vars.AGENT_PLUGIN_MARKETPLACES'),
+                         'agent-env': expr('vars.AGENT_ENV'),
+                         'agent-env-secret': expr('secrets.AGENT_ENV_SECRET')}
+                  for k, v in org.items():
+                      if w.get(k) != v:
+                          bad.append('%s: a run-agent step does not forward %s as %s' % (f, k, v))
           if bad:
               print('\n'.join(bad)); raise SystemExit(1)
-          print('every run-agent call passes a stage and the pin, and no file names a model id')
+          print('every run-agent call passes a stage, the pin and the org plugins and env, and no file names a model id')
           PY
 
       # The kill switch is a claim about behaviour. Assert it.

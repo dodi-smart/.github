@@ -107,6 +107,24 @@ inputs:
   allowed-bots:
     description: 'Comma-separated bot logins permitted to initiate. Named explicitly, never "*".'
     default: ''
+  org-plugins:
+    description: >-
+      The org's plugins, added to `plugins` on every run. Shared workflows
+      forward vars.AGENT_PLUGINS. Newline-separated, like `plugins`.
+    default: ''
+  org-plugin-marketplaces:
+    description: "Marketplaces for org-plugins. Shared workflows forward vars.AGENT_PLUGIN_MARKETPLACES."
+    default: ''
+  agent-env:
+    description: >-
+      KEY=VALUE lines set for the agent alone, through claude-code-action's
+      settings, never through GITHUB_ENV. Shared workflows forward vars.AGENT_ENV.
+      Keys that would change the runner, the action or the agent's credentials
+      are refused; see agent-env.sh.
+    default: ''
+  agent-env-secret:
+    description: 'The same as agent-env, with masked values; its line wins on a clash. Shared workflows forward secrets.AGENT_ENV_SECRET.'
+    default: ''
   plugins:
     description: 'Plugin spec, e.g. code-review@claude-code-plugins'
     default: ''
@@ -207,6 +225,18 @@ runs:
         MAX_TURNS: ${{ inputs.max-turns }}
       run: '"$GITHUB_ACTION_PATH/../pick-model/pick.sh"'
 
+    # The org's plugins and the agent's env. See agent-env.sh.
+    - id: org
+      shell: bash
+      env:
+        PLUGINS:          ${{ inputs.plugins }}
+        MARKETPLACES:     ${{ inputs.plugin-marketplaces }}
+        ORG_PLUGINS:      ${{ inputs.org-plugins }}
+        ORG_MARKETPLACES: ${{ inputs.org-plugin-marketplaces }}
+        AGENT_ENV:        ${{ inputs.agent-env }}
+        AGENT_ENV_SECRET: ${{ inputs.agent-env-secret }}
+      run: '"$GITHUB_ACTION_PATH/agent-env.sh"'
+
     # Fail fast on the combination that silently posts nothing. See the header.
     - name: Reject a sticky comment agent mode will ignore
       if: inputs.sticky-comment == 'true' && inputs.prompt != ''
@@ -293,8 +323,9 @@ runs:
         # Not inputs.track-progress. See the step above.
         track_progress: ${{ steps.progress.outputs.track }}
         allowed_bots: ${{ inputs.allowed-bots }}
-        plugins: ${{ inputs.plugins }}
-        plugin_marketplaces: ${{ inputs.plugin-marketplaces }}
+        plugins: ${{ steps.org.outputs.plugins }}
+        plugin_marketplaces: ${{ steps.org.outputs.marketplaces }}
+        settings: ${{ steps.org.outputs.settings }}
         additional_permissions: ${{ inputs.additional-permissions }}
         bot_name: ${{ inputs.bot-name }}
         bot_id: ${{ inputs.bot-id }}
@@ -306,6 +337,14 @@ runs:
           --allowed-tools ${{ inputs.allowed-tools }}
           ${{ steps.model.outputs.max-turns != '' && format('--max-turns {0}', steps.model.outputs.max-turns) || '' }}
           ${{ format('--append-system-prompt "{0} {1}"', inputs.house-style, inputs.append-system-prompt) }}
+
+    # The settings file holds the agent's env, secret values included. A
+    # self-hosted runner keeps RUNNER_TEMP's parent, so it goes now.
+    - if: always() && steps.org.outputs.settings != ''
+      shell: bash
+      env:
+        SETTINGS: ${{ steps.org.outputs.settings }}
+      run: rm -f "$SETTINGS"
 
     # Read even when the agent step failed, which is when it matters most.
     # The action writes its log to this path and leaves `execution_file` empty

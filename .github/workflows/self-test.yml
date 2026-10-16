@@ -113,6 +113,13 @@ jobs:
           land = [s for s in gate['steps'] if s.get('id') == 'land']
           if not land or 'actions/merge-gate@' not in land[0].get('uses', '') or land[0]['with'].get('policy') != 'factory':
               bad.append('pr-iterate must land through merge-gate with policy factory')
+          # claude-code-action rejects a status event, so a fix decided on one
+          # must be relayed to a labeled event, never handed to the fix job.
+          route = [s for s in gate['steps'] if s.get('id') == 'route']
+          if not route or 'status/fix-ci|status/fix-review) action=relay' not in route[0].get('run', ''):
+              bad.append('pr-iterate must relay a fix decided on a status event')
+          if 'route.outputs.action' not in str((gate.get('outputs') or {}).get('action', '')):
+              bad.append('pr-iterate gate must publish the routed action, not the raw decision')
           pushes = {'issue-implement.yml': 'actions/factory@', 'pr-iterate.yml': 'actions/push-round@'}
           for f, job in (('issue-implement.yml', 'implement'), ('pr-iterate.yml', 'fix')):
               j = yaml.safe_load(open('.github/workflows/' + f))['jobs'][job]

@@ -16,6 +16,10 @@
 # version over a newer one and does not look at how the canary callers fared:
 # turn it off, or promote by hand, when a canary run is red.
 #
+# After a promotion that moved the tag, it sends a `standards-promoted`
+# repository_dispatch to the repo named in the variable SYNC_DISPATCH_REPO, which
+# keeps the callers in every consuming repo in sync. Unset, nothing is sent.
+#
 # Hosted on purpose, like Publish release: this repo is public, and the org
 # runner group refuses public repos.
 name: Promote
@@ -80,6 +84,7 @@ jobs:
           private-key: ${{ secrets.GH_APP_PRIVATE_KEY }}
 
       - name: Promote
+        id: promote
         env:
           CHANNEL_TOKEN: ${{ steps.app-token.outputs.token }}
           VERSION: ${{ inputs.version }}
@@ -93,4 +98,20 @@ jobs:
           {
             echo "### Promote"
             ./scripts/channel-tag.sh promote "${args[@]}"
-          } | tee -a "$GITHUB_STEP_SUMMARY"
+          } | tee -a "$GITHUB_STEP_SUMMARY" "$RUNNER_TEMP/promote.out"
+          grep -E '^(promoted|version)=' "$RUNNER_TEMP/promote.out" >> "$GITHUB_OUTPUT" || true
+
+      # Tell the repo that keeps the callers in sync that the major tag moved, so
+      # it opens its sync pull requests now instead of at its next scheduled run.
+      # That repo is named by the variable SYNC_DISPATCH_REPO (owner/name) and never
+      # here. Nothing is sent when the tag did not move. A failed send only warns:
+      # the promotion has already happened, and the next scheduled sync catches up.
+      - name: Announce the promotion
+        if: steps.promote.outputs.promoted == 'true' && vars.SYNC_DISPATCH_REPO != '' && steps.have-app.outputs.yes == 'true'
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          TARGET: ${{ vars.SYNC_DISPATCH_REPO }}
+          VERSION: ${{ steps.promote.outputs.version }}
+        run: |
+          gh api "repos/$TARGET/dispatches" -f event_type=standards-promoted -f "client_payload[version]=$VERSION" \
+            || echo "::warning title=Promotion not announced::the repository_dispatch to $TARGET failed. The promotion stands; that repo picks it up on its next scheduled run."

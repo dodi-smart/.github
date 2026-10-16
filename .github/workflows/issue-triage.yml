@@ -264,11 +264,18 @@ jobs:
               #### Tests
               What proves it works. Name the runner if the repo has one.
 
+              #### Acceptance criteria
+              Numbered, one observable behaviour per line, as given, when,
+              then. Each one becomes a test the implement agent writes before
+              the code and may not change afterwards, so state behaviour a
+              user or caller sees, never an internal detail. Omit the section
+              only when there is nothing a test could assert.
+
               #### Risks
               The specific thing that could break. Omit this section when
               there is nothing worth naming.
 
-            Under 30 lines. Do not write an Effort, Priority or Risk level line.
+            Under 40 lines. Do not write an Effort, Priority or Risk level line.
             Those are fields, you set them below, and a fact written in two
             places disagrees with itself within weeks.
             Then set:

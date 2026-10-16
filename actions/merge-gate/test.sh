@@ -46,6 +46,18 @@ decide "verified, but the required check has not reported"        false CHECK=
 decide "fixed and approved, but the required check failed"        false 'LABELS=["deps:fixed","deps:patch"]' REVIEW=success CHECK=failure
 decide "a commit by an author the policy does not merge"          false FOREIGN='someone'
 
+F='POLICY=factory'; FL='LABELS=["agent:iterate"]'
+decide "factory: no agent:iterate"                                false "$F" 'LABELS=[]' TIER=merge REVIEW=success
+decide "factory: agent:no-touch on the issue"                     false "$F" "$FL" TIER=merge REVIEW=success ISSUE_NO_TOUCH=true
+decide "factory: tier ready"                                      false "$F" "$FL" TIER=ready REVIEW=success
+decide "factory: tier draft"                                      false "$F" "$FL" TIER=draft REVIEW=success
+decide "factory: no tier read"                                    false "$F" "$FL" TIER= REVIEW=success
+decide "factory: review asks for changes"                         false "$F" "$FL" TIER=merge REVIEW=failure
+decide "factory: no review status"                                false "$F" "$FL" TIER=merge REVIEW=
+decide "factory: approved, but the check failed"                  false "$F" "$FL" TIER=merge REVIEW=success CHECK=failure
+decide "factory: approved, but a person committed"                false "$F" "$FL" TIER=merge REVIEW=success FOREIGN=someone
+decide "factory: merge tier, approved, green"                     true  "$F" "$FL" TIER=merge REVIEW=success
+
 decide "verified minor, green"                                    true
 decide "verified patch, green"                                    true  'LABELS=["deps:verified","deps:patch"]'
 decide "verified lock file maintenance, green"                    true  'LABELS=["deps:verified"]' TITLE='chore(deps): lock file maintenance'

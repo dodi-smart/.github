@@ -1,0 +1,94 @@
+# The deterministic steps of the agent factory, as one script.
+#
+# `issue-implement` and `pr-iterate` both call it, so the autonomy ladder, the
+# branch name, the holdout guard and the next-step decision each live in one
+# place. See factory.sh for what each command reads and writes. Agents never
+# call this: they write files and local commits, and these steps act on them.
+name: Factory step
+description: Compute the autonomy tier or branch name, push a guarded round, or decide the fix loop's next step.
+
+inputs:
+  command:
+    description: 'tier | branch | fields | push | holdout | decide'
+    required: true
+  args:
+    description: 'Positional arguments for tier (mode risk effort) and branch (type number title), newline-separated'
+    default: ''
+  issue:
+    description: 'Issue number (fields, push)'
+    default: ''
+  pr:
+    description: 'Pull request number (decide), when the event names one'
+    default: ''
+  event-sha:
+    description: 'The commit the triggering event was about (decide)'
+    default: ''
+  base-sha:
+    description: 'The head before the agent ran (push)'
+    default: ''
+  max-rounds:
+    description: 'Fix rounds allowed after implement'
+    default: '3'
+  head-ref:
+    description: 'Branch to push to (push)'
+    default: ''
+  subject:
+    description: 'Commit subject for round 0; used only when it is a conventional commit header (push)'
+    default: ''
+  agent-emails:
+    description: 'Extra author emails the agent may commit as, newline-separated (push)'
+    default: ''
+  app-token:
+    description: 'Org App token. Without it nothing is pushed (push)'
+    default: ''
+  token:
+    description: 'Token for reads'
+    default: ${{ github.token }}
+
+outputs:
+  tier:      { description: 'merge | ready | draft', value: '${{ steps.run.outputs.tier }}' }
+  branch:    { description: 'Conventional branch name', value: '${{ steps.run.outputs.branch }}' }
+  read:      { description: '"false" when the issue fields could not be read (fields)', value: '${{ steps.run.outputs.read }}' }
+  state:     { description: 'Triage state', value: '${{ steps.run.outputs.state }}' }
+  mode:      { description: 'Agent mode', value: '${{ steps.run.outputs.mode }}' }
+  risk:      { description: 'Risk', value: '${{ steps.run.outputs.risk }}' }
+  effort:    { description: 'Effort', value: '${{ steps.run.outputs.effort }}' }
+  pushed:    { description: '"true" when a round was pushed', value: '${{ steps.run.outputs.pushed }}' }
+  refused:   { description: 'Why a round was not pushed', value: '${{ steps.run.outputs.refused }}' }
+  sha:       { description: 'The round commit', value: '${{ steps.run.outputs.sha }}' }
+  refuse-paths: { description: 'ERE of the holdout files and their list, for push-round (holdout)', value: '${{ steps.run.outputs.refuse-paths }}' }
+  action:    { description: 'stop | fix-ci | fix-review | ready | review | land | handoff | give-up', value: '${{ steps.run.outputs.action }}' }
+  reason:    { description: 'Why', value: '${{ steps.run.outputs.reason }}' }
+  number:    { description: 'Pull request number', value: '${{ steps.run.outputs.number }}' }
+  issue:     { description: 'The issue the PR closes', value: '${{ steps.run.outputs.issue }}' }
+  head-sha:  { description: 'PR head commit', value: '${{ steps.run.outputs.head-sha }}' }
+  head-ref:  { description: 'PR head branch', value: '${{ steps.run.outputs.head-ref }}' }
+  base-ref:  { description: 'PR base branch', value: '${{ steps.run.outputs.base-ref }}' }
+  rounds:    { description: 'Fix rounds already on the PR', value: '${{ steps.run.outputs.rounds }}' }
+  run-id:    { description: 'The PR Checks run on the head', value: '${{ steps.run.outputs.run-id }}' }
+
+runs:
+  using: composite
+  steps:
+    - id: run
+      shell: bash
+      env:
+        COMMAND:        ${{ inputs.command }}
+        ARGS:           ${{ inputs.args }}
+        REPO:           ${{ github.repository }}
+        ISSUE:          ${{ inputs.issue }}
+        PR:             ${{ inputs.pr }}
+        EVENT_SHA:      ${{ inputs.event-sha }}
+        BASE_SHA:       ${{ inputs.base-sha }}
+        MAX_ROUNDS:     ${{ inputs.max-rounds }}
+        HEAD_REF:       ${{ inputs.head-ref }}
+        SUBJECT:        ${{ inputs.subject }}
+        AGENT_EMAILS:   ${{ inputs.agent-emails }}
+        APP_TOKEN:      ${{ inputs.app-token }}
+        GH_TOKEN:       ${{ inputs.token }}
+        ACTION_PATH:    ${{ github.action_path }}
+      run: |
+        set -euo pipefail
+        args=()
+        while IFS= read -r a; do args+=("$a"); done < <(printf '%s\n' "$ARGS")
+        "$ACTION_PATH/factory.sh" "$COMMAND" "${args[@]}"

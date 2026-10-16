@@ -1,0 +1,319 @@
+# Reusable: the agent fix loop for a PR that carries `agent:iterate`.
+#
+# The caller listens to three events and this workflow decides what each means:
+#   pull_request (labeled agent:iterate)   a person or issue-implement asks
+#   workflow_run (PR Checks, completed)    the build verdict on a new head
+#   status (the review verdict context)    pr-review's verdict on a head
+#
+# One deterministic step, `actions/factory decide`, reads the PR, its issue's
+# fields, PR Checks and the review verdict, LIVE, and names the next action:
+#
+#   fix-ci, fix-review   the agent makes one fix round; a step pushes it
+#   ready                a draft at tier ready or merge whose checks are not red
+#   review               ready, green, no verdict on this head: add agent:review
+#   land                 tier merge, green, review approved: rebase-merge
+#   handoff              approved below tier merge: a person takes it
+#   give-up              still red or still `changes` after max-rounds
+#   stop                 anything else, including agent:no-touch anywhere
+#
+# The agent writes code and local commits only. Pushing, marking ready, labels
+# and the merge are steps with the org App token. The non-fix actions run at the
+# end of the gate job, on the decision it just made, and the merge pins the head
+# commit, so an event overtaken by a push merges nothing.
+name: PR Iterate
+
+on:
+  workflow_call:
+    inputs:
+      runner-weight:
+        type: string
+        default: "heavy"     # a fix round builds and tests
+      runner-labels:
+        type: string
+        default: ""
+      model:
+        type: string
+        default: "claude-opus-5"
+      max-rounds:
+        type: number
+        default: 3
+      timeout-minutes:
+        type: number
+        default: 45
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN: { required: true }
+      GH_APP_CLIENT_ID:        { required: false }
+      GH_APP_PRIVATE_KEY:      { required: false }
+
+# One loop per PR at a time, keyed on its branch, which every one of the three
+# events names. Never kill a run that may be pushing.
+concurrency:
+  group: iterate-${{ github.repository }}-${{ github.event.pull_request.head.ref || github.event.workflow_run.head_branch || github.event.branches[0].name }}
+  cancel-in-progress: false
+
+# Every job grants its own, so one added later starts with nothing.
+permissions: {}
+
+jobs:
+  # Payload-only pre-filter in the `if:`, so traffic this workflow ignores costs
+  # no runner. It is looser than the gate: agent:no-touch, the live labels and
+  # everything about the PR stay in the steps. A PR Checks run a person's push
+  # started is not the loop's: the loop's own pushes and ready marks are the App's.
+  gate:
+    if: >-
+      (github.event_name != 'pull_request' || (github.event.action == 'labeled' && github.event.label.name == 'agent:iterate'))
+      && (github.event_name != 'workflow_run' || (github.event.workflow_run.event == 'pull_request' && endsWith(github.event.workflow_run.triggering_actor.login, '[bot]') && github.event.workflow_run.conclusion != 'cancelled' && github.event.workflow_run.conclusion != 'skipped'))
+      && (github.event_name != 'status' || (github.event.context == 'review / verdict' && github.event.state != 'pending'))
+    runs-on: ${{ fromJSON((github.event.repository.private && !github.event.pull_request.head.repo.fork) && '["self-hosted","Linux","light"]' || '"ubuntu-latest"') }}
+    timeout-minutes: 10
+    # Read only. Labels, ready and the merge go through the App token below.
+    permissions:
+      contents: read
+      pull-requests: read
+      issues: read             # labels and the issue's fields
+      checks: read             # PR Checks on the head
+      statuses: read           # the review verdict on the head
+    outputs:
+      action:   ${{ steps.decide.outputs.action }}
+      reason:   ${{ steps.decide.outputs.reason }}
+      number:   ${{ steps.decide.outputs.number }}
+      head-ref: ${{ steps.decide.outputs.head-ref }}
+      base-ref: ${{ steps.decide.outputs.base-ref }}
+      issue:    ${{ steps.decide.outputs.issue }}
+      rounds:   ${{ steps.decide.outputs.rounds }}
+      run-id:   ${{ steps.decide.outputs.run-id }}
+      runner:   ${{ steps.pick.outputs.runner }}
+    steps:
+      - uses: dodi-smart/.github/actions/runner-report@v1
+        with:
+          selector: light
+
+      # agent:no-touch first, unconditionally. A workflow_run or status payload
+      # carries no labels, so `decide` reads the PR's and the issue's live.
+      - id: gate
+        uses: dodi-smart/.github/actions/agent-gate@v1
+        with:
+          labels:        ${{ toJson(github.event.pull_request.labels.*.name) }}
+          number:        ${{ github.event.pull_request.number || github.event.workflow_run.pull_requests[0].number }}
+          event-name:    ${{ github.event_name }}
+          event-action:  ${{ github.event.action }}
+          label:         ${{ github.event.label.name }}
+          request-label: 'agent:iterate'
+          author:        ${{ github.event.pull_request.user.login }}
+          bots:          'allow'     # agent PRs are opened by the App
+          skip-draft:    'false'     # a draft is exactly what the loop works on
+          events:        'pull_request workflow_run status'
+
+      - id: decide
+        if: steps.gate.outputs.proceed == 'true'
+        uses: dodi-smart/.github/actions/factory@v1
+        with:
+          command:    decide
+          pr:         ${{ github.event.pull_request.number || github.event.workflow_run.pull_requests[0].number }}
+          event-sha:  ${{ github.event.workflow_run.head_sha || github.event.sha }}
+          max-rounds: ${{ inputs.max-rounds }}
+
+      - id: pick
+        if: steps.gate.outputs.proceed == 'true' && (steps.decide.outputs.action == 'fix-ci' || steps.decide.outputs.action == 'fix-review')
+        uses: dodi-smart/.github/actions/pick-runner@v1
+        with:
+          weight:             ${{ inputs.runner-weight }}
+          labels:             ${{ inputs.runner-labels }}
+          gh-app-client-id:   ${{ secrets.GH_APP_CLIENT_ID }}
+          gh-app-private-key: ${{ secrets.GH_APP_PRIVATE_KEY }}
+
+      # Everything that is not a fix round happens here, on the decision just
+      # made. A merge goes through actions/merge-gate, which reads the PR, the
+      # issue's tier, the required check and the review again, and merges with
+      # the App pinned to the head it read.
+      - id: land
+        if: steps.decide.outputs.action == 'land'
+        uses: dodi-smart/.github/actions/merge-gate@v1
+        with:
+          policy:      factory
+          number:      ${{ steps.decide.outputs.number }}
+          kill-switch: ${{ vars.FACTORY_AUTOMERGE }}
+          # claude[bot]'s noreply email maps to this login on GitHub.
+          authors:     'github-actions[bot],claude[bot]'
+          client-id:   ${{ secrets.GH_APP_CLIENT_ID }}
+          private-key: ${{ secrets.GH_APP_PRIVATE_KEY }}
+
+      # Labels and ready go through the App so the events they cause start
+      # workflows; GITHUB_TOKEN's do not.
+      - id: app-token
+        if: contains(fromJSON('["ready","review","land","handoff","give-up"]'), steps.decide.outputs.action)
+        uses: dodi-smart/.github/actions/app-token@v1
+        with:
+          client-id:   ${{ secrets.GH_APP_CLIENT_ID }}
+          private-key: ${{ secrets.GH_APP_PRIVATE_KEY }}
+          permissions: pull-requests:write issues:write
+
+      - id: act
+        if: contains(fromJSON('["ready","review","land","handoff","give-up"]'), steps.decide.outputs.action)
+        env:
+          REPO:      ${{ github.repository }}
+          PR:        ${{ steps.decide.outputs.number }}
+          ACTION:    ${{ steps.decide.outputs.action }}
+          REASON:    ${{ steps.decide.outputs.reason }}
+          TIER:      ${{ steps.decide.outputs.tier }}
+          MERGED:    ${{ steps.land.outputs.merged }}
+          NOT_WHY:   ${{ steps.land.outputs.reason }}
+          GH_TOKEN:  ${{ steps.app-token.outputs.token }}
+        run: |
+          set -euo pipefail
+          if [ -z "$GH_TOKEN" ]; then
+            echo "::error title=No App token::GH_APP_CLIENT_ID is not set. A GITHUB_TOKEN label or ready starts no workflow."
+            exit 1
+          fi
+          unlabel() { gh api -X DELETE "/repos/$REPO/issues/$PR/labels/agent:iterate" >/dev/null 2>&1 || true; }
+          say()     { gh pr comment "$PR" --repo "$REPO" --body "$1" >/dev/null; }
+          case "$ACTION" in
+            ready)
+              gh pr ready "$PR" --repo "$REPO"
+              echo "::notice title=Marked ready::$REASON" ;;
+            review)
+              gh label create agent:review --repo "$REPO" --color 5319e7 >/dev/null 2>&1 || true
+              gh pr edit "$PR" --repo "$REPO" --add-label agent:review
+              echo "::notice title=Review requested::$REASON" ;;
+            land)
+              unlabel
+              [ "$MERGED" = true ] || say "**Not merged.** ${NOT_WHY:-the merge gate made no decision}. A person merges." ;;
+            handoff)
+              unlabel
+              say "Review approved this head. The issue's fields put it on tier \`$TIER\`, which stops here: a person merges." ;;
+            give-up)
+              unlabel
+              say "**Stopping the fix loop.** $REASON. A person takes it from here." ;;
+          esac
+
+  # One fix round. The agent commits; the push step writes the round and
+  # refuses a holdout edit, a stranger's commit, the cap, or a moved branch.
+  fix:
+    needs: [gate]
+    if: needs.gate.outputs.action == 'fix-ci' || needs.gate.outputs.action == 'fix-review'
+    runs-on: ${{ fromJson(needs.gate.outputs.runner) }}
+    timeout-minutes: ${{ inputs.timeout-minutes }}
+    permissions:
+      contents: read
+      pull-requests: write     # to say why a round was not pushed
+      issues: read
+      actions: read            # the failed jobs' logs
+      id-token: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPO:     ${{ github.repository }}
+      PR:       ${{ needs.gate.outputs.number }}
+    steps:
+      - uses: dodi-smart/.github/actions/runner-report@v1
+        with:
+          selector: ${{ needs.gate.outputs.runner }}
+
+      # The PR branch, with no credentials left behind for the repo's scripts.
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.gate.outputs.head-ref }}
+          fetch-depth: 0
+          filter: blob:none   # history for the round's range, blobs on demand
+          persist-credentials: false
+
+      - id: facts
+        env:
+          ACTION: ${{ needs.gate.outputs.action }}
+          RUN_ID: ${{ needs.gate.outputs.run-id }}
+          ROUNDS: ${{ needs.gate.outputs.rounds }}
+        run: |
+          set -euo pipefail
+          OUT="$RUNNER_TEMP/factory"
+          echo "OUT=$OUT" >> "$GITHUB_ENV"
+          mkdir -p "$OUT"
+          {
+            echo "base-sha=$(git rev-parse HEAD)"
+            echo "round=$(( ${ROUNDS:-0} + 1 ))"
+          } >> "$GITHUB_OUTPUT"
+          if [ "$ACTION" = fix-ci ] && [ -n "$RUN_ID" ]; then
+            gh run view "$RUN_ID" --repo "$REPO" --log-failed > "$OUT/ci.log" 2>&1 || true
+          fi
+          if [ "$ACTION" = fix-review ]; then
+            gh pr view "$PR" --repo "$REPO" --comments > "$OUT/review.md" 2>&1 || true
+            gh api --paginate "/repos/$REPO/pulls/$PR/comments" \
+              --jq '.[] | "\(.path):\(.line // .original_line) \(.body)\n"' >> "$OUT/review.md" 2>/dev/null || true
+          fi
+
+      # The actor of a workflow_run or status event is whoever pushed or wrote
+      # the status, the App after a round. The gate has already tied the event
+      # to an agent:iterate PR on its current head.
+      - id: agent
+        uses: dodi-smart/.github/actions/run-agent@v1
+        with:
+          oauth-token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          # A first CI fix is usually mechanical. Review findings and a second
+          # attempt get the stronger model.
+          model: ${{ (needs.gate.outputs.action == 'fix-ci' && needs.gate.outputs.rounds == '0') && 'claude-sonnet-5' || inputs.model }}
+          max-turns: '60'
+          allowed-bots: ${{ endsWith(github.actor, '[bot]') && github.actor || '' }}
+          allowed-tools: 'Bash "Bash(gh:*)" Read Write Edit Grep Glob'
+          prompt: |
+            Fix pull request #${{ needs.gate.outputs.number }} in ${{ github.repository }}.
+            You are on its branch `${{ needs.gate.outputs.head-ref }}`, base
+            `${{ needs.gate.outputs.base-ref }}`. It implements issue
+            #${{ needs.gate.outputs.issue }}; read the plan there with
+            `gh issue view ${{ needs.gate.outputs.issue }} --comments`.
+
+            Why this round runs: ${{ needs.gate.outputs.reason }}.
+            ${{ needs.gate.outputs.action == 'fix-ci' && format('The failed PR Checks jobs'' logs are in `{0}/factory/ci.log`. Read them first.', runner.temp) || format('The review asked for changes. The PR conversation and inline comments are in `{0}/factory/review.md`. Fix what the latest review found; ignore findings an earlier round already fixed.', runner.temp) }}
+            This is fix round ${{ steps.facts.outputs.round }} of ${{ inputs.max-rounds }}.
+
+            Holdout tests: the files listed in `.factory/holdout` are the
+            acceptance tests written before the code. You may read and run
+            them. You may NOT change, rename or delete them, or the list. A
+            push step refuses any round that does, and the round is lost. If a
+            holdout test is wrong, say so with `gh pr comment` and stop.
+
+            1. Find the cause. A failure that is the runner's (exit 137, a killed
+               process, a network timeout) is not yours to fix: say so with
+               `gh pr comment` and commit nothing.
+            2. Make the smallest change that fixes it, matching the surrounding
+               code. Run the commands that failed until they pass.
+            3. Commit with a conventional message, e.g. `fix(auth): handle an
+               expired refresh token`. Do NOT push. A later step pushes.
+
+            Do not comment a summary, change labels, mark the PR ready, or
+            merge. The steps after you do what is needed.
+
+      # The holdout list as round 0 wrote it, as push-round's refuse-paths.
+      - id: holdout
+        if: ${{ !cancelled() && steps.agent.outcome != 'skipped' }}
+        uses: dodi-smart/.github/actions/factory@v1
+        with:
+          command:  holdout
+          base-sha: ${{ steps.facts.outputs.base-sha }}
+
+      # Only this step pushes: one commit with a Factory-Round trailer, refused
+      # on a holdout edit, a stranger's commit, the cap, or a moved branch. It
+      # mints the App token itself, after its checks.
+      - id: push
+        if: ${{ !cancelled() && steps.agent.outcome != 'skipped' }}
+        uses: dodi-smart/.github/actions/push-round@v1
+        with:
+          base-sha:     ${{ steps.facts.outputs.base-sha }}
+          head-ref:     ${{ needs.gate.outputs.head-ref }}
+          rounds:       ${{ needs.gate.outputs.rounds }}
+          max-rounds:   ${{ inputs.max-rounds }}
+          trailer-key:  Factory-Round
+          author-name:  claude[bot]
+          author-email: 41898282+claude[bot]@users.noreply.github.com
+          agent-emails: 41898282+claude[bot]@users.noreply.github.com
+          refuse-paths: ${{ steps.holdout.outputs.refuse-paths }}
+          client-id:    ${{ secrets.GH_APP_CLIENT_ID }}
+          private-key:  ${{ secrets.GH_APP_PRIVATE_KEY }}
+
+      # A pushed round starts PR Checks on the new head, and its completion
+      # starts the next decision. Anything else is said on the PR.
+      - if: ${{ always() && steps.push.outputs.pushed != 'true' }}
+        env:
+          REFUSED: ${{ steps.push.outputs.refused }}
+          RUN:     ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          why="${REFUSED:-the agent committed nothing}"
+          gh pr comment "$PR" --repo "$REPO" --body "**Fix round not pushed.** $why. [Run log]($RUN)." || true

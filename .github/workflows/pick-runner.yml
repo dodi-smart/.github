@@ -97,9 +97,9 @@ jobs:
       selector: ${{ steps.pick.outputs.selector }}
       fell-back: ${{ steps.pick.outputs.fell-back }}
     steps:
-      - uses: dodi-smart/.github/actions/runner-report@v1
+      - uses: dodi-smart/.github/actions/runner-report@pinned/v1.24.1
       - id: pick
-        uses: dodi-smart/.github/actions/pick-runner@v1
+        uses: dodi-smart/.github/actions/pick-runner@pinned/v1.24.1
         with:
           weight:        ${{ inputs.weight }}
           labels:        ${{ inputs.labels }}

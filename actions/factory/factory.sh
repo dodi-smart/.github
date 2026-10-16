@@ -229,11 +229,11 @@ decide() {
       finish fix-review "review asked for changes on $head" ;;
     pending) finish stop "review is running on $head" ;;
     *)
+      # An agent PR is opened by the App, and pr-review reviews a bot's PR
+      # only when a bot asks with agent:review, so ready_for_review starts no
+      # review. Ask for every head with no verdict, once.
       grep -q '"agent:review"' <<<"$labels" && finish stop "review already requested on #$pr"
-      # Marking the PR ready already started a review of round 0. Ask again
-      # only for a fix round, which no ready_for_review event covers.
-      [ "${last:-0}" -gt 0 ] || finish stop "no verdict yet; the review that ready_for_review started is still to report"
-      finish review "no review verdict on fix round $last" ;;
+      finish review "no review verdict on round ${last:-0}" ;;
   esac
 }
 

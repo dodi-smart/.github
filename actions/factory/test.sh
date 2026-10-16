@@ -207,7 +207,7 @@ expect "a fix round with no verdict asks for review" test "$(decide)" = review
 scenario 'Autonomous Low Low' 'completed success' '' false '["agent:iterate","agent:review"]' 1
 expect "but only once"                        test "$(decide)" = stop
 scenario 'Autonomous Low Low' 'completed success' ''
-expect "round 0 with no verdict waits for the review ready started" test "$(decide)" = stop
+expect "round 0 with no verdict asks for review too: ready_for_review reviews no App PR" test "$(decide)" = review
 scenario 'Autonomous Low Low' 'completed success' 'failure'
 expect "a changes verdict starts a fix round" test "$(decide)" = fix-review
 scenario 'Autonomous Low Low' 'completed success' 'failure' false '["agent:iterate"]' 3

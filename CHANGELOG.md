@@ -1,3 +1,9 @@
+## [1.28.3](https://github.com/dodi-smart/.github/compare/v1.28.2...v1.28.3) (2026-10-16)
+
+### 🐛 Bug Fixes
+
+* **factory:** relay a fix round decided on a status event to a labeled event ([8567a3f](https://github.com/dodi-smart/.github/commit/8567a3fac32060c1dfa4302607003fe2e781efad))
+
 ## [1.28.2](https://github.com/dodi-smart/.github/compare/v1.28.1...v1.28.2) (2026-10-16)
 
 ### 🐛 Bug Fixes

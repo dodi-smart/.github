@@ -246,6 +246,7 @@ runs:
         DIR:  ${{ inputs.zavet-dir }}
         BASE: ${{ github.event.pull_request.base.sha }}
         HEAD: ${{ github.event.pull_request.head.sha }}
+        ACTION_PATH: ${{ github.action_path }}
       run: |
         set +e            # see the checks step: GitHub's `bash -e` would abort early
         set -uo pipefail
@@ -260,6 +261,12 @@ runs:
           # Merge commits touch paths their author never edited.
           if [ "$(git rev-list --parents -n 1 "$sha" | wc -w)" -gt 2 ]; then
             echo "skip (merge) $sha $subject"; continue
+          fi
+          # A release bot's version bump: a promotion PR carries them, and no
+          # bot can write a trailer. release-commit.sh holds the rule and why
+          # both halves (bot author, release subject) are required.
+          if "$ACTION_PATH/release-commit.sh" "$sha"; then
+            echo "skip (release) $sha $subject"; continue
           fi
           git show --name-only --format= "$sha" > "$RUNNER_TEMP/paths.txt"
           git log -1 --format=%B "$sha" > "$RUNNER_TEMP/msg.txt"

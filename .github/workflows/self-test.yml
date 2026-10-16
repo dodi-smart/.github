@@ -92,6 +92,11 @@ jobs:
       - name: run-agent identity and deps-verify's push and publish steps
         run: ./actions/run-agent/test.sh
 
+      # Only a bot's `chore(release): … [skip ci]` skips the guard wall; either
+      # half alone is still checked.
+      - name: zavet-check skips only release bots' version bumps
+        run: ./actions/zavet-check/test.sh
+
       # The wait must never pass on the job's own Deployment, and must count the
       # commit before a `[skip ci]` release commit, the one the host builds.
       - name: Deployment wait proves the host's deployment

@@ -6,7 +6,7 @@
 #
 #   factory.sh tier     MODE RISK EFFORT        -> tier=merge|ready|draft
 #   factory.sh branch   TYPE NUM TITLE          -> branch=<feat|fix|chore>/<n>-<slug>
-#   factory.sh fields   (REPO, ISSUE)           -> state, mode, risk, effort, tier
+#   factory.sh fields   (REPO, ISSUE)           -> state, mode, risk, effort, priority, tier
 #   factory.sh push     (env, see push())       -> pushed, refused, sha (round 0)
 #   factory.sh holdout  (BASE_SHA)              -> refuse-paths for a fix round
 #   factory.sh decide   (env, see decide())     -> action and the facts behind it
@@ -77,6 +77,21 @@ read_fields() {
   fi
   get() { jq -r --arg f "$1" '.[]|select(.field.name==$f)|.name' <<<"$values" | head -1; }
   F_STATE=$(get "Triage state"); F_MODE=$(get "Agent mode"); F_RISK=$(get "Risk"); F_EFFORT=$(get "Effort")
+  F_PRIORITY=$(get "Priority")
+}
+
+# ---------------------------------------------------------------------------
+# lint_only: true when every job that failed in the PR Checks run failed only
+# in `hk check --all`, so the fix is lint or format. The aggregate job named
+# PR Checks fails whenever another job does, so it is left out. A failed job
+# with no failed step (a timeout, a cancel) is not lint.
+# ---------------------------------------------------------------------------
+lint_only() {
+  [ -n "${1:-}" ] || { echo false; return; }
+  gh api --paginate "/repos/$REPO/actions/runs/$1/jobs?per_page=100" --jq '.jobs[]' 2>/dev/null \
+    | jq -s '[.[] | select(.conclusion == "failure" and (.name | test("(^|/ )PR Checks$") | not))
+              | [.steps[]? | select(.conclusion == "failure") | .name]]
+             | length > 0 and all(length > 0 and all(. == "hk check --all"))' 2>/dev/null || echo false
 }
 
 # ---------------------------------------------------------------------------
@@ -170,7 +185,7 @@ decide() {
   # read of our own output, not a guess at a person's wording.
   issue=$(printf '%s' "$body" | grep -oiE '(closes|fixes|resolves) #[0-9]+' | head -n 1 | grep -oE '[0-9]+' || true)
   out issue "${issue:-}"
-  F_STATE=''; F_MODE=''; F_RISK=''; F_EFFORT=''
+  F_STATE=''; F_MODE=''; F_RISK=''; F_EFFORT=''; F_PRIORITY=''
   if [ -n "$issue" ]; then
     if gh api "/repos/$REPO/issues/$issue/labels?per_page=100" --jq '[.[].name]' 2>/dev/null | grep -q '"agent:no-touch"'; then
       finish stop "agent:no-touch on issue #$issue"
@@ -179,6 +194,8 @@ decide() {
   fi
   tier=$(tier_of "$F_MODE" "$F_RISK" "$F_EFFORT")
   out tier "$tier"
+  # The model policy reads these. See actions/pick-model.
+  out risk "$F_RISK"; out effort "$F_EFFORT"; out priority "$F_PRIORITY"
 
   # Every round number on the branch, in commit order: rounds after 0 are fix
   # rounds, and the last one says whether the head is a fix round.
@@ -214,6 +231,8 @@ decide() {
     completed\ success*) ;;
     completed\ failure*|completed\ timed_out*)
       [ "$rounds" -ge "${MAX_ROUNDS:-3}" ] && finish give-up "PR Checks is red after $rounds fix rounds"
+      # Only a first round can go to the lint model, so later rounds skip the read.
+      [ "$rounds" -eq 0 ] && [ "$(lint_only "$run_id")" = true ] && out signals lint-only
       finish fix-ci "PR Checks failed on $head" ;;
     completed*) finish stop "PR Checks ended ${checks#completed } on $head; nothing to fix" ;;
     *) finish stop "PR Checks is still running on $head" ;;
@@ -244,6 +263,7 @@ case "$cmd" in
   fields)
     read_fields
     out read "$F_READ"; out state "$F_STATE"; out mode "$F_MODE"; out risk "$F_RISK"; out effort "$F_EFFORT"
+    out priority "$F_PRIORITY"
     out tier "$(tier_of "$F_MODE" "$F_RISK" "$F_EFFORT")" ;;
   push)    push_round ;;
   holdout) out refuse-paths "$(holdout_paths)" ;;

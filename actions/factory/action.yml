@@ -53,6 +53,8 @@ outputs:
   mode:      { description: 'Agent mode', value: '${{ steps.run.outputs.mode }}' }
   risk:      { description: 'Risk', value: '${{ steps.run.outputs.risk }}' }
   effort:    { description: 'Effort', value: '${{ steps.run.outputs.effort }}' }
+  priority:  { description: 'Priority', value: '${{ steps.run.outputs.priority }}' }
+  signals:   { description: '`lint-only` when only `hk check --all` failed in PR Checks before any fix round (decide)', value: '${{ steps.run.outputs.signals }}' }
   pushed:    { description: '"true" when a round was pushed', value: '${{ steps.run.outputs.pushed }}' }
   refused:   { description: 'Why a round was not pushed', value: '${{ steps.run.outputs.refused }}' }
   sha:       { description: 'The round commit', value: '${{ steps.run.outputs.sha }}' }

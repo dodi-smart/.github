@@ -39,7 +39,7 @@ on:
         default: ""       # defaults to the repo's default branch
       model:
         type: string
-        default: "claude-opus-5"
+        default: ""       # empty: actions/pick-model chooses by stage and the issue's fields
       timeout-minutes:
         type: number
         default: 45
@@ -78,6 +78,9 @@ jobs:
       proceed: ${{ steps.check.outputs.proceed }}
       runner:  ${{ steps.pick.outputs.runner }}
       tier:    ${{ steps.fields.outputs.tier }}
+      risk:     ${{ steps.fields.outputs.risk }}
+      effort:   ${{ steps.fields.outputs.effort }}
+      priority: ${{ steps.fields.outputs.priority }}
       branch:  ${{ steps.branch.outputs.branch }}
     steps:
       - uses: dodi-smart/.github/actions/runner-report@v1
@@ -245,7 +248,12 @@ jobs:
         uses: dodi-smart/.github/actions/run-agent@v1
         with:
           oauth-token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          model: ${{ inputs.model }}
+          stage:    implement
+          effort:   ${{ needs.gate.outputs.effort }}
+          priority: ${{ needs.gate.outputs.priority }}
+          risk:     ${{ needs.gate.outputs.risk }}
+          model:    ${{ inputs.model }}
+          model-pin: ${{ vars.AGENT_MODEL_PIN }}
           allowed-tools: 'Bash "Bash(gh:*)" Read Write Edit Grep Glob'
           # run-agent guarantees this file on every path, with `why` when the
           # agent left none, so the steps below read one file.

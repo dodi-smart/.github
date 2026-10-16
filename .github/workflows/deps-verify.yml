@@ -546,11 +546,13 @@ jobs:
         uses: dodi-smart/.github/actions/run-agent@v1
         with:
           oauth-token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          model: ${{ (steps.result.outputs.verdict != 'green' || needs.gate.outputs.update == 'major') && 'claude-opus-5' || 'claude-sonnet-5' }}
-          # A green minor reads notes for a dozen packages in a group, and 25
-          # turns cut it off before the report. run-agent's `why` still
-          # names the cap when it is reached.
-          max-turns: ${{ steps.result.outputs.verdict != 'green' && '80' || '40' }}
+          # actions/pick-model sets the model and the cap: red gets the most
+          # turns, a green minor 40, because it reads notes for a dozen
+          # packages in a group. run-agent's `why` names the cap when it is
+          # reached.
+          stage:   deps-verify
+          signals: ${{ needs.gate.outputs.update }} ${{ steps.result.outputs.verdict != 'green' && 'red' || '' }}
+          model-pin: ${{ vars.AGENT_MODEL_PIN }}
           allowed-bots: ${{ needs.gate.outputs.dependency-bots }}${{ steps.actor.outputs.fix-pusher }}
           # claude-code-action sets its own git identity on the checkout, over
           # the `git config` of the facts step, so without these the agent

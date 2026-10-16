@@ -159,7 +159,8 @@ scenario() {
   local m r e; read -r m r e <<<"$mode"
   api graphql-issue "{\"data\":{\"repository\":{\"issue\":{\"issueFieldValues\":{\"nodes\":[
     {\"name\":\"$m\",\"field\":{\"name\":\"Agent mode\"}},{\"name\":\"$r\",\"field\":{\"name\":\"Risk\"}},
-    {\"name\":\"$e\",\"field\":{\"name\":\"Effort\"}},{\"name\":\"Plan ready\",\"field\":{\"name\":\"Triage state\"}}]}}}}}"
+    {\"name\":\"$e\",\"field\":{\"name\":\"Effort\"}},{\"name\":\"Plan ready\",\"field\":{\"name\":\"Triage state\"}},
+    {\"name\":\"Medium\",\"field\":{\"name\":\"Priority\"}}]}}}}}"
   local msgs='[{"commit":{"message":"feat: x\n\nFactory-Round: 0"}}'
   for ((i = 1; i <= rounds; i++)); do msgs="$msgs,{\"commit\":{\"message\":\"fix: y\n\nFactory-Round: $i\"}}"; done
   api /repos/o/r/pulls/5/commits "$msgs]"
@@ -184,6 +185,24 @@ decide() {  # decide [EVENT_SHA] -> action
 scenario 'Autonomous Low Low' 'completed failure' ''
 expect "red checks start a fix round"         test "$(decide)" = fix-ci
 expect "and the failed run is named"          test "$(val run-id)" = 77
+expect "and the fields the model policy reads are out" bash -c 'grep -qx "risk=Low" "$1" && grep -qx "effort=Low" "$1" && grep -qx "priority=Medium" "$1"' _ "$WORK/out"
+expect "a run with no jobs to read is not lint-only" test -z "$(val signals)"
+jobs() { api /repos/o/r/actions/runs/77/jobs "{\"jobs\":$1}"; }
+hk='{"name":"hk check --all","conclusion":"failure"}'
+agg='{"name":"checks / PR Checks","conclusion":"failure","steps":[{"name":"Fail when a job failed","conclusion":"failure"}]}'
+jobs "[{\"name\":\"checks / checks\",\"conclusion\":\"failure\",\"steps\":[$hk]},$agg]"
+decide >/dev/null
+expect "only hk failed, beside the aggregate job: lint-only" test "$(val signals)" = lint-only
+jobs "[{\"name\":\"checks / checks\",\"conclusion\":\"failure\",\"steps\":[$hk]},{\"name\":\"checks / test\",\"conclusion\":\"failure\",\"steps\":[{\"name\":\"Run phases\",\"conclusion\":\"failure\"}]},$agg]"
+decide >/dev/null
+expect "hk and tests failed: not lint-only"   test -z "$(val signals)"
+jobs "[{\"name\":\"checks / build\",\"conclusion\":\"failure\",\"steps\":[]},$agg]"
+decide >/dev/null
+expect "a job that failed with no failed step: not lint-only" test -z "$(val signals)"
+scenario 'Autonomous Low Low' 'completed failure' '' false '["agent:iterate"]' 1
+jobs "[{\"name\":\"checks / checks\",\"conclusion\":\"failure\",\"steps\":[$hk]},$agg]"
+decide >/dev/null
+expect "after a fix round lint is not checked: the next round is Opus anyway" test -z "$(val signals)"
 scenario 'Autonomous Low Low' 'completed failure' '' false '["agent:iterate"]' 3
 expect "red after 3 rounds gives up"          test "$(decide)" = give-up
 scenario 'Autonomous Low Low' 'in_progress none' ''
@@ -240,6 +259,7 @@ fields() {
 scenario 'Autonomous Low Low' '' ''
 fields
 expect "fields reads the state and the tier" bash -c 'grep -qx "state=Plan ready" "$1" && grep -qx "tier=merge" "$1" && grep -qx "read=true" "$1"' _ "$WORK/out"
+expect "and the priority" grep -qx "priority=Medium" "$WORK/out"
 rm "$WORK/api/graphql-issue"
 fields
 expect "an unreadable issue says read=false and tier draft" bash -c 'grep -qx "read=false" "$1" && grep -qx "tier=draft" "$1"' _ "$WORK/out"

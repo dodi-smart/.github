@@ -37,7 +37,7 @@ on:
         default: ""
       model:
         type: string
-        default: "claude-opus-5"
+        default: ""       # empty: actions/pick-model chooses by stage and the issue's fields
       max-rounds:
         type: number
         default: 3
@@ -85,6 +85,10 @@ jobs:
       base-ref: ${{ steps.decide.outputs.base-ref }}
       issue:    ${{ steps.decide.outputs.issue }}
       rounds:   ${{ steps.decide.outputs.rounds }}
+      risk:     ${{ steps.decide.outputs.risk }}
+      effort:   ${{ steps.decide.outputs.effort }}
+      priority: ${{ steps.decide.outputs.priority }}
+      signals:  ${{ steps.decide.outputs.signals }}
       run-id:   ${{ steps.decide.outputs.run-id }}
       runner:   ${{ steps.pick.outputs.runner }}
     steps:
@@ -272,10 +276,17 @@ jobs:
         uses: dodi-smart/.github/actions/run-agent@v1
         with:
           oauth-token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          # A first CI fix is usually mechanical. Review findings and a second
-          # attempt get the stronger model.
-          model: ${{ (needs.gate.outputs.action == 'fix-ci' && needs.gate.outputs.rounds == '0') && 'claude-sonnet-5' || inputs.model }}
-          max-turns: '60'
+          # actions/pick-model: a first CI fix is usually mechanical, lint
+          # alone more so. Review findings and a second attempt get the
+          # stronger model.
+          stage:    ${{ needs.gate.outputs.action }}
+          round:    ${{ steps.facts.outputs.round }}
+          effort:   ${{ needs.gate.outputs.effort }}
+          priority: ${{ needs.gate.outputs.priority }}
+          risk:     ${{ needs.gate.outputs.risk }}
+          signals:  ${{ needs.gate.outputs.signals }}
+          model:    ${{ inputs.model }}
+          model-pin: ${{ vars.AGENT_MODEL_PIN }}
           allowed-bots: ${{ endsWith(github.actor, '[bot]') && github.actor || '' }}
           allowed-tools: 'Bash "Bash(gh:*)" Read Write Edit Grep Glob'
           prompt: |

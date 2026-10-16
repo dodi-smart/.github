@@ -228,7 +228,7 @@ The log shows the deployment id and commit before the routes are probed.
 | Action | Purpose |
 |---|---|
 | `actions/agent-gate` | Decides whether an agent may run. Evaluates `agent:no-touch` first, always. |
-| `actions/run-agent` | Invokes the agent with the org's tool allowlist and reporting defaults. Does not start it when the running workflow file differs from the default branch, says why a run stopped (`why`), and with `report-file` guarantees a valid report file on every path |
+| `actions/run-agent` | Invokes the agent with the org's tool allowlist and reporting defaults, on the model `actions/pick-model` chooses for its `stage`. Does not start it when the running workflow file differs from the default branch, says why a run stopped (`why`), and with `report-file` guarantees a valid report file on every path |
 | `actions/pr-facts` | Resolves the PR from a number or a pull_request, workflow_run or status event, and checks it is open, not a fork, and at the expected head |
 | `actions/request-review` | Applies `agent:review` with the App token when the head commit has no `review / verdict` yet |
 | `actions/merge-gate` | The one unattended merge: resolves the PR, runs `agent-gate`, decides by policy (`deps` or `factory`) from labels, the required check, `review / verdict` and commit authors, and merges with the App token |
@@ -248,6 +248,7 @@ The log shows the deployment id and commit before the routes are probed.
 | `actions/supabase-start` | Starts the local Supabase database with the stack's Docker images restored from the cache, saved on a miss. What both jobs of `supabase-checks.yml` call |
 | `actions/zavet-check` | Verifies a repo's `.zavet/` knowledge layer: decision checks, guard trailers, an optional audit, and a comment only on failure. What `zavet-check.yml` and `pr-checks.yml`'s `zavet` job run. The caller checks out with full history first. |
 | `actions/react-doctor` | Checks out with full history and runs React Doctor. What `react-doctor.yml` and `pr-checks.yml`'s `react-doctor` job run. |
+| `actions/pick-model` | The model policy as one script, `pick.sh`: an agent stage, the issue's Effort, Priority and Risk, and the run's signals in, a model id and a turn cap out. run-agent runs it on every agent run; see [Models](#models). |
 | `actions/pick-runner` | Resolves a runner weight to a selector, statically: no API call, no token, no fleet listing. What `pick-runner.yml` calls, and what a job that already exists (like `pr-checks.yml`'s `pick`) calls directly to pick more than once without another job. |
 
 `actions/changed-files` needs no checkout. It takes `patterns` (newline-separated
@@ -823,6 +824,37 @@ change it.
 The tools on a self-hosted image are bash, git, gh, jq, curl and Node. A helper
 job that moves to `light` must not need anything else; `changed-files` also needs
 `python3`, and `pr-checks.yml`'s `pick` warns if it is missing.
+
+## Models
+
+Every agent run names a `stage`, and `actions/pick-model` picks the model and
+the turn cap from it, the issue's fields and what the gate already found. No
+workflow names a model id, and self-test fails one that does. The first row
+that matches wins.
+
+| Stage | Opus when | Otherwise | Turn cap |
+|---|---|---|---|
+| triage, assist | always | | action default |
+| implement | Effort High, Risk High or Critical, Priority Urgent, or Risk or Effort unset | Sonnet | action default |
+| fix-ci | round 2 or later, Risk High or Critical, Effort High | Haiku on round 1 when only `hk check --all` failed, else Sonnet | 30 Haiku, 60 else |
+| fix-review | always | | 60 |
+| review | full review, sensitive paths or a `sec:` label | Sonnet for a review scoped to trailered commits | action default |
+| deps-verify | CI red, or a major update | Haiku for a green patch or lockfile update, Sonnet for a green minor | 80 red, 40 Sonnet, 30 Haiku |
+| fleet-sync | never | Sonnet | 40 |
+
+Haiku runs only where a deterministic step already knows the answer and the
+next step catches a miss: the automerge gate after deps-verify, and an Opus
+round 2 after a lint fix that did not turn CI green. A full review stays on
+Opus even at Risk Low, because on the merge tier it is the last check before
+an unattended merge.
+
+Each run writes one `Agent run` notice with the stage, model, rule, turns and
+cost, so the models can be compared from the annotations. To move every run
+off a model at once, set the org variable `AGENT_MODEL_PIN` to a model id.
+Every shared workflow forwards it to run-agent, and it wins over the policy
+and over a caller's `model` input. A workflow that calls run-agent directly
+forwards `model-pin: ${{ vars.AGENT_MODEL_PIN }}` itself. Unset it to go back to
+the policy.
 
 ## Versioning
 

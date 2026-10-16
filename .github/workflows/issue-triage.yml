@@ -200,7 +200,8 @@ jobs:
       - uses: dodi-smart/.github/actions/run-agent@v1
         with:
           oauth-token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          model: claude-opus-5
+          stage: triage
+          model-pin: ${{ vars.AGENT_MODEL_PIN }}
           # Live progress comment, so a run in flight is visible. Silence reads
           # the same whether the job is working or broken.
           track-progress: 'true'

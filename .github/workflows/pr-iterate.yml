@@ -16,6 +16,10 @@
 #   give-up              still red or still `changes` after max-rounds
 #   stop                 anything else, including agent:no-touch anywhere
 #
+# claude-code-action does not run on a `status` event, so a fix round decided on
+# one becomes `relay`: the App removes and re-adds agent:iterate, and the round
+# runs on that pull_request event, which decides the same way on the same head.
+#
 # The agent writes code and local commits only. Pushing, marking ready, labels
 # and the merge are steps with the org App token. The non-fix actions run at the
 # end of the gate job, on the decision it just made, and the merge pins the head
@@ -74,7 +78,7 @@ jobs:
       checks: read             # PR Checks on the head
       statuses: read           # the review verdict on the head
     outputs:
-      action:   ${{ steps.decide.outputs.action }}
+      action:   ${{ steps.route.outputs.action }}
       reason:   ${{ steps.decide.outputs.reason }}
       number:   ${{ steps.decide.outputs.number }}
       head-ref: ${{ steps.decide.outputs.head-ref }}
@@ -113,8 +117,21 @@ jobs:
           event-sha:  ${{ github.event.workflow_run.head_sha || github.event.sha }}
           max-rounds: ${{ inputs.max-rounds }}
 
+      # The agent cannot run on a status event; see the header.
+      - id: route
+        if: steps.gate.outputs.proceed == 'true'
+        env:
+          EVENT:  ${{ github.event_name }}
+          ACTION: ${{ steps.decide.outputs.action }}
+        run: |
+          set -euo pipefail
+          action="$ACTION"
+          case "$EVENT/$ACTION" in status/fix-ci|status/fix-review) action=relay ;; esac
+          echo "action=$action" >> "$GITHUB_OUTPUT"
+          echo "decided $ACTION on $EVENT, acting as $action"
+
       - id: pick
-        if: steps.gate.outputs.proceed == 'true' && (steps.decide.outputs.action == 'fix-ci' || steps.decide.outputs.action == 'fix-review')
+        if: steps.gate.outputs.proceed == 'true' && (steps.route.outputs.action == 'fix-ci' || steps.route.outputs.action == 'fix-review')
         uses: dodi-smart/.github/actions/pick-runner@v1
         with:
           weight:             ${{ inputs.runner-weight }}
@@ -127,7 +144,7 @@ jobs:
       # issue's tier, the required check and the review again, and merges with
       # the App pinned to the head it read.
       - id: land
-        if: steps.decide.outputs.action == 'land'
+        if: steps.route.outputs.action == 'land'
         uses: dodi-smart/.github/actions/merge-gate@v1
         with:
           policy:      factory
@@ -142,7 +159,7 @@ jobs:
       # workflows; GITHUB_TOKEN's do not. Marking a PR ready needs contents
       # write as well as pull-requests write.
       - id: app-token
-        if: contains(fromJSON('["ready","review","land","handoff","give-up"]'), steps.decide.outputs.action)
+        if: contains(fromJSON('["ready","review","land","handoff","give-up","relay"]'), steps.route.outputs.action)
         uses: dodi-smart/.github/actions/app-token@v1
         with:
           client-id:   ${{ secrets.GH_APP_CLIENT_ID }}
@@ -150,11 +167,11 @@ jobs:
           permissions: contents:write pull-requests:write issues:write
 
       - id: act
-        if: contains(fromJSON('["ready","review","land","handoff","give-up"]'), steps.decide.outputs.action)
+        if: contains(fromJSON('["ready","review","land","handoff","give-up","relay"]'), steps.route.outputs.action)
         env:
           REPO:      ${{ github.repository }}
           PR:        ${{ steps.decide.outputs.number }}
-          ACTION:    ${{ steps.decide.outputs.action }}
+          ACTION:    ${{ steps.route.outputs.action }}
           REASON:    ${{ steps.decide.outputs.reason }}
           TIER:      ${{ steps.decide.outputs.tier }}
           MERGED:    ${{ steps.land.outputs.merged }}
@@ -185,6 +202,12 @@ jobs:
             give-up)
               unlabel
               say "**Stopping the fix loop.** $REASON. A person takes it from here." ;;
+            relay)
+              # A labeled event the agent can run on. The removal starts nothing:
+              # callers listen to `labeled` only.
+              unlabel
+              gh pr edit "$PR" --repo "$REPO" --add-label agent:iterate
+              echo "::notice title=Relayed::$REASON. The fix round runs on the labeled event." ;;
           esac
 
   # One fix round. The agent commits; the push step writes the round and
@@ -319,8 +342,11 @@ jobs:
       - if: ${{ always() && steps.push.outputs.pushed != 'true' }}
         env:
           REFUSED: ${{ steps.push.outputs.refused }}
+          # Why the agent did not start or stopped without a result, from
+          # run-agent. Empty for a run that finished normally.
+          AGENT_WHY: ${{ steps.agent.outputs.why }}
           RUN:     ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           set -euo pipefail
-          why="${REFUSED:-the agent committed nothing}"
+          why="${REFUSED:-${AGENT_WHY:-the agent committed nothing}}"
           gh pr comment "$PR" --repo "$REPO" --body "**Fix round not pushed.** $why. [Run log]($RUN)." || true

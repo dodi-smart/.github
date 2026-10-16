@@ -1,4 +1,4 @@
-# Reusable: implement a PLANNED issue, as a draft PR.
+# Reusable: implement a PLANNED issue, as a PR.
 #
 # Requested with the `agent:implement` label or `@claude implement`.
 #
@@ -13,8 +13,11 @@
 #
 # `Agent mode` decides who may trigger it. This workflow is what enforces it.
 #
-# THE AGENT NEVER MERGES. It opens a draft PR and stops. Review happens through
-# the normal PR Review path once a human marks it ready.
+# THE AGENT NEVER PUSHES, OPENS, READIES OR MERGES. It writes code, tests and
+# local commits. The steps after it push one round commit to a conventional
+# branch and open a DRAFT pull request. When the issue's fields put it on the
+# `ready` or `merge` tier (actions/factory), the PR also gets `agent:iterate`,
+# and `pr-iterate.yml` takes it from there.
 name: Issue Implement
 
 on:
@@ -74,6 +77,8 @@ jobs:
     outputs:
       proceed: ${{ steps.check.outputs.proceed }}
       runner:  ${{ steps.pick.outputs.runner }}
+      tier:    ${{ steps.fields.outputs.tier }}
+      branch:  ${{ steps.branch.outputs.branch }}
     steps:
       - uses: dodi-smart/.github/actions/runner-report@v1
         with:
@@ -95,12 +100,22 @@ jobs:
           skip-draft:    'false'
 
       # Is there a plan, and may this actor trigger it? Both answers come from
-      # fields the triage workflow already wrote. That is the payoff for keeping
-      # state on exactly one axis.
+      # fields the triage workflow already wrote, read once by actions/factory,
+      # which also gives the autonomy tier pr-iterate computes the same way.
+      - id: fields
+        if: steps.gate.outputs.proceed == 'true'
+        uses: dodi-smart/.github/actions/factory@v1
+        with:
+          command: fields
+          issue:   ${{ github.event.issue.number }}
+
       - id: check
         env:
           GH_TOKEN: ${{ github.token }}
           PROCEED:  ${{ steps.gate.outputs.proceed }}
+          READ:     ${{ steps.fields.outputs.read }}
+          STATE:    ${{ steps.fields.outputs.state }}
+          MODE:     ${{ steps.fields.outputs.mode }}
           REPO:     ${{ github.repository }}
           NUM:      ${{ github.event.issue.number }}
           ACTOR:    ${{ github.actor }}
@@ -110,20 +125,11 @@ jobs:
           if [ "$PROCEED" != "true" ]; then
             echo "proceed=false" >> "$GITHUB_OUTPUT"; exit 0
           fi
-
-          owner="${REPO%%/*}"; name="${REPO##*/}"
-          # shellcheck disable=SC2016  # $o/$r/$n are GraphQL variables, not shell
-          values=$(gh api graphql -f query='query($o:String!,$r:String!,$n:Int!){
-            repository(owner:$o,name:$r){ issue(number:$n){
-              issueFieldValues(first:50){ nodes{
-                ... on IssueFieldSingleSelectValue {
-                  name field { ... on IssueFieldSingleSelect { name } } } } } } } }' \
-            -f o="$owner" -f r="$name" -F n="$NUM" \
-            --jq '[.data.repository.issue.issueFieldValues.nodes[] | select(.field.name != null)]')
-
-          get() { jq -r --arg f "$1" '.[]|select(.field.name==$f)|.name' <<<"$values" | head -1; }
-          state=$(get "Triage state")
-          mode=$(get "Agent mode")
+          # A failed read is not an unplanned issue. Fail rather than refuse.
+          if [ "$READ" != "true" ]; then
+            echo "::error title=Fields not read::could not read the issue fields of #$NUM"; exit 1
+          fi
+          state="$STATE"; mode="$MODE"
           echo "Triage state='${state:-<unset>}'  Agent mode='${mode:-<unset>}'"
 
           refuse() {
@@ -163,6 +169,17 @@ jobs:
 
           echo "proceed=true" >> "$GITHUB_OUTPUT"
 
+      # The branch name, from the issue type and title.
+      - id: branch
+        if: steps.check.outputs.proceed == 'true'
+        uses: dodi-smart/.github/actions/factory@v1
+        with:
+          command: branch
+          args: |-
+            ${{ github.event.issue.type.name }}
+            ${{ github.event.issue.number }}
+            ${{ github.event.issue.title }}
+
       # Only when the run above is still proceeding: an unplanned issue or a
       # refused actor must never pay for a hosted picker.
       - id: pick
@@ -180,78 +197,114 @@ jobs:
     runs-on: ${{ fromJson(needs.gate.outputs.runner) }}
     timeout-minutes: ${{ inputs.timeout-minutes }}
     permissions:
-      contents: write          # to push the branch
-      pull-requests: write     # to open the draft PR
+      contents: read           # the push and the PR use the App token
       issues: write            # to report back and clear the request label
       id-token: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPO:     ${{ github.repository }}
+      NUM:      ${{ github.event.issue.number }}
+      BRANCH:   ${{ needs.gate.outputs.branch }}
+      TIER:     ${{ needs.gate.outputs.tier }}
     steps:
       - uses: dodi-smart/.github/actions/runner-report@v1
         with:
           selector: ${{ needs.gate.outputs.runner }}
 
-      # Credentials persist on purpose: the agent pushes its branch from this checkout.
-      # jactionlint ignore=artipacked
+      # No credentials persist. The agent runs the repo's install and test
+      # scripts here, and a token they could read is a token they could push
+      # with. The push token is minted after the agent, for one step.
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
           ref: ${{ inputs.base-branch }}
+          persist-credentials: false
 
-      - uses: dodi-smart/.github/actions/run-agent@v1
+      - id: facts
+        env:
+          BASE_REF: ${{ inputs.base-branch || github.event.repository.default_branch }}
+        run: |
+          set -euo pipefail
+          git switch -q -c "$BRANCH"
+          OUT="$RUNNER_TEMP/factory"
+          echo "OUT=$OUT" >> "$GITHUB_ENV"
+          mkdir -p "$OUT"
+          {
+            echo "base-sha=$(git rev-parse HEAD)"
+            echo "base-ref=$BASE_REF"
+          } >> "$GITHUB_OUTPUT"
+
+      # Agent mode, never tag mode: tag mode creates its own branch, pushes,
+      # and posts a "Create PR" link. Here the agent only commits; the steps
+      # below push and open the PR.
+      - id: agent
+        uses: dodi-smart/.github/actions/run-agent@v1
         with:
           oauth-token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           model: ${{ inputs.model }}
-          track-progress: 'true'
-          # Tag mode creates the branch before the agent starts, as
-          # <prefix>issue-<n>-<timestamp>. The prefix follows the issue type
-          # triage set; anything else, or no type, is a chore.
-          branch-prefix: ${{ github.event.issue.type.name == 'Bug' && 'fix/' || (github.event.issue.type.name == 'Feature' || github.event.issue.type.name == 'Improvement') && 'feat/' || 'chore/' }}
+          allowed-tools: 'Bash "Bash(gh:*)" Read Write Edit Grep Glob'
+          # run-agent guarantees this file on every path, with `why` when the
+          # agent left none, so the steps below read one file.
+          report-file:     ${{ runner.temp }}/factory/pr.json
+          report-valid:    '(.title | type == "string" and length > 0) and (.body | type == "string" and length > 0)'
+          report-fallback: '{"title": "", "body": ""}'
           prompt: |
             Implement issue #${{ github.event.issue.number }} in ${{ github.repository }}.
+            You are on the branch `${{ needs.gate.outputs.branch }}`, made for it.
 
             A plan for this issue already exists. `Triage state` is
             `${{ inputs.required-state }}`, which is why this run was allowed to
-            start. Read the issue and its comments and find that plan. Follow it.
+            start. Read the issue and its comments with `gh issue view
+            ${{ github.event.issue.number }} --comments` and find that plan.
+            Follow it.
 
             If, having read the code, you believe the plan is wrong, DO NOT
-            quietly implement something else. Say so on the issue, explain what
-            you found, and stop. A plan that survived triage and then turns out
-            to be wrong is worth a conversation, not a silent substitution.
+            quietly implement something else. Say so on the issue with
+            `gh issue comment`, explain what you found, commit nothing, and
+            stop. A plan that survived triage and then turns out to be wrong is
+            worth a conversation, not a silent substitution.
 
             ## How to work
 
-            1. If you are already on a branch made for this issue, work on it.
-               Otherwise create one off the current HEAD. Name it
-               conventionally, `feat/`, `fix/`, `chore/`, `refactor/`, `test/`,
-               and include the issue number, e.g. `fix/158-company-prefill`.
-            2. Read the repo's CLAUDE.md / AGENTS.md first if present, and match
+            1. Read the repo's CLAUDE.md / AGENTS.md first if present, and match
                the surrounding code: its naming, its comment density, its idiom.
-            3. Follow the repo's commit conventions. If it has a commitlint
-               config, read it. Some repos enforce a scope-enum and will reject
-               a scope you invented.
-            4. Write or update tests. A change with no test is not finished
-               unless the repo genuinely has no test setup, in which case say so.
-            5. Run whatever the repo uses to check itself (lint, typecheck,
+            2. Holdout tests first. If the plan has an `Acceptance criteria`
+               list, write one test per criterion BEFORE the code, where the
+               repo keeps its tests and in its own test runner. List every such
+               file, one repo-relative path per line, in `.factory/holdout`.
+               Later fix rounds may not change or delete these files or that
+               list; a push step refuses them. So test the behaviour the
+               criterion states, not the code you are about to write. With no
+               criteria, write no `.factory/holdout`.
+            3. Implement. Write or update other tests as usual. A change with no
+               test is not finished unless the repo has no test setup, in which
+               case say so in the PR body.
+            4. Run whatever the repo uses to check itself (lint, typecheck,
                tests) and fix what you broke.
+            5. Commit with `git commit`. Any message: a later step writes your
+               commits as one. Do NOT push, and do NOT open a pull request.
 
-            ## Opening the PR
+            ## Report
 
-            Open it as a **DRAFT**, targeting the branch you started from, with
-            `Closes #${{ github.event.issue.number }}` in the body.
+            Write `${{ runner.temp }}/factory/pr.json` with the Write tool:
 
-            Draft is not a formality. It means a human marks it ready when they
-            have looked, and marking it ready is what triggers PR Review. Do NOT
-            merge, approve, or mark it ready yourself.
+              {"title": "<PR title>", "body": "<PR body, markdown>"}
 
-            The PR body goes in this shape:
+            The title is a conventional commit header, e.g. `fix(auth): keep
+            the session after a refresh`. If the repo has a commitlint config,
+            read it: some enforce a scope-enum and reject a scope you invented.
+
+            The body goes in this shape:
 
               ## What changed
               One paragraph. The change, not a file list.
 
               ## Why
-              The issue's constraint, in your own words. Link the issue.
+              The issue's constraint, in your own words.
 
               ## Tested
-              What you ran and what it showed. Name the command.
+              What you ran and what it showed. Name the command. Name the
+              holdout tests, or say there were no acceptance criteria.
 
               ## Not verified
               What you could not check, and why. Write "nothing" only when
@@ -259,14 +312,86 @@ jobs:
 
             An honest "I could not verify X" is worth more than a confident
             summary. Do not restate the issue's Priority, Effort or Risk
-            fields in the body. Those live on the issue.
+            fields. Those live on the issue. Do not add `Closes`; the step
+            that opens the PR adds it.
 
-            ## Finally
+            Do not change labels or `Triage state`. The steps after you do
+            what is needed.
 
-            Remove the `agent:implement` label. It means "implementation
-            requested / in progress"; leaving it on makes finished work look like
-            it is still running.
+      # Minted after the agent, so no repo script ever ran beside it.
+      # Not narrowed with permission-*: the push must satisfy the org rulesets the App bypasses.
+      - id: app-token
+        if: ${{ !cancelled() }}
+        uses: dodi-smart/.github/actions/app-token@v1
+        with:
+          client-id:   ${{ secrets.GH_APP_CLIENT_ID }}
+          private-key: ${{ secrets.GH_APP_PRIVATE_KEY }}
 
-            Do NOT change `Triage state`. Triage state stops at "Ready for
-            agent" and never mirrors execution. The open PR and the closed issue
-            already track that.
+      - id: subject
+        if: ${{ !cancelled() }}
+        run: |
+          set -euo pipefail
+          subject=$(jq -r '.title // ""' "$OUT/pr.json" 2>/dev/null | head -n 1 | tr -d '\r' || true)
+          echo "subject=$subject" >> "$GITHUB_OUTPUT"
+
+      # Only this step pushes, as round 0, one commit, to a branch that must
+      # not exist yet. See actions/factory/factory.sh for every refusal.
+      - id: push
+        if: ${{ !cancelled() && steps.agent.outcome != 'skipped' }}
+        uses: dodi-smart/.github/actions/factory@v1
+        with:
+          command:   push
+          issue:     ${{ github.event.issue.number }}
+          base-sha:  ${{ steps.facts.outputs.base-sha }}
+          round:     '0'
+          head-ref:  ${{ needs.gate.outputs.branch }}
+          subject:   ${{ steps.subject.outputs.subject }}
+          app-token: ${{ steps.app-token.outputs.token }}
+
+      # The PR is opened here, from the agent's files, never by the agent.
+      # Always a draft. A `ready` or `merge` tier also gets `agent:iterate`,
+      # which hands the PR to pr-iterate.
+      - id: open
+        if: ${{ !cancelled() && steps.push.outputs.pushed == 'true' }}
+        env:
+          APP_TOKEN: ${{ steps.app-token.outputs.token }}
+          BASE_REF:  ${{ steps.facts.outputs.base-ref }}
+          SHA:       ${{ steps.push.outputs.sha }}
+        run: |
+          set -euo pipefail
+          title=$(git log -1 --format=%s "$SHA")
+          {
+            body=$(jq -r '.body // ""' "$OUT/pr.json" 2>/dev/null || true)
+            if [ -n "$body" ]; then printf '%s\n' "$body"
+            else printf 'The agent wrote no PR body: %s\n' "$(jq -r '.why // "see the run log"' "$OUT/pr.json" 2>/dev/null || echo 'see the run log')"; fi
+            echo
+            case "$TIER" in
+              merge) echo "This PR may merge on its own once PR Checks and review pass. Add \`agent:no-touch\` to stop it." ;;
+              ready) echo "This PR is marked ready for review on its own once PR Checks pass. A person merges it." ;;
+            esac
+            echo
+            echo "Closes #$NUM"
+          } > "$OUT/pr.md"
+          labels=()
+          [ "$TIER" = merge ] || [ "$TIER" = ready ] && labels=(--label agent:iterate)
+          GH_TOKEN="$APP_TOKEN" gh label create agent:iterate --repo "$REPO" --color 5319e7 \
+            --description "Agent fix loop: fix red checks and review findings, then hand on" >/dev/null 2>&1 || true
+          url=$(GH_TOKEN="$APP_TOKEN" gh pr create --repo "$REPO" --draft --base "$BASE_REF" --head "$BRANCH" \
+                  --title "$title" --body-file "$OUT/pr.md" "${labels[@]}")
+          echo "url=$url" >> "$GITHUB_OUTPUT"
+          echo "::notice title=Draft PR opened::$url (tier $TIER)"
+
+      # Report on the issue, and clear the request label on every path.
+      - if: ${{ always() }}
+        env:
+          URL:     ${{ steps.open.outputs.url }}
+          REFUSED: ${{ steps.push.outputs.refused }}
+          RUN:     ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          if [ -n "$URL" ]; then
+            gh issue comment "$NUM" --repo "$REPO" --body "Opened $URL." || true
+          elif [ -n "$REFUSED" ] && [ "$REFUSED" != "the agent committed nothing" ]; then
+            gh issue comment "$NUM" --repo "$REPO" --body "**Implementation was not pushed.** $REFUSED. [Run log]($RUN)." || true
+          fi
+          gh issue edit "$NUM" --repo "$REPO" --remove-label 'agent:implement' >/dev/null 2>&1 || true

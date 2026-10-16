@@ -7,7 +7,7 @@ description: Decide from labels, the required check, the review status and commi
 
 inputs:
   policy:
-    description: 'Which rule set decides: `deps` (a dependency bot''s minor, patch or lockfile update). Add a policy in gate.sh, never a second gate.'
+    description: 'Which rule set decides: `deps` (a dependency bot''s minor, patch or lockfile update) or `factory` (an agent PR whose issue is on the merge tier). Add a policy in gate.sh, never a second gate.'
     required: true
   number:
     description: 'PR number. Empty resolves it from a pull_request, workflow_run or status event.'

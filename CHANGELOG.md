@@ -1,3 +1,9 @@
+## [1.30.1](https://github.com/dodi-smart/.github/compare/v1.30.0...v1.30.1) (2026-10-16)
+
+### 🐛 Bug Fixes
+
+* **pr-iterate:** stop the fix loop on a Renovate or Dependabot PR ([8d5408b](https://github.com/dodi-smart/.github/commit/8d5408be060b4be46a9ae65fb34889c4dcdbd536))
+
 ## [1.30.0](https://github.com/dodi-smart/.github/compare/v1.29.0...v1.30.0) (2026-10-16)
 
 ### ✨ Features

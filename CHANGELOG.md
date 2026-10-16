@@ -1,3 +1,9 @@
+## [1.29.0](https://github.com/dodi-smart/.github/compare/v1.28.3...v1.29.0) (2026-10-16)
+
+### ✨ Features
+
+* **run-agent:** pick the model by stage and issue fields, through one policy ([bf550eb](https://github.com/dodi-smart/.github/commit/bf550ebc932f5036a28f63e7497ec3a8710489ca))
+
 ## [1.28.3](https://github.com/dodi-smart/.github/compare/v1.28.2...v1.28.3) (2026-10-16)
 
 ### 🐛 Bug Fixes

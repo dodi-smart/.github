@@ -92,6 +92,19 @@ EOF
 }
 expect "run-agent passes the org's plugins and the agent env, and removes the file after" org_wired
 
+# A repo's own hooks never run in an agent run. Through the flag, because the
+# `settings` input is user settings and a project's value overrides those.
+hooks_off() {
+python3 - "$ROOT" <<'EOF'
+import json, shlex, sys, yaml
+steps = yaml.safe_load(open(sys.argv[1] + '/actions/run-agent/action.yml'))['runs']['steps']
+call = [s for s in steps if 'claude-code-action@' in str(s.get('uses', ''))][0]['with']
+args = shlex.split(call['claude_args'].split('--allowed-tools')[0])
+assert json.loads(args[args.index('--settings') + 1]) == {'disableAllHooks': True}, args
+EOF
+}
+expect "run-agent turns the repo's hooks off with --settings" hooks_off
+
 # 2. Lift the steps out of the workflow. The push itself is actions/push-round,
 # tested there.
 python3 - "$ROOT" "$WORK" <<'EOF' || { echo 'cannot read the deps-verify steps'; exit 1; }
@@ -244,6 +257,12 @@ expect "the cost is read, an empty result text does not shift it" bash -c 'grep 
 expect "and one Agent run notice carries it" grep -q '::notice title=Agent run::.*turns=3 cost=0.42' "$WORK/log"
 outcome failure '[{"type":"result","subtype":"error_during_execution","is_error":true,"num_turns":2,"errors":[{"m":"x"}]}]'
 expect "structured errors do not break the step" grep -q 'error after 2 turn(s)' <(out_why)
+outcome success '[{"type":"result","subtype":"success","is_error":false,"num_turns":0,"modelUsage":{},"result":""}]'
+expect "0 turns and no model usage is a blocked prompt" test "$(out_why)" = 'The session ended before the first turn; a hook or setting blocked the prompt.'
+outcome success '[{"type":"result","subtype":"success","is_error":false,"num_turns":0,"result":"UserPromptSubmit operation blocked by hook"}]'
+expect "with the text the session left, if any" grep -q 'blocked the prompt. It said: UserPromptSubmit operation blocked' <(out_why)
+outcome success '[{"type":"result","subtype":"success","is_error":false,"num_turns":0,"modelUsage":{"m":{"inputTokens":9}},"result":"done"}]'
+expect "0 turns with model usage is a normal finish" test -z "$(out_why)"
 outcome success
 expect "no result after a success is the action skipping itself" grep -q 'skipped itself' <(out_why)
 outcome failure

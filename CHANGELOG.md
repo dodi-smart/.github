@@ -1,3 +1,9 @@
+## [1.28.1](https://github.com/dodi-smart/.github/compare/v1.28.0...v1.28.1) (2026-10-16)
+
+### 🐛 Bug Fixes
+
+* **factory:** ask for review on round 0 too ([d34c61a](https://github.com/dodi-smart/.github/commit/d34c61a9c7d3df03522fee99898e8b34b025a119))
+
 ## [1.28.0](https://github.com/dodi-smart/.github/compare/v1.27.0...v1.28.0) (2026-10-16)
 
 ### ✨ Features

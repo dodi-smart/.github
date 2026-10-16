@@ -74,6 +74,10 @@ open(work + '/push.sh', 'w').write(steps['push']['run'])
 open(work + '/publish.sh', 'w').write(steps['publish']['run'])
 open(work + '/actor.sh', 'w').write(steps['actor']['run'])
 open(work + '/renovate.sh', 'w').write(steps['renovate']['run'])
+ra = {s.get('id'): s for s in yaml.safe_load(open(root + '/actions/run-agent/action.yml'))['runs']['steps']}
+open(work + '/outcome.sh', 'w').write(ra['outcome']['run'])
+open(work + '/validate.sh', 'w').write(ra['validate']['run'])
+open(work + '/report.sh', 'w').write(ra['report']['run'])
 open(work + '/fix.env', 'w').write('FIX_NAME=%r\nFIX_EMAIL=%r\n' % (fix['FIX_NAME'], fix['FIX_EMAIL']))
 open(work + '/agent-emails', 'w').write(emails)
 EOF
@@ -193,9 +197,8 @@ exit 0
 EOF
 chmod +x "$WORK/bin/gh"
 
-# publish VERDICT AGENT_OUTCOME AGENT_CONCLUSION: no report files exist unless
-# REPORT is set, so the fallback comment is built. STUB_SETTER names who last
-# applied needs-manual.
+# publish VERDICT: no report files exist unless REPORT is set. STUB_SETTER
+# names who last applied needs-manual.
 publish() {
   : > "$WORK/calls"; : > "$WORK/out"; rm -f "$WORK/deps-verdict.json" "$WORK/deps-verdict.md"
   if [ -n "${REPORT:-}" ]; then
@@ -203,43 +206,118 @@ publish() {
   fi
   ( cd "$WORK" && env -i PATH="$WORK/bin:$PATH" HOME="$WORK" GH_TOKEN=t STUB_CALLS="$WORK/calls" \
       STUB_SETTER="${STUB_SETTER:-}" PR_AUTHOR='renovate[bot]' \
-      REPO=o/r PR=7 VERDICT="$1" INTENT='' ROUNDS=0 REFUSED='' AGENT_OUTCOME="$2" AGENT_CONCLUSION="$3" \
+      REPO=o/r PR=7 VERDICT="$1" INTENT='' ROUNDS=0 REFUSED='' REPORT_SOURCE=agent AGENT_SKIPPED='' \
       JSON="$WORK/deps-verdict.json" MD="$WORK/deps-verdict.md" COMMENT="$WORK/comment.md" APP_TOKEN='' \
       GITHUB_OUTPUT="$WORK/out" bash "$WORK/publish.sh" ) > "$WORK/log" 2>&1
 }
 removed() { grep -qF -- "-X DELETE /repos/o/r/issues/7/labels/$1" "$WORK/calls"; }
 
 # A green, verified run is the case where needs-manual would be removed.
-REPORT=verified STUB_SETTER='renovate[bot]' publish green success success
+REPORT=verified STUB_SETTER='renovate[bot]' publish green
 expect "a verified verdict is labelled verified" grep -qF 'labels[]=deps:verified' "$WORK/calls"
 expect "a needs-manual label Renovate applied is kept" bash -c '! grep -qF -- "DELETE /repos/o/r/issues/7/labels/deps:needs-manual" "$1"' _ "$WORK/calls"
 expect "and the other verdict labels are still cleared" removed deps:fixed
 
-REPORT=verified STUB_SETTER='dodi-ci[bot]' publish green success success
+REPORT=verified STUB_SETTER='dodi-ci[bot]' publish green
 expect "a needs-manual label this job applied is removed as before" removed deps:needs-manual
 
-REPORT=verified STUB_SETTER='' publish green success success
+REPORT=verified STUB_SETTER='' publish green
 expect "an unreadable event history is treated as this job's own label" removed deps:needs-manual
 
-REPORT=verified STUB_SETTER='someone' publish green success success
+REPORT=verified STUB_SETTER='someone' publish green
 expect "a label a person applied is not Renovate's, so it is removed" removed deps:needs-manual
 
-REPORT=needs-manual STUB_SETTER='renovate[bot]' publish red:build success success
+REPORT=needs-manual STUB_SETTER='renovate[bot]' publish red:build
 expect "the label history is not read when this job labels needs-manual itself" bash -c '! grep -qF /events "$1"' _ "$WORK/calls"
 
-# 8. The no-report comment says something even when the build result is empty.
-publish '' skipped ''
-expect "an empty verdict is not printed as an empty code span" bash -c '! grep -qF "\`\`" "$1"' _ "$WORK/comment.md"
-expect "it says no build result was recorded" grep -q 'No build result was recorded' "$WORK/comment.md"
-expect "it says the agent did not run" grep -q 'The agent did not run' "$WORK/comment.md"
-expect "the run still fails, so it is seen" grep -qx 'failed=true' "$WORK/out"
+# 8. run-agent's report step: the report file exists and is valid on every path.
+# report [WHY]: the agent's file is REPORT (a verdict word, or raw JSON with RAW);
+# WHY stands in for the outcome or validate step. Leaves the file in $WORK.
+report() {
+  : > "$WORK/out"; rm -f "$WORK/deps-verdict.json"
+  [ -n "${REPORT:-}" ] && echo "{\"verdict\": \"$REPORT\", \"reason\": \"r\"}" > "$WORK/deps-verdict.json"
+  [ -n "${RAW:-}" ] && printf '%s' "$RAW" > "$WORK/deps-verdict.json"
+  ( cd "$WORK" && env -i PATH="$PATH" HOME="$WORK" FILE="$WORK/deps-verdict.json" \
+      VALID='.verdict | IN("verified", "fixed", "needs-manual")' FALLBACK='{"verdict": "needs-manual"}' \
+      WHY="${1:-}" TURNS="${TURNS:-}" GITHUB_OUTPUT="$WORK/out" bash "$WORK/report.sh" ) > "$WORK/log" 2>&1
+}
+field() { jq -r ".$1" "$WORK/deps-verdict.json"; }
 
-publish red:build success ''
-expect "a known verdict is named in a code span" grep -qF 'Build: `red:build`' "$WORK/comment.md"
-expect "an agent that skipped itself says so" grep -q 'skipped itself' "$WORK/comment.md"
+REPORT=verified report
+expect "a valid report is the agent's" grep -qx 'source=agent' "$WORK/out"
+expect "and is left as written" test "$(field reason)" = r
+report 'The agent reached its turn cap after 41 turns.'
+expect "a missing report becomes the fallback" test "$(field verdict)" = needs-manual
+expect "with the reason as why" test "$(field why)" = 'The agent reached its turn cap after 41 turns.'
+expect "and says it is the fallback" grep -qx 'source=fallback' "$WORK/out"
+REPORT=bogus report
+expect "an invalid verdict word is replaced" test "$(field verdict)" = needs-manual
+RAW='not json' TURNS=12 report
+expect "unreadable JSON is replaced, naming the turns" grep -q 'finished after 12 turn(s) without writing a valid deps-verdict.json' <(field why)
 
-publish green failure failure
-expect "an agent that failed says so" grep -q 'The agent ran and failed' "$WORK/comment.md"
+# 8b. Publish words what run-agent wrote, and fails only on a real failure.
+printf '{"verdict":"needs-manual","why":"claude-code-action refuses to run while x.yml differs"}' > "$WORK/mismatch.json"
+pub_fallback() {
+  : > "$WORK/calls"; : > "$WORK/out"; rm -f "$WORK/deps-verdict.md"; cp "$WORK/mismatch.json" "$WORK/deps-verdict.json"
+  ( cd "$WORK" && env -i PATH="$WORK/bin:$PATH" HOME="$WORK" GH_TOKEN=t STUB_CALLS="$WORK/calls" PR_AUTHOR='renovate[bot]' \
+      REPO=o/r PR=7 VERDICT=green INTENT='' ROUNDS=0 REFUSED='' REPORT_SOURCE=fallback AGENT_SKIPPED="$1" \
+      JSON="$WORK/deps-verdict.json" MD="$WORK/deps-verdict.md" COMMENT="$WORK/comment.md" APP_TOKEN='' \
+      GITHUB_OUTPUT="$WORK/out" bash "$WORK/publish.sh" ) > "$WORK/log" 2>&1
+}
+pub_fallback workflow-mismatch
+expect "the fallback's why is the comment's reason" grep -q 'refuses to run while x.yml' "$WORK/comment.md"
+expect "with the build named, never an empty code span" grep -qF 'Build: `green`' "$WORK/comment.md"
+expect "a deliberate skip does not fail the run" bash -c '! grep -q failed= "$1"' _ "$WORK/out"
+pub_fallback ''
+expect "any other fallback fails the run" grep -qx 'failed=true' "$WORK/out"
+publish red:build
+expect "no report at all is needs-manual" grep -qF 'labels[]=deps:needs-manual' "$WORK/calls"
+expect "naming the step before the agent" grep -q 'step before the agent failed' "$WORK/comment.md"
+expect "and fails the run" grep -qx 'failed=true' "$WORK/out"
+
+# 8d. run-agent's outcome step reads what claude-code-action keeps out of the log.
+# outcome OUTCOME [EXECUTION-FILE-JSON]: prints the step's outputs.
+outcome() {
+  : > "$WORK/out"; rm -f "$WORK/exe.json"
+  [ -n "${2:-}" ] && printf '%s' "$2" > "$WORK/exe.json"
+  ( cd "$WORK" && env -i PATH="$PATH" HOME="$WORK" RUNNER_TEMP="$WORK/none" OUTCOME="$1" \
+      EXECUTION_FILE="${2:+$WORK/exe.json}" GITHUB_OUTPUT="$WORK/out" bash "$WORK/outcome.sh" ) > "$WORK/log" 2>&1
+}
+out_why() { sed -n 's/^why=//p' "$WORK/out"; }
+outcome failure '[{"type":"system"},{"type":"result","subtype":"error_max_turns","is_error":true,"num_turns":41}]'
+expect "the turn cap is named" test "$(out_why)" = 'The agent reached its turn cap after 41 turns.'
+outcome failure '[{"type":"result","subtype":"success","is_error":true,"num_turns":1,"result":"Invalid API key\nPlease run /login"}]'
+expect "the hidden error text is read from the execution file" test "$(out_why)" = 'The agent stopped with an error after 1 turn(s): Invalid API key Please run /login.'
+outcome success '[{"type":"result","subtype":"success","is_error":false,"num_turns":12,"result":"done"}]'
+expect "a normal finish has no why" test -z "$(out_why)"
+expect "and reports its turns" grep -qx 'turns=12' "$WORK/out"
+outcome failure '[{"type":"result","subtype":"error_during_execution","is_error":true,"num_turns":2,"errors":[{"m":"x"}]}]'
+expect "structured errors do not break the step" grep -q 'error after 2 turn(s)' <(out_why)
+outcome success
+expect "no result after a success is the action skipping itself" grep -q 'skipped itself' <(out_why)
+outcome failure
+expect "no result after a failure says the action failed first" grep -q 'failed before the agent produced a result' <(out_why)
+
+# 8e. run-agent's validate step: only a differing file stops the agent.
+# validate HERE DEFAULT: the two copies gh returns; empty means unreadable.
+validate() {
+  : > "$WORK/out"
+  ( cd "$WORK" && env -i PATH="$WORK/val-bin:$PATH" HOME="$WORK" RUNNER_TEMP="$WORK" REPO=o/r \
+      WORKFLOW_REF='o/r/.github/workflows/deps.yml@refs/pull/7/merge' SHA=abc DEFAULT_BRANCH=develop \
+      STUB_HERE="$1" STUB_DEFAULT="$2" GITHUB_OUTPUT="$WORK/out" bash "$WORK/validate.sh" ) > "$WORK/log" 2>&1
+}
+mkdir -p "$WORK/val-bin"
+printf '%s\n' '#!/usr/bin/env bash' 'case "$*" in' \
+  '  *"ref=abc"*)     [ -n "$STUB_HERE" ] && echo "$STUB_HERE" ;;' \
+  '  *"ref=develop"*) [ -n "$STUB_DEFAULT" ] && echo "$STUB_DEFAULT" ;;' 'esac' > "$WORK/val-bin/gh"
+chmod +x "$WORK/val-bin/gh"
+validate same same
+expect "an identical file starts the agent" bash -c '! grep -q skipped= "$1"' _ "$WORK/out"
+validate new old
+expect "a differing file does not" grep -qx 'skipped=workflow-mismatch' "$WORK/out"
+expect "and names the file and the branch" grep -qF 'why=claude-code-action refuses to run while .github/workflows/deps.yml at this run' "$WORK/out"
+validate '' old
+expect "an unreadable copy starts the agent as before" bash -c '! grep -q skipped= "$1"' _ "$WORK/out"
 
 # 9. The actor step: the App that pushed a fix round may start the agent on it.
 # actor ACTOR: runs the step in $WORK/r; prints its fix-pusher output.

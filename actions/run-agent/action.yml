@@ -109,12 +109,31 @@ inputs:
       breaks the org's conventional branch names, so it is never passed through.
       A caller that knows the change type passes `feat/` or `fix/`.
     default: 'chore/'
+  report-file:
+    description: >-
+      A JSON file the prompt tells the agent to write. When it is set, run-agent
+      guarantees the file exists after the run: if the agent left none, or one
+      `report-valid` rejects, it writes `report-fallback` with a `why` field
+      naming the cause. Callers read one file on every path.
+    default: ''
+  report-valid:
+    description: 'jq expression that is `true` for an acceptable report, e.g. `.verdict | IN("a", "b")`.'
+    default: 'true'
+  report-fallback:
+    description: 'JSON object written in place of a missing or invalid report; `why` is added to it.'
+    default: '{}'
+  github-token:
+    description: 'Reads the running workflow file at two refs, for the mismatch check below. Needs contents: read.'
+    default: ${{ github.token }}
 
-# Both are EMPTY when the agent never ran, which is not the same as a run that
-# found nothing. claude-code-action skips itself, and still reports success, when
-# the pull request changes any workflow file: it requires the file to match the
-# default branch byte for byte. A caller that fails on missing agent output has to
-# be able to tell those apart, or it blames its own prompt for a security control.
+# `execution-file` and `conclusion` are EMPTY when the agent never ran, which is
+# not the same as a run that found nothing. claude-code-action skips itself, and
+# still reports success, when the running workflow file differs from the
+# default branch's copy; on a pull_request event that file is read at the merge
+# commit. The `skipped` and `why` outputs name that case before the action is
+# started, and the rest are read from the execution file, because the action
+# hides its own output, error text included. Callers map these to their own
+# wording instead of parsing the file again.
 outputs:
   execution-file:
     description: 'Path to claude-code-action execution log. Empty when the agent never ran.'
@@ -122,6 +141,15 @@ outputs:
   conclusion:
     description: "claude-code-action's own success or failure. Empty when the agent never ran."
     value: ${{ steps.agent.outputs.conclusion }}
+  skipped:
+    description: '`workflow-mismatch` when the agent was not started because the running workflow file differs from the default branch; empty otherwise.'
+    value: ${{ steps.validate.outputs.skipped }}
+  why:
+    description: 'One line saying why the agent did not start, stopped without a result, or left no valid report. Empty for a run that finished normally.'
+    value: ${{ steps.report.outputs.why || steps.outcome.outputs.why || steps.validate.outputs.why }}
+  report:
+    description: '`agent` when the agent wrote a valid report-file, `fallback` when run-agent wrote it, empty without a report-file.'
+    value: ${{ steps.report.outputs.source }}
 
 runs:
   using: composite
@@ -176,7 +204,34 @@ runs:
         fi
         echo "track=$track" >> "$GITHUB_OUTPUT"
 
+    # See the outputs comment. Only a pull_request event can differ: every
+    # other event runs the default branch's own file. An unreadable copy
+    # compares equal, so a failed read starts the agent as before.
+    - id: validate
+      if: startsWith(github.event_name, 'pull_request')
+      shell: bash
+      env:
+        GH_TOKEN:       ${{ inputs.github-token }}
+        REPO:           ${{ github.repository }}
+        WORKFLOW_REF:   ${{ github.workflow_ref }}
+        SHA:            ${{ github.sha }}
+        DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+      run: |
+        set -euo pipefail
+        path="${WORKFLOW_REF#"$REPO"/}"; path="${path%@*}"
+        raw() { gh api -H "Accept: application/vnd.github.raw" "/repos/$REPO/contents/$path?ref=$1" > "$2" 2>/dev/null || : > "$2"; }
+        raw "$SHA" "$RUNNER_TEMP/wf-here" & raw "$DEFAULT_BRANCH" "$RUNNER_TEMP/wf-default" & wait
+        if [ -s "$RUNNER_TEMP/wf-here" ] && [ -s "$RUNNER_TEMP/wf-default" ] \
+           && ! cmp -s "$RUNNER_TEMP/wf-here" "$RUNNER_TEMP/wf-default"; then
+          {
+            echo "skipped=workflow-mismatch"
+            echo "why=claude-code-action refuses to run while $path at this run's commit differs from $DEFAULT_BRANCH. It runs once that change is on $DEFAULT_BRANCH."
+          } >> "$GITHUB_OUTPUT"
+          echo "::warning title=Agent not started::$path differs from $DEFAULT_BRANCH, and claude-code-action would skip itself."
+        fi
+
     - id: agent
+      if: steps.validate.outputs.skipped == ''
       uses: anthropics/claude-code-action@v1
       with:
         claude_code_oauth_token: ${{ inputs.oauth-token }}
@@ -198,3 +253,59 @@ runs:
           --allowed-tools ${{ inputs.allowed-tools }}
           ${{ inputs.max-turns != '' && format('--max-turns {0}', inputs.max-turns) || '' }}
           ${{ format('--append-system-prompt "{0} {1}"', inputs.house-style, inputs.append-system-prompt) }}
+
+    # Read even when the agent step failed, which is when it matters most.
+    # The action writes its log to this path and leaves `execution_file` empty
+    # on some failures, so the path is the fallback.
+    - id: outcome
+      if: always() && steps.agent.outcome != 'skipped'
+      shell: bash
+      env:
+        EXECUTION_FILE: ${{ steps.agent.outputs.execution_file }}
+        OUTCOME:        ${{ steps.agent.outcome }}
+      run: |
+        set -euo pipefail
+        exe="${EXECUTION_FILE:-$RUNNER_TEMP/claude-execution-output.json}"
+        r=$(jq -c '[.[]? | select(.type == "result")] | last // empty' "$exe" 2>/dev/null || true)
+        if [ -z "$r" ]; then
+          [ "$OUTCOME" = success ] && why="claude-code-action skipped itself and reported success." \
+                                   || why="claude-code-action failed before the agent produced a result."
+          echo "why=$why" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+        IFS=$'\t' read -r subtype is_error turns text < <(jq -r '[.subtype // "", (.is_error // false), (.num_turns // ""),
+            ((.result // ((.errors // []) | map(tostring) | join("; "))) | gsub("[\\t\\r\\n]+"; " ") | .[:300])] | @tsv' <<<"$r")
+        case "$subtype" in
+          error_max_turns) why="The agent reached its turn cap after $turns turns." ;;
+          *) [ "$is_error" = true ] && why="The agent stopped with an error after $turns turn(s): ${text:-no message}." || why='' ;;
+        esac
+        {
+          echo "turns=$turns"
+          echo "why=$why"
+        } >> "$GITHUB_OUTPUT"
+
+    # The report contract. The agent is told to write the file; this makes
+    # sure it exists and passes `report-valid` on every path, the skipped and
+    # failed ones included, so a caller never words "wrote no report" itself.
+    - id: report
+      if: always() && inputs.report-file != ''
+      shell: bash
+      env:
+        FILE:     ${{ inputs.report-file }}
+        VALID:    ${{ inputs.report-valid }}
+        FALLBACK: ${{ inputs.report-fallback }}
+        WHY:      ${{ steps.outcome.outputs.why || steps.validate.outputs.why }}
+        TURNS:    ${{ steps.outcome.outputs.turns }}
+      run: |
+        set -euo pipefail
+        if [ -s "$FILE" ] && [ "$(jq -r "$VALID" "$FILE" 2>/dev/null || true)" = true ]; then
+          echo "source=agent" >> "$GITHUB_OUTPUT"; exit 0
+        fi
+        why="${WHY:-The agent finished${TURNS:+ after $TURNS turn(s)} without writing a valid $(basename "$FILE").}"
+        mkdir -p "$(dirname "$FILE")"
+        jq -n --argjson f "$FALLBACK" --arg why "$why" '$f + {why: $why}' > "$FILE"
+        {
+          echo "source=fallback"
+          echo "why=$why"
+        } >> "$GITHUB_OUTPUT"
+        echo "::warning title=No agent report::$why"

@@ -81,6 +81,18 @@
       "minimumReleaseAge": "3 days"
     },
 
+    // Every update says its kind as a label. deps-automerge.yml reads these
+    // and merges only minor, patch and lock file maintenance, so a PR with no
+    // kind label never merges. A group carries the labels of all its members,
+    // so one major in a group keeps the whole group for a person.
+    //
+    // Minor and patch wait three days after release, for the same reason the
+    // Action rule below does: deps-automerge merges them unattended, and a
+    // compromised or broken release is usually pulled within days.
+    { "matchUpdateTypes": ["minor"], "addLabels": ["deps:minor"], "minimumReleaseAge": "3 days" },
+    { "matchUpdateTypes": ["patch"], "addLabels": ["deps:patch"], "minimumReleaseAge": "3 days" },
+    { "matchUpdateTypes": ["lockFileMaintenance"], "addLabels": ["deps:lockfile"] },
+
     // Majors are labelled for visibility, never auto-merged (automerge defaults
     // to false, so this rule only adds the label).
     { "matchUpdateTypes": ["major"], "addLabels": ["deps:major"] }

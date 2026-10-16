@@ -38,7 +38,7 @@ outputs:
     description: 'Hash of the diff, empty when only lockfiles changed. Publish records it in the comment.'
     value: ${{ steps.intent.outputs.intent }}
   update:
-    description: 'major | lockfile | other'
+    description: 'major | minor | patch | lockfile | unknown'
     value: ${{ steps.intent.outputs.update }}
   reason:
     description: 'Why that judge, for the log'

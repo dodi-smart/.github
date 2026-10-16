@@ -1,0 +1,118 @@
+# The one merge gate: resolve the PR, run agent-gate, decide by policy, and
+# merge with the org App token pinned to the head it read. The rules and their
+# order are in gate.sh. Every unattended merge in the org goes through here,
+# and `Self test` fails if `gh pr merge` appears anywhere else.
+name: Merge gate
+description: Decide from labels, the required check, the review status and commit authors whether a PR may merge, and merge it.
+
+inputs:
+  policy:
+    description: 'Which rule set decides: `deps` (a dependency bot''s minor, patch or lockfile update). Add a policy in gate.sh, never a second gate.'
+    required: true
+  number:
+    description: 'PR number. Empty resolves it from a pull_request, workflow_run or status event.'
+    default: ''
+  required-check:
+    description: 'Check run name that must be success on the head commit'
+    default: 'checks / PR Checks'
+  kill-switch:
+    description: "An org variable's value. 'false' stops every merge through this gate."
+    default: ''
+  authors:
+    description: 'Comma-separated logins, besides the dependency bots, that may author commits on a PR this merges (the fix identity)'
+    default: 'github-actions[bot]'
+  client-id:
+    description: 'secrets.GH_APP_CLIENT_ID. Without an App nothing merges.'
+    default: ''
+  private-key:
+    description: 'secrets.GH_APP_PRIVATE_KEY'
+    default: ''
+
+outputs:
+  merged: { description: '"true" when the PR was merged', value: '${{ steps.merge.outputs.merged }}' }
+  merge:  { description: '"true" when every rule held', value: '${{ steps.decide.outputs.merge }}' }
+  reason: { description: 'Why, for the log and the summary', value: '${{ steps.decide.outputs.reason || steps.pr.outputs.why || steps.gate.outputs.reason }}' }
+  kind:   { description: 'The update kind deps-intent read', value: '${{ steps.decide.outputs.kind }}' }
+  number: { description: 'The PR', value: '${{ steps.pr.outputs.number }}' }
+
+runs:
+  using: composite
+  steps:
+    # Open, same repo, and at the head the event was about.
+    - id: pr
+      uses: dodi-smart/.github/actions/pr-facts@v1
+      with:
+        number: ${{ inputs.number }}
+
+    # agent:no-touch first, then draft and the author kind, from the one
+    # dependency-bot list. The event's own label is not passed: a merge
+    # gate's labeled events are verdicts, not a request label.
+    - id: gate
+      if: steps.pr.outputs.found == 'true'
+      uses: dodi-smart/.github/actions/agent-gate@v1
+      with:
+        labels:     ${{ steps.pr.outputs.labels }}
+        number:     ${{ steps.pr.outputs.number }}
+        event-name: ${{ github.event_name }}
+        author:     ${{ steps.pr.outputs.author }}
+        draft:      ${{ steps.pr.outputs.draft }}
+        bots:       ${{ inputs.policy == 'deps' && 'only' || 'allow' }}
+
+    - id: decide
+      if: steps.gate.outputs.proceed == 'true'
+      shell: bash
+      env:
+        POLICY:          ${{ inputs.policy }}
+        REPO:            ${{ github.repository }}
+        PR:              ${{ steps.pr.outputs.number }}
+        SHA:             ${{ steps.pr.outputs.head-sha }}
+        LABELS:          ${{ steps.pr.outputs.labels }}
+        TITLE:           ${{ steps.pr.outputs.title }}
+        KILL:            ${{ inputs.kill-switch }}
+        REQUIRED_CHECK:  ${{ inputs.required-check }}
+        ALLOWED_AUTHORS: ${{ steps.gate.outputs.dependency-bots }},${{ inputs.authors }}
+        GH_TOKEN:        ${{ github.token }}
+        ACTION_PATH:     ${{ github.action_path }}
+      run: '"$ACTION_PATH/gate.sh" run'
+
+    - id: token
+      if: steps.decide.outputs.merge == 'true'
+      uses: dodi-smart/.github/actions/app-token@v1
+      with:
+        client-id:   ${{ inputs.client-id }}
+        private-key: ${{ inputs.private-key }}
+        permissions: contents:write pull-requests:write
+
+    # Pinned to the commit the decision read: a push since then fails the
+    # merge instead of merging what nobody verified. The App is the merge actor
+    # the org rulesets accept.
+    - id: merge
+      if: steps.decide.outputs.merge == 'true'
+      shell: bash
+      env:
+        APP_TOKEN: ${{ steps.token.outputs.token }}
+        REPO:      ${{ github.repository }}
+        PR:        ${{ steps.pr.outputs.number }}
+        SHA:       ${{ steps.pr.outputs.head-sha }}
+        KIND:      ${{ steps.decide.outputs.kind }}
+        REASON:    ${{ steps.decide.outputs.reason }}
+      run: |
+        set -euo pipefail
+        echo "merged=false" >> "$GITHUB_OUTPUT"
+        if [ -z "${APP_TOKEN:-}" ]; then
+          echo "::warning title=Not merged::GH_APP_CLIENT_ID is not set, and only the org App may merge."
+          exit 0
+        fi
+        GH_TOKEN="$APP_TOKEN" gh pr merge "$PR" --repo "$REPO" --rebase --match-head-commit "$SHA"
+        echo "merged=true" >> "$GITHUB_OUTPUT"
+        echo "::notice title=Merged::#$PR ($KIND): $REASON"
+
+    - if: always()
+      shell: bash
+      env:
+        PR:     ${{ steps.pr.outputs.number }}
+        MERGED: ${{ steps.merge.outputs.merged }}
+        REASON: ${{ steps.decide.outputs.reason || steps.pr.outputs.why || steps.gate.outputs.reason }}
+      run: |
+        verb=$([ "$MERGED" = true ] && echo Merged || echo 'Not merged')
+        printf '%s #%s: %s.\n' "$verb" "${PR:-?}" "${REASON:-no decision}" | tee -a "$GITHUB_STEP_SUMMARY"

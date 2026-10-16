@@ -1,0 +1,69 @@
+# Reusable: merge a Renovate or Dependabot minor, patch or lock file
+# maintenance PR once the evidence says it is safe. Deterministic, no agent.
+#
+# The rules live in actions/merge-gate (policy `deps`), the one place any
+# unattended merge in the org is decided. Majors always wait for a person.
+#
+# The caller listens for every event that can complete the evidence, and each
+# run decides once and exits. Nothing waits:
+#   pull_request labeled        deps-verify set `deps:verified` or `deps:fixed`
+#   status                      pr-review posted `review / verdict`
+#   workflow_run (PR Checks)    the required check finished
+name: Dependency Automerge
+
+on:
+  workflow_call:
+    inputs:
+      required-check:
+        type: string
+        default: "checks / PR Checks"   # check run name; the pr-checks summary job as a caller sees it
+    secrets:
+      GH_APP_CLIENT_ID:   { required: false }
+      GH_APP_PRIVATE_KEY: { required: false }
+
+# One decision per PR at a time, keyed by its branch, which every event names.
+concurrency:
+  group: automerge-${{ github.repository }}-${{ github.event.pull_request.head.ref || github.event.workflow_run.head_branch || github.event.branches[0].name }}
+  cancel-in-progress: false
+
+permissions: {}
+
+jobs:
+  merge:
+    # Payload-only pre-filter, so a person's push never books a runner. Every
+    # case it drops is one the gate would refuse: a PR by a non-bot or a label
+    # that is not a verdict, a status other than an approving review, a PR
+    # Checks run that did not succeed, and any branch a dependency bot did not
+    # name. It tests the SHAPE of a bot login and the bots' branch prefixes;
+    # the bot list stays in actions/agent-gate/gate.sh.
+    if: >-
+      (github.event_name == 'pull_request'
+        && endsWith(github.event.pull_request.user.login, '[bot]')
+        && (github.event.label.name == 'deps:verified' || github.event.label.name == 'deps:fixed'))
+      || (github.event_name == 'status'
+        && github.event.context == 'review / verdict' && github.event.state == 'success'
+        && (startsWith(github.event.branches[0].name, 'renovate/') || startsWith(github.event.branches[0].name, 'dependabot/')))
+      || (github.event_name == 'workflow_run'
+        && github.event.workflow_run.event == 'pull_request'
+        && github.event.workflow_run.conclusion == 'success'
+        && github.event.workflow_run.head_repository.full_name == github.repository
+        && (startsWith(github.event.workflow_run.head_branch, 'renovate/') || startsWith(github.event.workflow_run.head_branch, 'dependabot/')))
+    runs-on: ${{ fromJSON((github.event.repository.private && !github.event.pull_request.head.repo.fork) && '["self-hosted","Linux","light"]' || '"ubuntu-latest"') }}
+    timeout-minutes: 10
+    permissions:
+      contents: read        # commits, statuses and the compare API
+      pull-requests: read   # the pull request and its labels
+      checks: read          # the required check run
+      statuses: read        # review / verdict
+    steps:
+      - uses: dodi-smart/.github/actions/runner-report@v1
+        with:
+          selector: '["self-hosted","Linux","light"]'
+
+      - uses: dodi-smart/.github/actions/merge-gate@v1
+        with:
+          policy:         deps
+          required-check: ${{ inputs.required-check }}
+          kill-switch:    ${{ vars.DEPS_AUTOMERGE }}
+          client-id:      ${{ secrets.GH_APP_CLIENT_ID }}
+          private-key:    ${{ secrets.GH_APP_PRIVATE_KEY }}

@@ -600,6 +600,41 @@ jobs:
       - name: push-round refuses what a round may not do
         run: ./actions/push-round/test.sh
 
+      # Every unattended merge goes through actions/merge-gate, so its rules
+      # exist once. `gh pr merge` anywhere else is a second gate. deps-automerge
+      # runs no agent, and the preset still labels the update kinds the gate
+      # reads through deps-intent.
+      - name: merge-gate is the only place anything merges
+        run: |
+          set -euo pipefail
+          ./actions/merge-gate/test.sh
+          python3 -c "
+          import glob, re, sys
+          bad = []
+          # The merge jobs, named once. A workflow that merges calls merge-gate.
+          allowed = {'actions/merge-gate/action.yml'}
+          for f in glob.glob('.github/workflows/*.yml') + glob.glob('actions/*/*'):
+              if f.endswith('test.sh') or f.endswith('self-test.yml'):
+                  continue
+              if 'gh pr merge' in open(f).read() and f not in allowed:
+                  bad.append(f + ' merges outside actions/merge-gate')
+          gate = open('actions/merge-gate/action.yml').read()
+          if '--match-head-commit' not in gate or 'APP_TOKEN' not in gate:
+              bad.append('merge-gate must merge with the App token, pinned to the head it read')
+          auto = open('.github/workflows/deps-automerge.yml').read()
+          if 'run-agent' in auto or 'claude-code-action' in auto:
+              bad.append('deps-automerge must not run an agent')
+          if 'actions/merge-gate@' not in auto:
+              bad.append('deps-automerge must decide through merge-gate')
+          preset = re.sub(r'^\\s*//.*$', '', open('default.json').read(), flags=re.M)
+          for label in ('deps:minor', 'deps:patch', 'deps:lockfile', 'deps:major'):
+              if label not in preset:
+                  bad.append('default.json no longer adds ' + label + ', which deps-intent kind reads')
+          if bad:
+              sys.exit('::error::' + '; '.join(bad))
+          print('merge-gate is the one merge, and deps-automerge runs no agent')
+          "
+
       # Nothing in deps-verify waits for pr-checks (see deps-verify in AGENTS.md
       # for why). The gate reads a finished run once; verify takes heavy only
       # when the verdict is not green, and the agent runs only when the judge

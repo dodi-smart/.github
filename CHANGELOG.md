@@ -1,3 +1,9 @@
+## [1.30.3](https://github.com/dodi-smart/.github/compare/v1.30.2...v1.30.3) (2026-10-16)
+
+### 🐛 Bug Fixes
+
+* **run-agent:** keep a repo's own Claude Code hooks out of agent runs ([5f6f7fb](https://github.com/dodi-smart/.github/commit/5f6f7fb7e53f1bda936d3719920ff8fcb30d5fbe))
+
 ## [1.30.2](https://github.com/dodi-smart/.github/compare/v1.30.1...v1.30.2) (2026-10-16)
 
 ### 🐛 Bug Fixes

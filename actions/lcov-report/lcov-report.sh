@@ -39,6 +39,9 @@ function norm(p) {
 }
 function pct(h, l) { return l > 0 ? 100 * h / l : -1 }
 function fmt(h, l) { return l > 0 ? sprintf("%.1f%%", 100 * h / l) : "n/a" }
+# A figure under its floor is cut to one decimal, not rounded: 58.96 against a floor
+# of 59 must not read "59.0%". Cutting the integer tenths first keeps 58.9 from becoming 58.8.
+function fmt_low(h, l) { return sprintf("%.1f%%", int(1000 * h / l) / 10) }
 # Names come from the test runner, so keep them from breaking the table.
 function clean(s) { gsub(/[|`\r]/, "", s); return s }
 function floor_(m) { return m > 0 ? m "%" : "none" }
@@ -96,9 +99,9 @@ BEGIN {
   if (min_o > 0 && ol == 0)
     failed = "the report has no instrumented lines, so overall coverage cannot meet the " min_o "% minimum"
   else if (min_o > 0 && oh * 100 < min_o * ol)
-    failed = sprintf("overall coverage %s is below the %s%% minimum", fmt(oh, ol), min_o)
+    failed = sprintf("overall coverage %s is below the %s%% minimum", fmt_low(oh, ol), min_o)
   if (min_c > 0 && cl > 0 && ch * 100 < min_c * cl)
-    failed = failed (failed != "" ? "; " : "") sprintf("changed-file coverage %s is below the %s%% minimum", fmt(ch, cl), min_c)
+    failed = failed (failed != "" ? "; " : "") sprintf("changed-file coverage %s is below the %s%% minimum", fmt_low(ch, cl), min_c)
   if (failed != "") printf "\n**Below the minimum:** %s.\n", failed > dest
   close(dest)
 

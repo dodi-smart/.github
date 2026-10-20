@@ -1,3 +1,9 @@
+## [1.39.2](https://github.com/dodi-smart/.github/compare/v1.39.1...v1.39.2) (2026-10-20)
+
+### ⚡ Performance Improvements
+
+* **actions:** drop the commitlint cache, gate migration-lint's checkout, share the factory skip rule ([2a1ef3d](https://github.com/dodi-smart/.github/commit/2a1ef3dfa8a11f199538e9cd5cd2e3e0b01eff7e))
+
 ## [1.39.0](https://github.com/dodi-smart/.github/compare/v1.38.1...v1.39.0) (2026-10-20)
 
 ### ✨ Features

@@ -6,7 +6,15 @@
 #
 # Cache modes, resolved below:
 #
-#   isolate=true             -> RUNNER_TEMP dirs, GitHub cache off (deps-verify)
+#   isolate=true             -> RUNNER_TEMP dirs, GitHub cache off (deps-verify),
+#                               and RUNNER_PERSISTENT_CACHE is ignored
+#   RUNNER_PERSISTENT_CACHE  -> the runner's own declaration, on any OS: a writable
+#                               directory that outlives the job. GRADLE_USER_HOME
+#                               and KONAN_DATA_DIR move under it, and GitHub cache
+#                               is off, because the directory IS the cache. Aimed
+#                               at the Mac VMs, where a host directory share
+#                               survives the VM. Set but not a writable directory:
+#                               a warning, then the mode the runner would get anyway
 #   self-hosted Linux ARM64  -> isolated anyway; matches no runner today, and is
 #                               kept because it describes a class of machine
 #   self-hosted Linux X64    -> home dirs, GitHub cache off; the named volume
@@ -15,6 +23,9 @@
 #                               runners are image-based VMs that start every job
 #                               with an empty home, so no volume backs anything
 #   github-hosted            -> home dirs, and cache=auto becomes true
+#
+#   Wherever the Actions cache is on, only the default branch saves to it
+#   (cache_save); every other ref restores and never writes.
 #
 # Two rules that are easy to undo by accident:
 #
@@ -71,10 +82,12 @@ inputs:
   cache:
     description: >-
       auto | true | false. auto becomes true on github-hosted and on self-hosted
-      macOS (ephemeral VMs), and is ignored when isolated or on self-hosted
-      Linux (persistent volumes are the cache there). Applies to setup-gradle /
-      rust-cache / flutter-action, the Kotlin/Native toolchain cache and
-      setup-bun's cache of the bun executable, never bun's install cache.
+      macOS (ephemeral VMs), and is ignored when isolated, on self-hosted
+      Linux (persistent volumes are the cache there) and when the runner sets
+      RUNNER_PERSISTENT_CACHE to a writable directory (that directory is the
+      cache). Applies to setup-gradle / rust-cache / flutter-action, the
+      Kotlin/Native toolchain cache and setup-bun's cache of the bun executable,
+      never bun's install cache.
     default: 'auto'
 
   env:
@@ -208,7 +221,12 @@ runs:
         RUNNER_ENVIRONMENT: ${{ runner.environment }}
         RUNNER_ARCH: ${{ runner.arch }}
         RUNNER_OS: ${{ runner.os }}
-      # The values written to GITHUB_ENV are cache paths under RUNNER_TEMP, never input.
+        REF: ${{ github.ref }}
+        DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+      # RUNNER_PERSISTENT_CACHE is read from the process environment: the runner
+      # exports its .env into every job, so it is not an input of this step.
+      # The values written to GITHUB_ENV are cache paths under RUNNER_TEMP or under
+      # the runner's own RUNNER_PERSISTENT_CACHE, never workflow input.
       # jactionlint ignore=github-env
       run: |
         set -euo pipefail
@@ -244,6 +262,27 @@ runs:
           fi
         fi
 
+        # The runner declares a directory that outlives the job (a host share
+        # mounted into a VM, say). Gradle and Kotlin/Native live there, and the
+        # directory is the cache, so every Actions cache goes off. Never a reason
+        # to fail the job: a path that is not a writable directory is a warning.
+        # The path may contain spaces (VM shares mount under a name with one), so
+        # every use is quoted. GITHUB_ENV takes KEY=VALUE to the end of the line.
+        persistent=""
+        if [ "$do_isolate" != "true" ] && [ -n "${RUNNER_PERSISTENT_CACHE:-}" ]; then
+          if [ -d "$RUNNER_PERSISTENT_CACHE" ] && [ -w "$RUNNER_PERSISTENT_CACHE" ] \
+            && mkdir -p "$RUNNER_PERSISTENT_CACHE/gradle" "$RUNNER_PERSISTENT_CACHE/konan"; then
+            persistent="$RUNNER_PERSISTENT_CACHE"
+            cache_enabled=false
+            {
+              echo "GRADLE_USER_HOME=${persistent}/gradle"
+              echo "KONAN_DATA_DIR=${persistent}/konan"
+            } >> "$GITHUB_ENV"
+          else
+            echo "::warning::RUNNER_PERSISTENT_CACHE is set but is not a writable directory; ignoring it and using the usual cache mode for this runner"
+          fi
+        fi
+
         # No volume backs ~/.pub-cache and the image's LRU cap does not reach
         # it, so it is job-scoped in every mode. See the header.
         echo "PUB_CACHE=${RUNNER_TEMP}/pub-cache" >> "$GITHUB_ENV"
@@ -267,11 +306,22 @@ runs:
           } >> "$GITHUB_ENV"
         fi
 
+        # Which refs may write the Actions cache: the default branch only. An entry
+        # saved on a pull request ref is scoped to that PR, so no other PR can read
+        # it, and on the Mac hosts its upload took minutes. Every other ref reads.
+        cache_save=false
+        if [ "$cache_enabled" = true ] && [ -n "${DEFAULT_BRANCH:-}" ] \
+          && [ "${REF:-}" = "refs/heads/$DEFAULT_BRANCH" ]; then
+          cache_save=true
+        fi
+
         {
           echo "isolated=$do_isolate"
           echo "cache_enabled=$cache_enabled"
+          echo "cache_save=$cache_save"
+          echo "persistent=$persistent"
         } >> "$GITHUB_OUTPUT"
-        echo "stack: $STACK, isolate=$do_isolate, cache=$cache_enabled (input cache=$CACHE, env=${RUNNER_ENVIRONMENT:-unknown}/${RUNNER_OS:-unknown}/${RUNNER_ARCH:-unknown})"
+        echo "stack: $STACK, isolate=$do_isolate, cache=$cache_enabled, save=$cache_save, persistent=${persistent:-none} (input cache=$CACHE, env=${RUNNER_ENVIRONMENT:-unknown}/${RUNNER_OS:-unknown}/${RUNNER_ARCH:-unknown})"
 
     # Resolved here rather than by setup-bun's bun-version-file, which reads one
     # file only. setup-bun takes an exact version or a range, never a leading v.
@@ -330,11 +380,26 @@ runs:
         # graph of a private repo to a third party. Off unless a repo opts in.
         build-scan-publish: false
         cache-disabled: ${{ steps.resolve.outputs.cache_enabled != 'true' }}
+        # Saved from the default branch only; see cache_save in resolve.
+        cache-read-only: ${{ steps.resolve.outputs.cache_save != 'true' }}
 
     # ~/.konan holds Kotlin/Native's LLVM and libffi, about a minute of download
     # per job. A toolchain, not a package store, so an exact key and no
     # restore-keys: a new Kotlin version is a new entry, never a partial one.
-    - if: steps.resolve.outputs.cache_enabled == 'true' && steps.gradle.outputs.kotlin != ''
+    #
+    # Two steps, one key: restore only where cache_save is false, and
+    # actions/cache where it is true, which saves in its post step on a miss.
+    # Not an inline actions/cache/save: it would run before the build and store
+    # an empty or partial ~/.konan.
+    - if: >-
+        steps.resolve.outputs.cache_enabled == 'true' && steps.resolve.outputs.cache_save != 'true'
+        && steps.gradle.outputs.kotlin != ''
+      uses: actions/cache/restore@v6
+      with:
+        path: ~/.konan
+        key: konan-${{ runner.os }}-${{ runner.arch }}-${{ steps.gradle.outputs.kotlin }}
+
+    - if: steps.resolve.outputs.cache_save == 'true' && steps.gradle.outputs.kotlin != ''
       uses: actions/cache@v6
       with:
         path: ~/.konan
@@ -359,6 +424,8 @@ runs:
 
     - if: inputs.stack == 'rust' && steps.resolve.outputs.cache_enabled == 'true'
       uses: Swatinem/rust-cache@v2
+      with:
+        save-if: ${{ steps.resolve.outputs.cache_save == 'true' }}
 
     - if: inputs.stack == 'xcode' && inputs.xcode-version != ''
       uses: maxim-lobanov/setup-xcode@v1

@@ -748,6 +748,25 @@ branch (it publishes no version tags), and Renovate can still move that pin.
 - **Self-hosted macOS caches like hosted.** Those runners are image-based VMs
   that start every job with an empty home, so `cache: auto` is true there and
   nothing else would persist.
+- **Only the default branch writes the Actions cache.** An entry saved on a
+  pull request ref is scoped to that PR and no other PR can read it, and on the
+  Mac hosts the transfer is slow (a 473 MB entry took minutes to save and 157 s
+  to restore). So `setup-gradle`, `rust-cache` and the Kotlin/Native cache save
+  from the default branch only and every other ref restores. A repo whose checks
+  run only on `pull_request` never saves an entry: to keep the cache warm, run
+  the job on the default branch too (a push or a schedule).
+  `RUNNER_PERSISTENT_CACHE` below needs none of that.
+- **`RUNNER_PERSISTENT_CACHE` makes a directory the cache.** When the runner
+  exports that variable (its `.env` is exported into every job) as an existing
+  writable directory, and the job is not isolated, `setup-stack` points
+  `GRADLE_USER_HOME` at `$RUNNER_PERSISTENT_CACHE/gradle` and `KONAN_DATA_DIR`
+  at `$RUNNER_PERSISTENT_CACHE/konan`, creates both, and turns every Actions
+  cache off: `setup-gradle`, the Kotlin/Native cache, `rust-cache`,
+  `flutter-action` and setup-bun's. The directory is the cache, as the named
+  volume is on Linux. It works on any OS and is aimed at the Mac VMs. A value
+  that is not a writable directory logs a warning and the usual mode applies;
+  it never fails the job. The step's `persistent` output and its log line show
+  which one was used.
 - **`~/.pub-cache` is job-scoped in every mode.** A home dir is only worth using
   if a volume backs it, and the image mounts none for pub.
 - **Hosted uses one mechanism per stack**, `setup-gradle` / `rust-cache` /
@@ -759,8 +778,27 @@ branch (it publishes no version tags), and Renovate can still move that pin.
 - **Gradle repos with a cache on** get `setup-gradle`, including `stack: xcode`
   when the repo has a root `gradlew`. A repo whose `gradle/libs.versions.toml`
   names the multiplatform plugin and a `kotlin` version also caches `~/.konan`,
-  Kotlin/Native's toolchain, keyed on OS, arch and that version. Both need the repo checked out
-  before `setup-stack`.
+  Kotlin/Native's toolchain, keyed on OS, arch and that version alone. Both need
+  the repo checked out before `setup-stack`.
+- **The `~/.konan` entry is saved only on a miss**, by `actions/cache`'s post
+  step after the build, never by an inline `actions/cache/save`, which would
+  store an empty or partial `~/.konan`.
+
+**Optional: a persistent cache for the Mac VMs.** On each Mac host, start the VM
+with a directory share, one directory per VM:
+
+```sh
+tart run --dir=ci-cache:$HOME/ci-cache <vm>
+```
+
+Never share one directory between two VMs running at once: Gradle's and
+Kotlin/Native's locks are not reliable across two guests on one share. Then set
+`RUNNER_PERSISTENT_CACHE=/Volumes/My Shared Files/ci-cache` in the runner's
+`.env` inside the VM image. The Gradle distribution and Kotlin/Native's
+toolchain then survive the VM, which removes both the download and the Actions
+cache transfer. The path contains spaces; `setup-stack` quotes it everywhere,
+and a caller's shell step that reads `GRADLE_USER_HOME` or `KONAN_DATA_DIR` has
+to quote it too.
 
 **Never cache a project build directory.** Not `build/`, not `*/build`, not
 `.gradle`. `*/build/intermediates` holds absolute paths and the workspace root is

@@ -112,8 +112,46 @@ jobs:
       - name: Runner report degrades without failing
         run: ./actions/runner-report/test.sh
 
+      # REAL=1 also installs the pinned set and lints with the real commitlint.
       - name: commitlint lints every PR commit without Docker
+        env:
+          REAL: "1"
         run: ./actions/commitlint/test.sh
+
+      # A pull request that can change the config it is linted by, or make CI
+      # install a package, controls the check. Callers get the action defaults.
+      - name: commitlint reads the base config, installs nothing unpinned and caches
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import yaml
+          bad = []
+          doc = yaml.safe_load(open('actions/commitlint/action.yml'))
+          expr = '$' + '{{ github.event.pull_request.base.sha }}'
+          if doc['inputs']['ref']['default'] != expr:
+              bad.append('the ref input does not default to the pull request base sha')
+          if 'npm install' in open('actions/commitlint/lint.sh').read():
+              bad.append('lint.sh runs npm install; the pinned set is installed by npm ci only')
+          steps = doc['runs']['steps']
+          cache = [s for s in steps if str(s.get('uses', '')).startswith('actions/cache@')]
+          if not cache or 'steps.key.outputs.key' not in cache[0]['with']['key'] \
+             or not any('package-lock.json' in s.get('run', '') for s in steps if s.get('id') == 'key'):
+              bad.append('the action has no actions/cache step keyed on package-lock.json')
+          elif 'restore-keys' in cache[0]['with']:
+              bad.append('the commitlint cache has restore-keys; an exact key never reuses a near-match tree')
+          # A cache that is not wired to the install does nothing and fails no test.
+          lint = [s for s in steps if 'lint.sh' in s.get('run', '')][0].get('env', {})
+          if cache and (lint.get('CACHE_HIT') != '$' + '{{ steps.cache.outputs.cache-hit }}'
+                        or cache[0]['with']['path'] != lint['PREFIX'] + '/node_modules'):
+              bad.append('the cache does not cover PREFIX/node_modules, or lint.sh is not told about a hit')
+          # Without REAL=1 the real-install section of test.sh is skipped and nothing fails.
+          me = yaml.safe_load(open('.github/workflows/self-test.yml'))['jobs']['test']['steps']
+          if not any(s.get('run') == './actions/commitlint/test.sh' and s.get('env', {}).get('REAL') == '1' for s in me):
+              bad.append('the Self test step that runs commitlint/test.sh does not set REAL=1')
+          if bad:
+              print('\n'.join(bad)); raise SystemExit(1)
+          print('commitlint reads the config at the base sha, never runs npm install, caches on the lockfile and runs the real install')
+          PY
 
       # A skip built on changed-files is a positive claim, so every doubt has to
       # come out as `matched=true`, the 3000-file cap included.
@@ -702,11 +740,12 @@ jobs:
           set -euo pipefail
           ./actions/merge-gate/test.sh
           python3 -c "
-          import glob, re, sys
+          import glob, os, re, sys
           bad = []
           # The merge jobs, named once. A workflow that merges calls merge-gate.
           allowed = {'actions/merge-gate/action.yml'}
-          for f in glob.glob('.github/workflows/*.yml') + glob.glob('actions/*/*'):
+          # Files only: an action may hold a directory, like commitlint's preset.
+          for f in glob.glob('.github/workflows/*.yml') + [p for p in glob.glob('actions/*/*') if os.path.isfile(p)]:
               if f.endswith('test.sh') or f.endswith('self-test.yml'):
                   continue
               if 'gh pr merge' in open(f).read() and f not in allowed:

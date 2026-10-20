@@ -124,6 +124,11 @@ push_round() {
   local trailers="Factory-Round: 0"
   [ -z "${ISSUE:-}" ] || trailers="$trailers
 Factory-Issue: $ISSUE"
+  # The agent's own trailers ride after the round's; push-round owns the rule.
+  local kept
+  kept=$("$HERE/../push-round/round.sh" trailers)
+  [ -z "$kept" ] || trailers="$trailers
+$kept"
   git reset -q --soft "$BASE_SHA"
   GIT_COMMITTER_NAME="$FACTORY_NAME" GIT_COMMITTER_EMAIL="$FACTORY_EMAIL" \
     git commit -q --author="$FACTORY_NAME <$FACTORY_EMAIL>" -m "$subject" -m "$trailers"

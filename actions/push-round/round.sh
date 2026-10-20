@@ -9,6 +9,9 @@
 #          recorded (whether a recorded path changed).
 #   push   squash, trailers, push. Refuses a branch that moved.
 #
+# `trailers` prints the replaced commits' trailers a round keeps, for push
+# and for the factory's round 0, so one rule decides it.
+#
 # A round is refused, never forced, when:
 #   - ALLOWED is not true (the caller's own precondition, DENIED_WHY says why)
 #   - the round cap is reached
@@ -92,6 +95,17 @@ relock() {
   fi
 }
 
+# The trailers on the commits a round replaces, once each, minus the keys the
+# loop counts or writes: a kept one would forge the round count or a bump
+# record. Keys compare case-insensitively, as git's do.
+keep_trailers() {
+  git log --reverse --format='%(trailers:only,unfold)' "$BASE_SHA..HEAD" \
+    | awk -v keys="Factory-Round Factory-Issue ${TRAILER_KEY:-} ${RECORD_TRAILER:-}" '
+        BEGIN { n = split(tolower(keys), k, " "); for (i = 1; i <= n; i++) drop[k[i]] = 1 }
+        /^[[:space:]]*$/ || seen[$0]++ { next }
+        { key = tolower($0); sub(/[[:space:]]*:.*/, "", key); sub(/^[[:space:]]+/, "", key); if (!(key in drop)) print }'
+}
+
 push() {
   out pushed=false
   first=$(git log --reverse --format='%s' "$BASE_SHA..HEAD" | head -n 1)
@@ -100,6 +114,8 @@ push() {
   if [ "${RECORDED:-}" = true ] && [ -n "${RECORD_TRAILER:-}" ]; then
     trailers="$trailers"$'\n'$(jq -r --arg k "$RECORD_TRAILER" '.[] | select(.name and .from and .to) | "\($k): \(.name) \(.from) -> \(.to)"' "$RECORDS")
   fi
+  kept=$(keep_trailers)
+  [ -z "$kept" ] || trailers="$trailers"$'\n'"$kept"
   args=(-m "$first")
   [ -n "$rest" ] && args+=(-m "$rest")
   args+=(-m "$trailers")
@@ -120,5 +136,6 @@ push() {
 case "${1:-}" in
   check) check ;;
   push)  push ;;
-  *) echo "usage: round.sh check|push" >&2; exit 2 ;;
+  trailers) keep_trailers ;;
+  *) echo "usage: round.sh check|push|trailers" >&2; exit 2 ;;
 esac

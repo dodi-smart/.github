@@ -172,6 +172,16 @@ jobs:
       - name: Bundle report sizes chunks once and enforces the limit
         run: ./actions/bundle-report/test.sh
 
+      # kover-report never fails on a breached minimum, so the floor is ours: a
+      # figure at the floor passes, one under it or none at all fails.
+      - name: Kover floor fails below the minimum and on a missing figure
+        run: ./actions/kover-floor/test.sh
+
+      # The required context: a failed or cancelled job fails it, a skipped or
+      # advisory one never does, and a call with nothing to judge is no verdict.
+      - name: PR Checks summary fails on a failed job and ignores advisory ones
+        run: ./actions/pr-checks-summary/test.sh
+
       # hk's status, the summary and the SARIF warning are what `hk: true` shows
       # a caller. Run against a stub hk.
       - name: hk-check keeps hk's status and reports through the summary
@@ -625,8 +635,8 @@ jobs:
       # zavet and react-doctor join the required context only when their
       # `*-blocking` input is on, and each standalone workflow and its pr-checks
       # job must run one shared action. `needs` cannot vary with an input, so the
-      # summary needs both always and its env decides: a non-blocking result is
-      # read as `skipped`, which the loop never fails on.
+      # summary needs both always and its `ignore` decides: an advisory job is
+      # read as `skipped` by actions/pr-checks-summary, which never fails on it.
       - name: pr-checks counts zavet and react-doctor only when blocking
         run: |
           set -euo pipefail
@@ -641,18 +651,18 @@ jobs:
           errors = []
           summary = jobs['pr-checks']
           step = [s for s in summary['steps'] if s.get('name') == 'Summarize'][0]
+          given = step.get('with') or {}
+          if 'actions/pr-checks-summary@' not in str(step.get('uses', '')) or given.get('needs') != '$' + '{{ toJSON(needs) }}':
+              errors.append('the Summarize step must run actions/pr-checks-summary on the whole needs context, or a job added to needs is not judged.')
           for j in ('zavet', 'react-doctor'):
               inp = inputs.get(j + '-blocking')
               if not inp or inp.get('type') != 'boolean' or inp.get('default') is not False:
                   errors.append(j + '-blocking must be a boolean input defaulting to false, or an advisory check silently starts blocking merges.')
               if j not in summary['needs']:
                   errors.append('the pr-checks summary must need ' + j + ', or a blocking ' + j + ' cannot fail it.')
-              var = j.upper().replace('-', '_')
-              want = '$' + '{{ inputs.' + j + '-blocking && needs.' + j + '.result || ' + S + 'skipped' + S + ' }}'
-              if step['env'].get(var) != want:
-                  errors.append('the Summarize env ' + var + ' must be ' + want + ', so a non-blocking result can never fail the context, not ' + repr(step['env'].get(var)) + '.')
-              if ('\"' + j + ':\$' + var + '\"') not in step['run']:
-                  errors.append('the Summarize loop must name ' + j + ':' + var + '.')
+              want = '$' + '{{ !inputs.' + j + '-blocking && ' + S + j + S + ' || ' + S + S + ' }}'
+              if want not in str(given.get('ignore', '')):
+                  errors.append('the Summarize ignore must contain ' + want + ', so a non-blocking result can never fail the context, not ' + repr(given.get('ignore')) + '.')
           rd = [s for s in jobs['react-doctor']['steps'] if 'actions/react-doctor@' in str(s.get('uses', ''))]
           if not rd or 'inputs.react-doctor-blocking' not in str(rd[0].get('with', {}).get('blocking', '')):
               errors.append('the react-doctor step must pass a blocking that reads inputs.react-doctor-blocking.')
@@ -777,9 +787,9 @@ jobs:
               cond = str(st.get('if', ''))
               if DOCS not in cond and 'steps.install.outcome' not in cond and 'steps.checkout.outcome' not in cond:
                   errors.append('checks step %r must skip on a docs-only change.' % (st.get('name') or st.get('uses')))
-          need = next(st for st in jobs['pick']['steps'] if st.get('id') == 'need')
-          if 'inputs.commitlint' not in str(need.get('env', {}).get('COMMITLINT', '')):
-              errors.append('pick must keep inputs.commitlint in its need step, or a docs-only change picks no light runner for commitlint.')
+          light = next(st for st in jobs['pick']['steps'] if st.get('id') == 'light')
+          if 'inputs.commitlint' not in str(light.get('if', '')):
+              errors.append('pick must keep inputs.commitlint in the light picker condition, or a docs-only change picks no light runner for commitlint.')
           if errors:
               sys.exit('::error::' + ' '.join(errors))
           print('commitlint is the last step of checks and all, and checks runs for it alone on docs-only')
@@ -1005,9 +1015,9 @@ jobs:
               errors.append('the pr-checks summary must need coverage, or a breached floor stops failing the required context.')
           if not any('actions/lcov-report@' in u for u in uses):
               errors.append('the coverage job must handle coverage: lcov through actions/lcov-report.')
-          kover = [st for st in jobs['coverage']['steps'] if 'steps.kover.outputs.coverage-overall' in str(st.get('env', ''))]
-          if not kover or 'exit 1' not in str(kover[0].get('run', '')):
-              errors.append('coverage: kover must fail on a breached floor: kover-report only comments.')
+          kover = [st for st in jobs['coverage']['steps'] if 'actions/kover-floor@' in str(st.get('uses', ''))]
+          if len(kover) != 1 or 'steps.kover.outputs.coverage-overall' not in str(kover[0].get('with', {}).get('overall', '')):
+              errors.append('coverage: kover must fail on a breached floor through actions/kover-floor, given the kover-report figure: kover-report only comments.')
           if errors:
               sys.exit('::error::' + ' '.join(errors))
           print('only coverage holds pull-requests: write, and the summary needs it')
@@ -1035,10 +1045,11 @@ jobs:
           for name, typ, default in (('bundle-report', 'boolean', False), ('bundle-max-increase-kb', 'number', 0), ('bundle-next-dir', 'string', '.next')):
               if inp.get(name, {}).get('type') != typ or inp[name].get('default') != default:
                   errors.append('input ' + name + ' must be a ' + typ + ' defaulting to ' + repr(default) + ', so a caller that never sets it behaves as before.')
-          if 'bundle-report' not in jobs['pr-checks']['needs'] or 'bundle-report:' not in ' '.join(str(s.get('run', '')) for s in jobs['pr-checks']['steps']):
-              errors.append('the pr-checks summary must need bundle-report and loop over it, or a breached bundle-max-increase-kb stops failing the required context.')
-          if 'inputs.bundle-report' not in str(next(s for s in jobs['pick']['steps'] if s.get('id') == 'need').get('env', {}).get('BUNDLE', '')):
-              errors.append('pick must count inputs.bundle-report in its need step, or a bundle-report-only call picks no light runner.')
+          summ = [s for s in jobs['pr-checks']['steps'] if 'actions/pr-checks-summary@' in uses(s)]
+          if 'bundle-report' not in jobs['pr-checks']['needs'] or len(summ) != 1 or summ[0]['with'].get('needs') != X('toJSON(needs)') or 'bundle-report' in str(summ[0]['with'].get('ignore', '')):
+              errors.append('the pr-checks summary must need bundle-report and judge the whole needs context without ignoring it, or a breached bundle-max-increase-kb stops failing the required context.')
+          if 'inputs.bundle-report' not in str(next(s for s in jobs['pick']['steps'] if s.get('id') == 'light').get('if', '')):
+              errors.append('pick must count inputs.bundle-report in the light picker condition, or a bundle-report-only call picks no light runner.')
           # No caller code in the job holding the write token, and no actions: read.
           if any(uses(st).startswith('actions/checkout@') or 'actions/setup-stack' in uses(st) or 'actions/run-phases' in uses(st) for st in steps):
               errors.append('the bundle-report job must run no caller code: no checkout, setup-stack or run-phases.')

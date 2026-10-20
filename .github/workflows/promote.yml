@@ -13,8 +13,12 @@
 # The scheduled run is opt-in. It does nothing until the repository variable
 # AUTO_PROMOTE is set to `true`, and then promotes `next` once it has been in
 # place for AUTO_PROMOTE_MIN_AGE_HOURS (default 24). It never promotes an older
-# version over a newer one and does not look at how the canary callers fared:
-# turn it off, or promote by hand, when a canary run is red.
+# version over a newer one, and it promotes only a release whose `release-canary`
+# status on the pinned commit is `success` (release-canary.yml posts it): failed,
+# pending, cancelled and never-reported all hold it, and the job summary says
+# which. It still does not see the canary callers' own runs, so turn it off, or
+# promote by hand, when one of those is red. A manual promotion goes ahead
+# whatever the canary said and warns with its state and a link to the run.
 #
 # After a promotion that moved the tag, it sends a `standards-promoted`
 # repository_dispatch to the repo named in the variable SYNC_DISPATCH_REPO, which
@@ -87,12 +91,14 @@ jobs:
         id: promote
         env:
           CHANNEL_TOKEN: ${{ steps.app-token.outputs.token }}
+          # Reads the canary's commit status. A public repo's statuses need no scope.
+          GH_TOKEN: ${{ github.token }}
           VERSION: ${{ inputs.version }}
           AUTO: ${{ github.event_name == 'schedule' }}
           MIN_AGE_HOURS: ${{ vars.AUTO_PROMOTE_MIN_AGE_HOURS || '24' }}
         run: |
           set -euo pipefail
-          args=()
+          args=(--canary-gate ./scripts/canary-gate.sh)
           if [ -n "${VERSION:-}" ]; then args+=(--version "$VERSION"); fi
           if [ "$AUTO" = "true" ]; then args+=(--auto --min-age-hours "$MIN_AGE_HOURS"); fi
           {

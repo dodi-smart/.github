@@ -1552,6 +1552,114 @@ jobs:
           print('release needs ' + ', '.join(gate))
           "
 
+      # What promotion does with a canary's word is a script with a stubbed `gh`;
+      # the cases are in its test, the wiring is asserted below.
+      - name: The canary gate holds anything but a passing canary
+        run: ./scripts/canary-gate.test.sh
+
+      # pr-checks.yml calls its actions at `@v1`, so on a pull request it tests
+      # the PR's workflow against the PREVIOUS release's actions. The end-to-end
+      # run is therefore after a release, at the pinned commit (release-canary.yml,
+      # dispatched by Publish release, read by Promote). This holds the wiring
+      # between those files; the gate's behaviour is canary-gate.test.sh.
+      - name: The release canary runs pr-checks at the pinned release and gates promotion
+        run: |
+          set -euo pipefail
+          python3 - <<'CANARY'
+          import os, subprocess, sys, tempfile, yaml
+
+          errors = []
+          def err(msg): errors.append(msg)
+          def load(path): return yaml.safe_load(open(path))
+          D = '$' + '{{ '   # an expression opener, spelled so this script holds none
+          RANK = {'none': 0, 'read': 1, 'write': 2}
+
+          canary = load('.github/workflows/release-canary.yml')
+          pc = load('.github/workflows/pr-checks.yml')
+          pub = load('.github/workflows/publish-release.yml')
+          prom = load('.github/workflows/promote.yml')
+          cj = canary['jobs']
+
+          # --- release-canary.yml: dispatch-only, every job grants its own
+          if set(canary[True]) != {'workflow_dispatch'}:   # PyYAML reads `on` as True
+              err('release-canary.yml must trigger on workflow_dispatch only')
+          if canary.get('permissions') != {}:
+              err('release-canary.yml must set permissions: {} at the top')
+
+          # --- the call: a ./ path (resolves at the pinned ref) with the checks a plain run skips
+          call = cj['pr-checks']
+          w = call.get('with') or {}
+          if call.get('uses') != './.github/workflows/pr-checks.yml':
+              err('job pr-checks must call ./.github/workflows/pr-checks.yml')
+          for key, want in (('hk', True), ('coverage', 'lcov'), ('zavet', True), ('zavet-blocking', True),
+                            ('react-doctor', True), ('react-doctor-blocking', True), ('dependency-check', True)):
+              if w.get(key) != want:
+                  err('pr-checks input %s must be %r, got %r' % (key, want, w.get(key)))
+          if w.get('dependency-check-fail-on', 'none') != 'none':
+              err('dependency-check-fail-on must stay none')
+          if w.get('bundle-report') or w.get('commitlint'):
+              err('bundle-report needs a Next.js build and commitlint a PR number: both stay off')
+          declared = pc[True]['workflow_call']['inputs']
+          for key in w:
+              if key not in declared:
+                  err('%s is not an input of pr-checks.yml; the call would fail at startup' % key)
+          # The call holds exactly what pr-checks.yml's jobs ask for, no more.
+          need = dict(pc.get('permissions') or {})
+          for job in pc['jobs'].values():
+              for scope, level in (job.get('permissions') or {}).items():
+                  if RANK[level] > RANK[need.get(scope, 'none')]:
+                      need[scope] = level
+          if call.get('permissions') != need:
+              err('the pr-checks call grants %s, but pr-checks.yml needs %s' % (call.get('permissions'), need))
+
+          # --- the result job posts success only for a successful call
+          res = cj['result']
+          if 'pr-checks' not in res.get('needs', []) or 'always()' not in str(res.get('if')):
+              err('result must need pr-checks and run if always(), so a cancelled call still posts failure')
+          if res.get('permissions') != {'statuses': 'write'}:
+              err('result must hold statuses: write and nothing else')
+          step = res['steps'][0]
+          if step['env'].get('RESULT') != D + 'needs.pr-checks.result }}' or step['env'].get('SHA') != D + 'github.sha }}':
+              err('the status must come from needs.pr-checks.result and go on github.sha')
+          with tempfile.TemporaryDirectory() as tmp:
+              gh = os.path.join(tmp, 'gh')
+              open(gh, 'w').write('#!/usr/bin/env bash\nprintf "%s " "$@" >> "$STUB_LOG"\n')
+              os.chmod(gh, 0o755)
+              for result, state in (('success', 'success'), ('failure', 'failure'), ('cancelled', 'failure'), ('skipped', 'failure')):
+                  log = os.path.join(tmp, result)
+                  e = dict(os.environ, PATH=tmp + os.pathsep + os.environ['PATH'], STUB_LOG=log,
+                           GITHUB_STEP_SUMMARY=os.path.join(tmp, 'summary'), REPO='o/r', SHA='abc',
+                           RESULT=result, RUN_URL='https://example.test/run')
+                  ok = subprocess.run(['bash', '-c', step['run']], env=e, capture_output=True).returncode == 0
+                  posted = open(log).read() if ok else ''
+                  if not all(x in posted for x in ('repos/o/r/statuses/abc', 'state=' + state + ' ', 'context=release-canary')):
+                      err('a result of %s must post state=%s, context=release-canary; posted %r' % (result, state, posted))
+
+          # --- Publish release dispatches it after pinning next; it never calls it
+          rel = pub['jobs']['release']
+          if (rel.get('permissions') or {}).get('actions') != 'write' or any(
+                  'actions' in (j.get('permissions') or {}) for k, j in pub['jobs'].items() if k != 'release'):
+              err('only the release job of publish-release.yml may hold actions: write, and it needs it to dispatch')
+          if any('release-canary' in str(j.get('uses')) for j in pub['jobs'].values()):
+              err('publish-release.yml must dispatch the canary, never call it: a called ref resolves before next moves')
+          runs = [str(s.get('run')) for s in rel['steps']]
+          pin = next((i for i, r in enumerate(runs) if 'channel-tag.sh pin' in r), None)
+          disp = next((i for i, r in enumerate(runs) if 'gh workflow run release-canary.yml' in r), None)
+          if pin is None or disp is None or disp <= pin:
+              err('publish-release.yml must run gh workflow run release-canary.yml after channel-tag.sh pin')
+          elif "moved == 'true'" not in str(rel['steps'][disp].get('if')):
+              err('publish-release.yml: dispatch only when next actually moved')
+
+          # --- Promote asks the gate before it moves the tag
+          run = next(s['run'] for s in prom['jobs']['promote']['steps'] if s.get('id') == 'promote')
+          if '--canary-gate ./scripts/canary-gate.sh' not in run:
+              err('promote.yml must pass --canary-gate ./scripts/canary-gate.sh')
+
+          if errors:
+              sys.exit('::error::' + ' | '.join(errors))
+          print('release canary: dispatch-only, pr-checks at the pinned ref (%d inputs), status from the call result, dispatched after pin, gated before promote' % len(w))
+          CANARY
+
       - name: Every workflow and action is parseable YAML
         run: |
           set -euo pipefail

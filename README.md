@@ -71,6 +71,7 @@ caller keeps working.
 | `pr-iterate.yml` | `agent:iterate`, PR Checks completed, the review verdict status | The agent fix loop: up to 3 fix rounds on red checks or a `changes` verdict, then ready for review, then a squash merge (the repo must allow squash merges) when the issue is `Autonomous` with Risk and Effort `Low`. A PR that conflicts with its base gets the base merged in, or goes to a person with the conflicted files; the caller should add a `schedule:` trigger for the sweep that finds them. Every push, ready and merge is a step, not the agent. A Renovate or Dependabot PR stops, label or not: deps-verify owns it |
 | `claude-assist.yml` | `@claude <anything else>` | The general assistant |
 | `release.yml` | push to a release branch | semantic-release, single or multi-module |
+| `release-canary.yml` | dispatched by this repo's `Publish release` | Runs `pr-checks.yml` end to end against a release's pinned commit and posts the `release-canary` commit status that `Promote` reads. Not for callers |
 | `supabase-deploy.yml` | called after `release.yml` | Pushes a Supabase project's schema and functions for the tag a release just cut |
 | `android-deploy.yml` | called after `release.yml` | Builds the signed release APK for the tag a release just cut, attaches it to the GitHub Release and, if asked, distributes it through Firebase App Distribution. Signing material comes from 1Password |
 | `react-doctor.yml` | pull request, React repos | **Deprecated, removed at v2:** use `pr-checks.yml`'s `react-doctor` input. Static analysis of React/TS source. Advisory by default, on a pinned React Doctor version that Renovate bumps here (`version` overrides it). `pr-checks.yml` can run it as a job instead (`react-doctor: true`) |
@@ -1256,8 +1257,14 @@ channels:
 **Automatic promotion is off.** Set the repository variable `AUTO_PROMOTE` to
 `true` and the hourly `Promote` schedule promotes `next` once it has been in
 place for 24 hours (`AUTO_PROMOTE_MIN_AGE_HOURS` changes that). It never promotes
-an older version over a newer one, and it does not look at how the canary runs
-went, so turn it off or promote by hand when one is red.
+an older version over a newer one. After each release, `Publish release` also
+dispatches `release-canary.yml` on the pinned commit, a full `pr-checks.yml` run
+against that exact release (on a pull request, `pr-checks.yml` still calls the
+previous release's actions), and the scheduled promotion waits for its
+`release-canary` status to be `success`: a failed, unfinished or missing one holds
+it, and the job summary says which. A manual promotion goes ahead and warns with
+that status. The canary repositories' own runs are still not looked at, so turn
+automatic promotion off or promote by hand when one is red.
 
 **The first release after this was introduced moves only `next`.** `v1` stays on
 the last release cut before channels, and every caller on `@v1` keeps working

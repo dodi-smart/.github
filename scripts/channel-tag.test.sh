@@ -222,6 +222,62 @@ run "$R4" promote --version 1.5.0 >/dev/null
 eq "a 1.x rollback moves v1, not v2" "$(sha "$R4" v1)" "$(sha "$R4" pinned/v1.5.0)"
 eq "and leaves v2 where it was" "$(sha "$R4" v2)" "$P2"
 
+# ---------------------------------------------------------------- canary gate
+# --canary-gate PATH is asked right before the tag moves. A stub stands in for
+# scripts/canary-gate.sh (its own cases are in canary-gate.test.sh): it logs how
+# it was called, prints a reason, and exits as GATE_RC says.
+R5="$TMP/r5"; make_repo "$R5" 1; release "$R5" 1.0.0; git -C "$R5" tag v1 v1.0.0
+release "$R5" 1.1.0
+run "$R5" pin >/dev/null
+P5="$(sha "$R5" next)"; V5="$(sha "$R5" v1)"
+GATE="$TMP/gate-stub"; GATE_LOG="$TMP/gate.log"
+cat >"$GATE" <<'STUB'
+#!/usr/bin/env bash
+echo "$1 $2" >> "$GATE_LOG"
+echo "stub reason"
+exit "${GATE_RC:-0}"
+STUB
+chmod +x "$GATE"; export GATE_LOG
+: > "$GATE_LOG"
+# v1 back on the old release, locally and on the remote (promote re-fetches tags).
+reset_v1() { git -C "$R5" tag -f v1 v1.0.0 >/dev/null && git -C "$R5" push -q -f origin refs/tags/v1; }
+
+out="$(GATE_RC=1 run "$R5" promote --auto --min-age-hours 0 --canary-gate "$GATE")"
+eq "a refused automatic promotion leaves v1 alone" "$(sha "$R5" v1)" "$V5"
+eq "a refused automatic promotion leaves v1 alone on the remote" "$(remote_sha "$R5" v1)" "none"
+case "$out" in *"promoted=false"*) ok "a refused automatic promotion reports promoted=false";; *) bad "a refused automatic promotion reports promoted=false ($out)";; esac
+case "$out" in *"canary: stub reason"*) ok "and says why";; *) bad "and says why ($out)";; esac
+case "$out" in *"promoted=true"*) bad "a refused promotion must not report promoted=true";; *) ok "a refused promotion never reports promoted=true";; esac
+eq "the gate is asked about the pinned commit, in auto mode" "$(tail -n1 "$GATE_LOG")" "auto $P5"
+
+out="$(GATE_RC=0 run "$R5" promote --auto --min-age-hours 0 --canary-gate "$GATE")"
+eq "a passing canary lets an automatic promotion through" "$(sha "$R5" v1)" "$P5"
+case "$out" in *"promoted=true"*) ok "and reports promoted=true";; *) bad "and reports promoted=true ($out)";; esac
+
+: > "$GATE_LOG"
+GATE_RC=1 run "$R5" promote --auto --min-age-hours 0 --canary-gate "$GATE" >/dev/null
+eq "the gate is not asked when v1 is already there" "$(wc -l < "$GATE_LOG" | tr -d ' ')" 0
+reset_v1
+: > "$GATE_LOG"
+GATE_RC=1 run "$R5" promote --auto --canary-gate "$GATE" >/dev/null
+eq "the gate is not asked while next is still too young" "$(wc -l < "$GATE_LOG" | tr -d ' ')" 0
+eq "and v1 stays" "$(sha "$R5" v1)" "$(sha "$R5" v1.0.0)"
+
+out="$(GATE_RC=1 run "$R5" promote --canary-gate "$GATE")"
+eq "a manual promotion goes ahead whatever the gate says" "$(sha "$R5" v1)" "$P5"
+eq "the gate is asked in manual mode" "$(tail -n1 "$GATE_LOG")" "manual $P5"
+case "$out" in *"promoted=true"*) ok "a manual promotion reports promoted=true";; *) bad "a manual promotion reports promoted=true ($out)";; esac
+
+reset_v1
+out="$(run "$R5" promote --canary-gate "$TMP/no-such-gate")"
+eq "a manual promotion survives a gate that cannot run" "$(sha "$R5" v1)" "$P5"
+case "$out" in *"::warning title=Canary gate failed"*) ok "and says the gate failed";; *) bad "and says the gate failed ($out)";; esac
+reset_v1
+run "$R5" promote --auto --min-age-hours 0 --canary-gate "$TMP/no-such-gate" >/dev/null
+eq "an automatic promotion with a gate that cannot run moves nothing" "$(sha "$R5" v1)" "$(sha "$R5" v1.0.0)"
+run "$R5" promote --version 1.0.0 --canary-gate "$GATE" >/dev/null
+eq "a rollback with a gate is still a manual promotion" "$(tail -n1 "$GATE_LOG")" "manual $(sha "$R5" v1.0.0)"
+
 # A checkout that persisted GITHUB_TOKEN as an extraheader would send it in place
 # of the App token in the URL, and GitHub refuses that push for workflow files.
 SHIM="$TMP/shim"; mkdir -p "$SHIM"; REAL_GIT="$(command -v git)"

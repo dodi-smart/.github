@@ -20,6 +20,10 @@
 # `@next` runs the workflows and the actions they call from one release. The
 # commit is built by scripts/channel-tag.sh and tagged `pinned/vX.Y.Z`.
 #
+# Once `next` has moved, the last step dispatches release-canary.yml on that
+# pinned tag: a full pr-checks run against the exact release, whose result is
+# the `release-canary` status that promote.yml reads before it moves `v1`.
+#
 # Hosted on purpose. This repo is public, the org runner group refuses public
 # repos, and a self-hosted job here would queue rather than fail.
 name: Publish release
@@ -54,6 +58,7 @@ jobs:
       contents: write        # push the changelog commit and the tags
       issues: write          # semantic-release comments on released issues
       pull-requests: write
+      actions: write         # dispatch the release canary (workflow_dispatch)
     steps:
       # Full history, or the commit analyser cannot see what changed since the
       # last tag and every run looks like the first one.
@@ -107,8 +112,35 @@ jobs:
       # failed run therefore repairs a release whose channel push failed, which
       # semantic-release itself never would (it sees nothing new to release).
       - name: Move the next channel
+        id: channel
         env:
           CHANNEL_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
           set -euo pipefail
-          ./scripts/channel-tag.sh pin | tee -a "$GITHUB_STEP_SUMMARY"
+          ./scripts/channel-tag.sh pin | tee -a "$GITHUB_STEP_SUMMARY" "$RUNNER_TEMP/channel.out"
+          grep -E '^(moved|version|pinned)=' "$RUNNER_TEMP/channel.out" >> "$GITHUB_OUTPUT"
+
+      # A new run at the pinned tag, never a `uses:`: a called workflow's ref is
+      # resolved when the run is created, before `next` moved (see AGENTS.md).
+      # GITHUB_TOKEN may create a workflow_dispatch event, with `actions: write`.
+      # This step runs on every push to main, so it dispatches only a commit with
+      # no `release-canary` result yet. A failed dispatch warns and never fails
+      # the release; with no status, promote.yml holds the promotion.
+      - name: Dispatch the release canary
+        if: steps.channel.outputs.moved == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.channel.outputs.version }}
+          PINNED: ${{ steps.channel.outputs.pinned }}
+        run: |
+          set -euo pipefail
+          state="$(./scripts/canary-gate.sh state "$PINNED")"
+          case "$state" in
+            none|unreadable) ;;
+            *) echo "release-canary is already $state on $PINNED; not dispatching again" | tee -a "$GITHUB_STEP_SUMMARY"; exit 0 ;;
+          esac
+          if gh workflow run release-canary.yml --repo "$GITHUB_REPOSITORY" --ref "pinned/v$VERSION"; then
+            echo "Dispatched release-canary on pinned/v$VERSION" | tee -a "$GITHUB_STEP_SUMMARY"
+          else
+            echo "::warning title=Release canary not dispatched::gh workflow run failed for pinned/v$VERSION. The release stands, but promote.yml will not promote it until a release-canary status exists: run release-canary.yml on that tag by hand."
+          fi

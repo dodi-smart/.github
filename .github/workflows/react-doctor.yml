@@ -1,5 +1,10 @@
 # Reusable: React Doctor, static analysis of React/TS source on a pull request.
 #
+# DEPRECATED, removed at v2. pr-checks.yml's `react-doctor` input runs the same
+# action as an opt-in job on the light runner its `pick` already chose, so this
+# workflow's own picker job is pure cost, and no caller uses it any more. Add
+# nothing here; a need it covers and pr-checks does not goes into pr-checks.
+#
 # `concurrency` and `paths:` belong to the CALLER, the same rule pr-checks
 # follows, because both depend on that repo's branches and source layout.
 #
@@ -82,6 +87,9 @@ jobs:
       - uses: dodi-smart/.github/actions/runner-report@v1
         with:
           selector: ${{ needs.pick.outputs.selector }}
+      # Says so in every run, so a caller still on it sees it before v2 drops it.
+      - name: Deprecated
+        run: echo "::warning title=react-doctor.yml is deprecated::It is removed at v2. Call pr-checks.yml with react-doctor true instead."
       # Checkout and scan live in the action, shared with pr-checks.yml.
       - uses: dodi-smart/.github/actions/react-doctor@v1
         with:

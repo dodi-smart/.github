@@ -653,6 +653,28 @@ jobs:
           print('zavet and react-doctor stay out of the summary and share their actions')
           "
 
+      # react-doctor.yml has no callers since pr-checks runs the same action, and
+      # goes at v2. Until then it must say so, in its header and in every run.
+      - name: react-doctor.yml says it is deprecated
+        run: |
+          set -euo pipefail
+          python3 - <<'DEP'
+          import sys, yaml
+          path = '.github/workflows/react-doctor.yml'
+          text = open(path).read()
+          steps = yaml.safe_load(text)['jobs']['doctor']['steps']
+          errors = []
+          if 'DEPRECATED, removed at v2' not in text.split('name:', 1)[0]:
+              errors.append(path + ' must say DEPRECATED, removed at v2 in its header.')
+          if not any('::warning' in str(s.get('run', '')) and 'deprecated' in str(s.get('run', '')) for s in steps):
+              errors.append(path + ' must warn that it is deprecated on every run.')
+          if '**Deprecated, removed at v2:**' not in open('README.md').read():
+              errors.append('the README workflow table must mark react-doctor.yml deprecated.')
+          if errors:
+              sys.exit('::error::' + ' '.join(errors))
+          print('react-doctor.yml says it is deprecated in its header, every run and the README')
+          DEP
+
       # Both react-doctor `version` defaults stay one exact version that Renovate
       # bumps. The manager has to read each, or the pin silently goes stale.
       - name: react-doctor version is pinned and bumped by Renovate

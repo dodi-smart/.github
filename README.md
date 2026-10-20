@@ -73,7 +73,7 @@ caller keeps working.
 | `release.yml` | push to a release branch | semantic-release, single or multi-module |
 | `supabase-deploy.yml` | called after `release.yml` | Pushes a Supabase project's schema and functions for the tag a release just cut |
 | `android-deploy.yml` | called after `release.yml` | Builds the signed release APK for the tag a release just cut, attaches it to the GitHub Release and, if asked, distributes it through Firebase App Distribution. Signing material comes from 1Password |
-| `react-doctor.yml` | pull request, React repos | Static analysis of React/TS source. Advisory by default, on a pinned React Doctor version that Renovate bumps here (`version` overrides it). `pr-checks.yml` can run it as a job instead (`react-doctor: true`) |
+| `react-doctor.yml` | pull request, React repos | **Deprecated, removed at v2:** use `pr-checks.yml`'s `react-doctor` input. Static analysis of React/TS source. Advisory by default, on a pinned React Doctor version that Renovate bumps here (`version` overrides it). `pr-checks.yml` can run it as a job instead (`react-doctor: true`) |
 | `zavet-check.yml` | pull request | Knowledge-layer checks, for repos that have one. Report-only on dependency and automation bot PRs. `pr-checks.yml` can run it as a job instead (`zavet: true`) |
 | `supabase-checks.yml` | pull request, Supabase repos | Deno edge-function check, generated-types check, pgTAP tests, and an opt-in squawk lint of the migrations a pull request changed. The jobs that start Postgres are hosted only; the lint runs on the light pool |
 | `pick-runner.yml` | called by the others | Resolves a runner weight to a `runs-on` selector. Static: no API call, no token |
@@ -777,7 +777,8 @@ Then delete the caller's `zavet-check` and `react-doctor` jobs, and their
 
 `zavet-dir` sets where the layer lives and `react-doctor-directory` which project to scan. The React Doctor job uses React
 Doctor's defaults, so it stays advisory (`blocking: none`, `scope: changed`). A
-repo that needs to tune scope, blocking or version keeps `react-doctor.yml`.
+repo that needs to tune scope or version asks for that input on `pr-checks.yml`:
+`react-doctor.yml` is deprecated and removed at v2.
 
 **Neither result is part of the `pr-checks` summary.** The `zavet` and
 `react-doctor` jobs are separate status contexts. Turning them on does not make

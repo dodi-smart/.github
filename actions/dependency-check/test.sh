@@ -2,8 +2,8 @@
 # Assert what is reported and what blocks, against a fake osv-scanner and a fake
 # gh: only a finding the base commit lacks is new, a new one at or above the
 # threshold fails the job, and a scan that could not run is reported apart from
-# findings. Also the install (a fake curl: checksum, platform, cache) and that the
-# Renovate marker stays on the line above the pinned version.
+# findings. Also the install (a fake curl: checksum, platform, cache). Self test
+# checks that Renovate reads the pinned version.
 # The backticks in the expected text are markdown, not command substitution.
 # shellcheck disable=SC2016
 set -uo pipefail
@@ -477,34 +477,6 @@ cp "$WORK/sums.good" "$WORK/dl/osv-scanner_SHA256SUMS"
 rm -f "$WORK/dl/osv-scanner_linux_amd64"
 install Linux X64
 check "a failed download fails" "exit 0" [ "$rc" -ne 0 ]
-
-# ---- the pin -----------------------------------------------------------------
-
-# Renovate's regex manager reads the marker comment and the version on the line
-# right after it. A refactor that separates them stops the updates silently.
-marker='# renovate: datasource=github-releases depName=google/osv-scanner'
-after="$(grep -A1 -F -x -- "$marker" "$INSTALL" | tail -n 1)"
-if [[ "$after" =~ ^OSV_SCANNER_VERSION=[0-9]+\.[0-9]+\.[0-9]+$ ]]; then ok "the version sits on the line right under the Renovate marker"
-else bad "the version sits on the line right under the Renovate marker" "next line is '$after'"; fi
-check "the version is written once" "more than one" [ "$(grep -c '^OSV_SCANNER_VERSION=' "$INSTALL")" -eq 1 ]
-
-# And the manager in renovate.json really reads that pair. Renovate matches with
-# RE2; the pattern here uses only syntax JavaScript reads the same way.
-if command -v node >/dev/null 2>&1; then
-  seen="$(node -e '
-    const fs = require("fs");
-    const cfg = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
-    const rel = "actions/dependency-check/install.sh";
-    const mgr = (cfg.customManagers || []).find(m => (m.managerFilePatterns || []).some(p => new RegExp(p.replace(/^\/|\/$/g, "")).test(rel)));
-    if (!mgr) { console.log("no manager matches " + rel); process.exit(0); }
-    const m = new RegExp(mgr.matchStrings[0]).exec(fs.readFileSync(process.argv[2], "utf8"));
-    console.log(m ? [m.groups.datasource || mgr.datasourceTemplate, m.groups.depName, m.groups.currentValue].join(" ") : "the pattern matches nothing");
-  ' "$ROOT/renovate.json" "$INSTALL")"
-  if [ "$seen" = "github-releases google/osv-scanner $VERSION" ]; then ok "renovate.json's manager reads the marker and the pinned version"
-  else bad "renovate.json's manager reads the marker and the pinned version" "read: $seen"; fi
-else
-  echo "  skip renovate.json check: node is not installed"
-fi
 
 echo "$pass passed, $fail failed"
 [ "$fail" -eq 0 ]

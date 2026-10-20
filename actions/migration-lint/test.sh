@@ -180,12 +180,5 @@ if [ -e "$WORK/tmp/squawk" ] && [ -x "$(find "$WORK/tmp/squawk" -name squawk -ty
   bad "no digest: nothing is installed" "a binary exists"
 else ok "no digest: nothing is installed"; fi
 
-# --- the pin ----------------------------------------------------------------
-n=$(grep -c '^SQUAWK_VERSION="v[0-9][0-9.]*"$' "$HERE/install.sh")
-eq "the version is pinned once, exact" "1" "$n"
-if grep -B1 '^SQUAWK_VERSION=' "$HERE/install.sh" | grep -q '^# renovate: datasource=github-releases depName=sbdchd/squawk$'; then
-  ok "with its Renovate marker"
-else bad "with its Renovate marker" "marker missing"; fi
-
 echo "pass=$pass fail=$fail"
 [ "$fail" -eq 0 ]

@@ -1,3 +1,9 @@
+## [1.39.3](https://github.com/dodi-smart/.github/compare/v1.39.2...v1.39.3) (2026-10-20)
+
+### ⚡ Performance Improvements
+
+* **pr-checks:** classify the author in dependency-check, run one phases step, keep .next/cache to the build job ([ce7a9a3](https://github.com/dodi-smart/.github/commit/ce7a9a38e94eaae98dd0bdc62aac121c6a29648f))
+
 ## [1.39.2](https://github.com/dodi-smart/.github/compare/v1.39.1...v1.39.2) (2026-10-20)
 
 ### ⚡ Performance Improvements

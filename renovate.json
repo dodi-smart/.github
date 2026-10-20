@@ -84,17 +84,12 @@
       "groupName": "hk"
     },
     {
-      "description": "squawk is what migration-lint runs for every caller, so a bump changes callers and releases like any chore(deps). Listed after the custom.regex rule above so it wins",
-      "matchPackageNames": [
-        "sbdchd/squawk"
-      ],
-      "semanticCommitType": "chore",
-      "semanticCommitScope": "deps"
-    },
-    {
-      "description": "A firebase-tools bump changes what the deploy workflow runs for every caller, so unlike the other custom.regex pins it releases as chore(deps)",
-      "matchPackageNames": [
-        "firebase-tools"
+      "description": "Each of these is what a shared workflow or action runs for callers (migration-lint, the deploy workflow, the react-doctor scan, dependency-check), so a bump releases like any chore(deps), unlike the other custom.regex pins",
+      "matchDepNames": [
+        "sbdchd/squawk",
+        "firebase-tools",
+        "react-doctor",
+        "google/osv-scanner"
       ],
       "semanticCommitType": "chore",
       "semanticCommitScope": "deps"
@@ -109,22 +104,6 @@
       ],
       "groupName": "1password",
       "automerge": false
-    },
-    {
-      "description": "A react-doctor bump changes what every caller's scan runs, so it must release, unlike the lint tools above. Later rules win, so this overrides ci(self-test) with the chore(deps) this repo releases on",
-      "matchDepNames": [
-        "react-doctor"
-      ],
-      "semanticCommitType": "chore",
-      "semanticCommitScope": "deps"
-    },
-    {
-      "description": "Unlike the lint tools above, osv-scanner is what actions/dependency-check runs for callers, so a bump releases like any chore(deps). Keep after the custom.regex rule: the later rule wins",
-      "matchPackageNames": [
-        "google/osv-scanner"
-      ],
-      "semanticCommitType": "chore",
-      "semanticCommitScope": "deps"
     }
   ]
 }

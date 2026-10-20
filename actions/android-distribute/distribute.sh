@@ -14,8 +14,6 @@
 #   GH_TOKEN               what `gh` authenticates with
 #   NOTES_MAX              byte cap on the release notes (default 8000)
 #
-# Writes `apks` (a JSON array) and `distributed` (true|false) to $GITHUB_OUTPUT.
-#
 # No secret is ever an argument: the GitHub token reaches `gh` as GH_TOKEN and
 # the Firebase credentials reach firebase-tools as GOOGLE_APPLICATION_CREDENTIALS,
 # a path. Arguments are visible to every process on the machine.
@@ -38,7 +36,6 @@ REPO="${REPO:-${GITHUB_REPOSITORY:-}}"
 # Firebase documents no limit for release notes. Staff have said 65536 bytes and
 # an API error has been seen at 16384 characters, so stay well under the lower.
 NOTES_MAX="${NOTES_MAX:-8000}"
-: "${GITHUB_OUTPUT:=/dev/null}"
 
 fail() { echo "::error::$*"; exit 1; }
 
@@ -104,20 +101,15 @@ if [ "$mode" = go ]; then
 fi
 
 echo "APKs: ${signed[*]}"
-{
-  printf 'apks=%s\n' "$(printf '%s\n' "${signed[@]}" | jq -Rnc '[inputs]')"
-} >> "$GITHUB_OUTPUT"
 
 # --- attach to the release -----------------------------------------------------
 gh release upload "$TAG" "${signed[@]}" --clobber --repo "$REPO"
 
 if [ "$mode" = skip ]; then
   echo "::notice::firebase-app-id is empty, so the APKs are attached to $TAG and nothing is distributed."
-  echo "distributed=false" >> "$GITHUB_OUTPUT"
   exit 0
 fi
 if [ "$mode" = ambiguous ]; then
-  echo "distributed=false" >> "$GITHUB_OUTPUT"
   fail "${#signed[@]} APKs matched and Firebase App Distribution takes one binary per release, so none was distributed (all are attached to $TAG): ${signed[*]}. Narrow apk-glob to the one to distribute."
 fi
 
@@ -150,4 +142,3 @@ groups="$(printf '%s' "$FIREBASE_GROUPS" | tr -d '[:space:]')"
 
 GOOGLE_APPLICATION_CREDENTIALS="$CREDENTIALS_FILE" \
   npx --yes "firebase-tools@${FIREBASE_TOOLS_VERSION}" "${args[@]}"
-echo "distributed=true" >> "$GITHUB_OUTPUT"

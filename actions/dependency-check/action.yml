@@ -10,11 +10,12 @@ inputs:
       Newline-separated lockfile paths to check, instead of the ones the pull
       request changed. For tests and callers that already know.
     default: ''
-  author-kind:
+  author:
     description: >-
-      `agent-gate`'s `author-kind`. `dependency` skips the check: deps-verify
-      owns dependency pull requests.
-    default: ''
+      The pull request author's login, classified by `agent-gate`'s `gate.sh
+      kind`. A dependency bot skips the check: deps-verify owns dependency pull
+      requests.
+    default: ${{ github.event.pull_request.user.login }}
   fail-on:
     description: >-
       `none` (report only), `low`, `moderate`, `high` or `critical`. The job
@@ -34,31 +35,22 @@ inputs:
     description: 'Token to list changed files and read the base versions with. Needs pull-requests: read and contents: read.'
     default: ${{ github.token }}
 
-outputs:
-  result:
-    description: >-
-      `clean` (checked, nothing new), `findings` (new ones, none blocking),
-      `failed` (the job failed: a blocking finding, or the check could not run
-      under a threshold) or `skipped` (nothing to check, a dependency PR, or
-      `fail-on: none` with nothing checkable).
-    value: ${{ steps.check.outputs.result }}
-  new-count:
-    description: Vulnerabilities the pull request introduced.
-    value: ${{ steps.check.outputs.new-count }}
-  existing-count:
-    description: Vulnerabilities in the changed lockfiles that were already there at the base commit.
-    value: ${{ steps.check.outputs.existing-count }}
-  errors:
-    description: Lockfiles that could not be checked, apart from findings.
-    value: ${{ steps.check.outputs.errors }}
-
 runs:
   using: composite
   steps:
+    # The one classification of who is a bot (agent-gate), asked here so a caller
+    # passes only a login.
+    - id: kind
+      shell: bash
+      env:
+        AUTHOR:      ${{ inputs.author }}
+        ACTION_PATH: ${{ github.action_path }}
+      run: echo "kind=$("$ACTION_PATH/../agent-gate/gate.sh" kind "$AUTHOR")" >> "$GITHUB_OUTPUT"
+
     # No patterns: the whole list, and the script keeps the lockfile names
     # osv-scanner reads. One list of names, in one place.
     - id: files
-      if: ${{ inputs.lockfiles == '' && inputs.author-kind != 'dependency' }}
+      if: ${{ inputs.lockfiles == '' && steps.kind.outputs.kind != 'dependency' }}
       uses: dodi-smart/.github/actions/changed-files@v1
       with:
         number: ${{ inputs.number }}
@@ -68,13 +60,14 @@ runs:
     - id: check
       shell: bash
       env:
-        LOCKFILES:   ${{ inputs.lockfiles }}
-        AUTHOR_KIND: ${{ inputs.author-kind }}
-        FAIL_ON:     ${{ inputs.fail-on }}
-        NUMBER:      ${{ inputs.number }}
-        REPO:        ${{ inputs.repository }}
-        BASE_SHA:    ${{ inputs.base-sha }}
-        GH_TOKEN:    ${{ inputs.token }}
-        FILES:       ${{ steps.files.outputs.files }}
-        ACTION_PATH: ${{ github.action_path }}
+        LOCKFILES:     ${{ inputs.lockfiles }}
+        AUTHOR_KIND:   ${{ steps.kind.outputs.kind }}
+        FAIL_ON:       ${{ inputs.fail-on }}
+        NUMBER:        ${{ inputs.number }}
+        REPO:          ${{ inputs.repository }}
+        BASE_SHA:      ${{ inputs.base-sha }}
+        GH_TOKEN:      ${{ inputs.token }}
+        FILES:         ${{ steps.files.outputs.files }}
+        LIST_COMPLETE: ${{ steps.files.outputs.complete }}
+        ACTION_PATH:   ${{ github.action_path }}
       run: '"$ACTION_PATH/dependency-check.sh"'

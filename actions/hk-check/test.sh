@@ -132,7 +132,7 @@ bad = [m for m, broken in (
     ('no cache-save input', 'cache-save' not in doc.get('inputs', {})),
     ('cache-save does not default to false', str(doc.get('inputs', {}).get('cache-save', {}).get('default')) != 'false'),
     ('cache_save does not read inputs.cache-save', 'inputs.cache-save' not in save),
-    ('cache_save does not also need inputs.cache', "inputs.cache == 'true'" not in save),
+    ('cache_save restates the cache check setup-stack already makes', "inputs.cache " in save),
     ('cache_save restates the default-branch rule', 'github.ref' in save or 'default_branch' in save),
 ) if broken]
 print('; '.join(bad) or 'ok')

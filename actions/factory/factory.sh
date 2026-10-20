@@ -183,6 +183,22 @@ mergeable_of() {
   printf '%s' "${s:-unknown}"
 }
 
+# The PRs the fix loop never touches, for `decide` and `sweep` alike: a fork, an
+# agent:no-touch label, a dependency bot's PR (deps-verify and deps-automerge own
+# those; the loop would push agent commits onto a branch Renovate rebases, and
+# judge a tier with no issue behind it, so a hand-added label stops here).
+# skip_reason PR_JSON NUMBER -> the reason on stdout, or nothing when the PR is the loop's.
+skip_reason() {
+  local json="$1" pr="$2"
+  if [ "$(jq -r '.head.repo.full_name != .base.repo.full_name' <<<"$json")" != false ]; then
+    echo "#$pr is from a fork"
+  elif jq -e '[(.labels // [])[].name] | index("agent:no-touch")' >/dev/null <<<"$json"; then
+    echo "agent:no-touch on #$pr"
+  elif [ "$("$HERE/../agent-gate/gate.sh" kind "$(jq -r '.user.login // ""' <<<"$json")")" = dependency ]; then
+    echo "#$pr is a dependency-bot PR; deps-verify owns it, not the fix loop"
+  fi
+}
+
 # ---------------------------------------------------------------------------
 # decide: what the fix loop does next for one PR. Reads everything live, so a
 # re-run decides from the state now, never from the event that started it.
@@ -198,7 +214,7 @@ mergeable_of() {
 #   on it, so no event would ever reach the loop. It is judged before the checks.
 # ---------------------------------------------------------------------------
 decide() {
-  local pr="${PR:-}" json state draft labels head base fork body issue rounds checks run_id verdict tier
+  local pr="${PR:-}" json state draft labels head base body issue rounds checks run_id verdict tier skip
   finish() { out action "$1"; out reason "$2"; exit 0; }
 
   if [ -z "$pr" ] && [ -n "${EVENT_SHA:-}" ]; then
@@ -212,20 +228,13 @@ decide() {
   state=$(jq -r .state <<<"$json"); draft=$(jq -r .draft <<<"$json")
   labels=$(jq -c '[.labels[].name]' <<<"$json")
   head=$(jq -r .head.sha <<<"$json"); base=$(jq -r .base.ref <<<"$json")
-  fork=$(jq -r '.head.repo.full_name != .base.repo.full_name' <<<"$json")
   body=$(jq -r '.body // ""' <<<"$json")
   out head-sha "$head"; out head-ref "$(jq -r .head.ref <<<"$json")"; out base-ref "$base"
 
   [ "$state" = open ] || finish stop "#$pr is $state"
-  [ "$fork" = false ] || finish stop "#$pr is from a fork"
-  grep -q '"agent:no-touch"' <<<"$labels" && finish stop "agent:no-touch on #$pr"
+  skip=$(skip_reason "$json" "$pr")
+  [ -z "$skip" ] || finish stop "$skip"
   grep -q '"agent:iterate"' <<<"$labels" || finish stop "#$pr does not carry agent:iterate"
-  # A dependency bot's PR belongs to deps-verify and deps-automerge. The loop
-  # would push agent commits onto a branch Renovate rebases, and judge a tier
-  # with no issue behind it, so a hand-added label stops here.
-  if [ "$("$HERE/../agent-gate/gate.sh" kind "$(jq -r '.user.login // ""' <<<"$json")")" = dependency ]; then
-    finish stop "#$pr is a dependency-bot PR; deps-verify owns it, not the fix loop"
-  fi
   if [ -n "${EVENT_SHA:-}" ] && [ "$EVENT_SHA" != "$head" ]; then
     finish stop "the event was for $EVENT_SHA, and #$pr has moved to $head"
   fi
@@ -320,16 +329,15 @@ decide() {
 # It only lists; the caller relays each one to `decide`.
 #
 # env: REPO, MERGEABLE_WAIT
-# Skipped: agent:no-touch, a fork, a dependency bot's PR (the rules `decide` stops on).
+# Skipped: what `skip_reason` names, the rules `decide` stops on too.
 # ---------------------------------------------------------------------------
 sweep() {
   local nums n json dirty='' unknown=''
   nums=$(gh api --paginate "/repos/$REPO/issues?state=open&labels=agent:iterate&per_page=100" \
-           --jq '.[] | select(.pull_request != null and (([.labels[].name] | index("agent:no-touch")) | not)) | .number' 2>/dev/null || true)
+           --jq '.[] | select(.pull_request != null) | .number' 2>/dev/null || true)
   for n in $nums; do
     json=$(gh api "/repos/$REPO/pulls/$n" 2>/dev/null) || continue
-    [ "$(jq -r '.head.repo.full_name != .base.repo.full_name' <<<"$json")" = false ] || continue
-    [ "$("$HERE/../agent-gate/gate.sh" kind "$(jq -r '.user.login // ""' <<<"$json")")" != dependency ] || continue
+    [ -z "$(skip_reason "$json" "$n")" ] || continue
     case "$(jq -r "$MERGEABLE_Q" <<<"$json")" in
       dirty)   dirty="${dirty:+$dirty }$n" ;;
       unknown) unknown="${unknown:+$unknown }$n" ;;

@@ -341,7 +341,7 @@ Renovate marker, and a bump releases as `chore(deps)`.
 | `actions/hk-check` | Installs the repo's mise tools, runs `hk check --all --sarif`, appends the output to the job summary, warns on a SARIF file that is not valid JSON, and keeps the SARIF as an artifact. What `pr-checks.yml`'s `hk: true` runs |
 | `actions/changed-files` | A pull request's changed files through the API, with no checkout, and whether any, or every one, match a set of globs. Pure bash: it needs `gh` and nothing else |
 | `actions/migration-lint` | Lints the `*.sql` migrations a pull request added or changed with a pinned squawk, as annotations. Advisory unless `blocking: true`; squawk failing to install or run always fails it. What `supabase-checks.yml`'s `migration-lint` job calls. The caller checks out first |
-| `actions/dependency-check` | Scans the lockfiles a pull request changed with osv-scanner and reports only the vulnerabilities it introduced, as a job summary table, with an optional `fail-on` threshold (`none` by default). Skipped for dependency PRs (`author-kind: dependency`) |
+| `actions/dependency-check` | Scans the lockfiles a pull request changed with osv-scanner and reports only the vulnerabilities it introduced, as a job summary table, with an optional `fail-on` threshold (`none` by default). Skipped for dependency PRs (it classifies its `author` input with `agent-gate`'s `gate.sh kind`). Reports through the job summary; it has no outputs |
 | `actions/runner-report` | Writes which runner a job got (name, pool, labels, OS, image, queue time) to the job summary and a notice, or with `mode: run` a "Where it ran" table for every job of the run. Needs `actions: read` for queue time; without it the runner is still named. Never fails the job |
 | `actions/run-phases` | Runs a job's install, lint, design-lint, typecheck, test, build and smoke commands as timed phases, each in its own shell, and writes a timing and peak-memory table to the job summary. `log-dir` also writes each phase's output to a file; `keep-going: true` runs every phase and the `failed` output lists the ones that failed. The `peak-rss` output is the largest per-phase peak memory in MiB. What `pr-checks.yml` and `deps-verify.yml` run their commands with |
 | `actions/wait-for-deployment` | Waits for the frontend host's successful GitHub Deployment of the checked-out commit, or for a route to report its sha. What `supabase-deploy.yml`'s health check calls |
@@ -857,8 +857,10 @@ A JSON config's `extends` may name only a package in the pinned set,
 the run with the allowed list, because nothing is installed on a config's say-so.
 A config in another format
 (a `.js` file, say) is not checked, and an import outside the pinned set fails to
-resolve. To allow another package, add it to that `package.json`. The installed
-tree is cached on the lockfile. The preset is not published, so its name resolves
+resolve. To allow another package, add it to that `package.json`. The pinned
+set is installed with `npm ci --prefer-offline` on every run (a cache saved on a
+pull request is unreadable by other pull requests), and the action installs Node
+only when the job's own is older than 22.12. The preset is not published, so its name resolves
 in this action only: a local commit-msg hook cannot load a config that extends it.
 
 ### setup-stack inputs and outputs
@@ -1029,7 +1031,8 @@ pull request reads what those runs saved.
 (checked against the release's sha256 digest) into the runner's temp directory,
 and lints the changed migrations only. Findings are annotations on the file and
 line, plus a table in the job summary. Turn `migration-lint-blocking` on once the
-baseline is clean. On any event but a pull request there is no diff, so it
+baseline is clean. When no file under `migrations-path` changed it succeeds before
+the checkout. On any event but a pull request there is no diff, so it
 reports success without linting. When the file list cannot be read in full
 (an API error, or the 3000-file cap) it lints every `*.sql` under the path rather
 than none. It adds no permission: it needs the `pull-requests: read` the other

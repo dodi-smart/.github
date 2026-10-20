@@ -92,15 +92,20 @@ on:
       commitlint:        { type: boolean, default: false }
       commitlint-config: { type: string,  default: ".commitlintrc.json" }
 
-      # Opt-in jobs that replace zavet-check.yml and react-doctor.yml. Neither
-      # feeds the `pr-checks` summary. `zavet-stack` is the toolchain the
-      # decision checks run on. `react-doctor-paths` are newline globs; the
-      # default is web source and package.json, narrow it to an app directory in
-      # a monorepo. A repo that tunes React Doctor keeps react-doctor.yml.
+      # Opt-in jobs that replace zavet-check.yml and react-doctor.yml. They
+      # feed the `pr-checks` summary only when their `*-blocking` input is on.
+      # `zavet-stack` is the toolchain the decision checks run on.
+      # `react-doctor-paths` are newline globs; the default is web source and
+      # package.json, narrow it to an app directory in a monorepo. A repo that
+      # tunes React Doctor keeps react-doctor.yml.
       zavet:       { type: boolean, default: false }
       zavet-dir:   { type: string,  default: ".zavet" }
       zavet-stack: { type: string,  default: "none" }
       zavet-audit: { type: boolean, default: false }   # report-only health sweep
+      # Off by default: an advisory check that silently starts blocking merges
+      # is worse than one that reports. On, the job's result joins `PR Checks`,
+      # the required context, so a red Zavet Check blocks the merge.
+      zavet-blocking: { type: boolean, default: false }
       # The zavet job's install. Empty reuses `install`; set it when the decision
       # checks need more, e.g. a build whose output a check reads.
       zavet-install: { type: string, default: "" }
@@ -115,6 +120,9 @@ on:
           **.jsx
           package.json
       react-doctor-directory: { type: string,  default: "." }
+      # Off by default, as `zavet-blocking`. On, the job joins `PR Checks` and
+      # React Doctor fails the run on an error-severity finding.
+      react-doctor-blocking:  { type: boolean, default: false }
 
       # none | vitest | kover | lcov. `lcov`: the test command writes an LCOV
       # file (bun test, cargo llvm-cov, c8, nyc) and `coverage-path` points at
@@ -291,6 +299,9 @@ jobs:
       - uses: dodi-smart/.github/actions/react-doctor@v1
         with:
           directory: ${{ inputs.react-doctor-directory }}
+          # `error`, not `warning`: a gate on findings nobody agreed to fix
+          # gets bypassed.
+          blocking:  ${{ inputs.react-doctor-blocking && 'error' || 'none' }}
 
   # ---------------------------------------------------------------------------
   # Split shape: light work on the small pool, heavy work on the large one.
@@ -629,7 +640,12 @@ jobs:
   # It needs `checks` and `all`, so a red lint or a bad commit message fails the
   # required context even though `build` runs beside them.
   #
-  # `zavet` and `react-doctor` stay out of `needs` and the loop below on purpose.
+  # `zavet` and `react-doctor` are always in `needs`, but the loop below counts
+  # them only when `zavet-blocking` / `react-doctor-blocking` is on, so an
+  # advisory result can never fail this context. `needs` cannot vary with an
+  # input, so the summary waits for both even when they are advisory. They run
+  # on `light` beside `checks`, usually finish before `test` and `build`, and
+  # are skipped when off.
   #
   # Its name is the required status context (`<caller job> / PR Checks`), so it
   # never changes. It runs no caller code, so it runs on the control pool of a
@@ -637,7 +653,7 @@ jobs:
   # `pick`.
   pr-checks:
     name: PR Checks
-    needs: [pick, checks, test, build, all, coverage]
+    needs: [pick, checks, test, build, all, coverage, zavet, react-doctor]
     if: always()
     runs-on: ${{ fromJSON((github.event.repository.private && !github.event.pull_request.head.repo.fork) && '["self-hosted","Linux","control"]' || '"ubuntu-latest"') }}
     timeout-minutes: 2
@@ -657,11 +673,13 @@ jobs:
           BUILD:         ${{ needs.build.result }}
           ALL:           ${{ needs.all.result }}
           COVERAGE:      ${{ needs.coverage.result }}
+          ZAVET:         ${{ inputs.zavet-blocking && needs.zavet.result || 'skipped' }}
+          REACT_DOCTOR:  ${{ inputs.react-doctor-blocking && needs.react-doctor.result || 'skipped' }}
           DOCS_ONLY:     ${{ needs.pick.outputs.docs_only }}
         run: |
           set -euo pipefail
           failed=""
-          for pair in "pick:$PICK" "checks:$CHECKS" "test:$TEST" "build:$BUILD" "all:$ALL" "coverage:$COVERAGE"; do
+          for pair in "pick:$PICK" "checks:$CHECKS" "test:$TEST" "build:$BUILD" "all:$ALL" "coverage:$COVERAGE" "zavet:$ZAVET" "react-doctor:$REACT_DOCTOR"; do
             name="${pair%%:*}"
             result="${pair#*:}"
             case "$result" in

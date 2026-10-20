@@ -776,17 +776,28 @@ Then delete the caller's `zavet-check` and `react-doctor` jobs, and their
 `paths:` filter if it existed only for React Doctor.
 
 `zavet-dir` sets where the layer lives and `react-doctor-directory` which project to scan. The React Doctor job uses React
-Doctor's defaults, so it stays advisory (`blocking: none`, `scope: changed`). A
-repo that needs to tune scope or version asks for that input on `pr-checks.yml`:
-`react-doctor.yml` is deprecated and removed at v2.
+Doctor's defaults, so it stays advisory (`scope: changed`). A repo that needs to
+tune scope or version asks for that input on `pr-checks.yml`: `react-doctor.yml`
+is deprecated and removed at v2.
 
-**Neither result is part of the `pr-checks` summary.** The `zavet` and
-`react-doctor` jobs are separate status contexts. Turning them on does not make
-`<caller job id> / pr-checks` wait for them or fail on them, so it never becomes
-a required check by accident. A repo that wants zavet required names
-`<caller job id> / Zavet Check` in its ruleset. React Doctor stays advisory: a
-pull request touching no matching file shows a skipped job, and a required
-context that is never created would wait forever.
+**Neither result is part of the `pr-checks` summary unless you ask.** By default
+the `zavet` and `react-doctor` jobs are separate status contexts, and
+`<caller job id> / pr-checks` does not fail on them. A failed `Zavet Check` then
+turns the workflow red while the required context stays green and the PR stays
+mergeable. To make one block the merge, set its input:
+
+```yaml
+      zavet-blocking: true          # a failed Zavet Check fails PR Checks
+      react-doctor-blocking: true   # React Doctor fails on errors, and PR Checks on it
+```
+
+Both default to `false`, because an advisory check that silently starts blocking
+merges is worse than one that reports. `react-doctor-blocking: true` also passes
+`blocking: error` to React Doctor, so an error-severity finding fails the job;
+warnings still report. A pull request touching no matching file shows a skipped
+React Doctor job, which counts as passing. `PR Checks` waits for both jobs even
+when they are advisory, because a job's `needs` cannot depend on an input; they
+run beside `checks` and are skipped when off, so the wait is usually short.
 
 `commitlint` runs the commitlint CLI (`actions/commitlint`, pinned by lockfile)
 as the last step of `checks` (the light runner) or `all`, and it runs even when an

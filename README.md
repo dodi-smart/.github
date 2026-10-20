@@ -840,7 +840,7 @@ run beside `checks` and are skipped when off, so the wait is usually short.
 `commitlint` runs the commitlint CLI (`actions/commitlint`, pinned by lockfile)
 as the last step of `checks` (the light runner) or `all`, and it runs even when an
 earlier phase failed. It reads the pull request's commit messages and its config
-through the API. With no config it lints against the org
+through the API, so a push or dispatch skips it. With no config it lints against the org
 preset, `@dodi-smart/commitlint-config`: config-conventional with the body and
 footer line limits as warnings at 180 and the header limit an error at 180
 (agent-written commits carry long `Why:` lines and session URLs). A repo that has
@@ -920,8 +920,10 @@ branch (it publishes no version tags), and Renovate can still move that pin.
   Mac hosts the transfer is slow (a 473 MB entry took minutes to save and 157 s
   to restore). So `setup-gradle`, `rust-cache` and the Kotlin/Native cache save
   from the default branch only and every other ref restores. A repo whose checks
-  run only on `pull_request` never saves an entry: to keep the cache warm, run
-  the job on the default branch too (a push or a schedule).
+  run only on `pull_request` never saves an entry, so every pull request starts
+  cold. A `push` run on the default branch seeds them: the caller template runs
+  `pr-checks.yml` on every merge there for that reason. The opt-in jobs report
+  without commenting on such a run.
   `RUNNER_PERSISTENT_CACHE` below needs none of that.
 - **`RUNNER_PERSISTENT_CACHE` makes a directory the cache.** When the runner
   exports that variable (its `.env` is exported into every job) as an existing

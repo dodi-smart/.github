@@ -1,0 +1,69 @@
+# The steps after a signed Android release build: attach the APKs to the GitHub
+# Release of the tag, then hand one to Firebase App Distribution with the
+# Release's body as its notes. Thin wrapper; the rules and the reasoning are in
+# distribute.sh, and test.sh runs them against a fake `gh` and `npx`.
+#
+# The caller builds first and checks out the tag, so the glob resolves against
+# the workspace. Nothing here is a secret as an argument: see distribute.sh.
+name: Android distribute
+description: Attach a signed Android build's APKs to a GitHub Release and distribute one through Firebase App Distribution.
+
+inputs:
+  tag:
+    description: 'The release tag the APKs are attached to'
+    required: true
+  apk-glob:
+    description: >-
+      Newline-separated globs for the built APKs, relative to the workspace, `**`
+      allowed. Zero signed matches fails, and an APK whose name contains
+      `unsigned` is ignored. Every match is attached to the release; Firebase
+      takes one, so more than one match fails the distribution after the upload.
+    default: '**/build/outputs/apk/release/*.apk'
+  firebase-app-id:
+    description: 'Firebase app id. Empty attaches the APKs and distributes nothing.'
+    default: ''
+  firebase-groups:
+    description: 'Comma-separated Firebase tester group aliases. Empty uploads the build to nobody.'
+    default: ''
+  firebase-tools-version:
+    description: >-
+      Exact firebase-tools version, run through npx. The caller pins it where
+      Renovate can see it. Required when `firebase-app-id` is set.
+    default: ''
+  credentials-file:
+    description: >-
+      Path to the Firebase service-account JSON, outside the workspace. Handed to
+      firebase-tools as GOOGLE_APPLICATION_CREDENTIALS, never as an argument.
+      Required when `firebase-app-id` is set.
+    default: ''
+  repository:
+    description: 'owner/repo of the release'
+    default: ${{ github.repository }}
+  token:
+    description: 'Token for the release upload and read. Needs contents: write.'
+    default: ${{ github.token }}
+
+outputs:
+  apks:
+    description: 'JSON array of the APK paths that were attached'
+    value: ${{ steps.distribute.outputs.apks }}
+  distributed:
+    description: '"true" when Firebase took the build, "false" otherwise'
+    value: ${{ steps.distribute.outputs.distributed }}
+
+runs:
+  using: composite
+  steps:
+    - id: distribute
+      shell: bash
+      env:
+        TAG:                    ${{ inputs.tag }}
+        APK_GLOB:               ${{ inputs.apk-glob }}
+        FIREBASE_APP_ID:        ${{ inputs.firebase-app-id }}
+        FIREBASE_GROUPS:        ${{ inputs.firebase-groups }}
+        FIREBASE_TOOLS_VERSION: ${{ inputs.firebase-tools-version }}
+        CREDENTIALS_FILE:       ${{ inputs.credentials-file }}
+        REPO:                   ${{ inputs.repository }}
+        GH_TOKEN:               ${{ inputs.token }}
+        ACTION_PATH:            ${{ github.action_path }}
+      run: '"$ACTION_PATH/distribute.sh"'

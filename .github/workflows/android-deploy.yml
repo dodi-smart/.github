@@ -1,0 +1,302 @@
+# Reusable: build a signed Android release for a tag, attach the APKs to its
+# GitHub Release and, when asked, hand the build to Firebase App Distribution.
+#
+# Meant to be chained as a job on the caller's own release job, exactly like
+# supabase-deploy.yml, and not triggered on its own:
+#
+#   deploy:
+#     needs: release
+#     if: ${{ !cancelled() && needs.release.outputs.released == 'true' && github.ref == 'refs/heads/main' && !contains(needs.release.outputs.tag, '-') }}
+#     uses: dodi-smart/.github/.github/workflows/android-deploy.yml@v1
+#     permissions:
+#       contents: write        # the release upload; a called job cannot hold more than its caller
+#     with:
+#       tag: ${{ needs.release.outputs.tag }}
+#       op-keystore:             op://<vault>/<item>/keystore.jks
+#       op-store-password:       op://<vault>/<item>/store-password
+#       op-key-alias:            op://<vault>/<item>/key-alias
+#       op-key-password:         op://<vault>/<item>/key-password
+#       op-firebase-credentials: op://<vault>/<item>/service-account.json
+#       firebase-app-id:         1:000000000000:android:0000000000000000
+#       firebase-groups:         testers
+#     secrets:
+#       OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
+#       GH_APP_CLIENT_ID:         ${{ secrets.GH_APP_CLIENT_ID }}
+#       GH_APP_PRIVATE_KEY:       ${{ secrets.GH_APP_PRIVATE_KEY }}
+#
+# It builds the TAG it is given, never a trigger's SHA, for the reason
+# supabase-deploy.yml gives: a `workflow_run` trigger fires on a release that
+# cut nothing and checks out the commit before the release commit.
+#
+# Where it runs, and why that is not supabase-deploy.yml's answer. That workflow
+# stays on a hosted runner because it holds database credentials and a
+# self-hosted machine is one other jobs also land on between runs. This one
+# holds a signing key and takes the heavy pool of a private repository anyway,
+# because an Android release build needs that pool's memory. A public
+# repository, or a fork, gets a hosted runner. So the secrets are confined
+# instead:
+#   - the build is isolated: its own Gradle home under RUNNER_TEMP and no Gradle
+#     daemon, so it reads no cache a pull request build wrote and no JVM outlives
+#     the job holding the signing passwords;
+#   - the keystore and the Firebase credentials are written to a fresh
+#     directory under RUNNER_TEMP (mode 700) and nowhere else, never into the
+#     workspace;
+#   - the passwords reach Gradle through a gradle.properties in that isolated
+#     Gradle home: never an argument, which any process on the machine can
+#     read, and never an environment variable every child process inherits;
+#   - the last step deletes that directory with `if: always()`, so a failed or
+#     cancelled build removes it too;
+#   - every value 1Password returns is masked in the log.
+#
+# The 1Password action is pinned to a full commit SHA, where every other
+# third-party action in this repo is pinned to a readable tag (see AGENTS.md).
+# A tag can be moved, and that step runs with the service-account token that
+# reads the signing key, so a moved tag would hand the key to whoever moved it.
+name: Android Deploy
+
+on:
+  workflow_call:
+    inputs:
+      # The tag to build and attach the APKs to. The caller passes
+      # needs.release.outputs.tag.
+      tag:
+        type: string
+        required: true
+
+      # 1Password secret references (op://vault/item/field), resolved here with
+      # the service account in OP_SERVICE_ACCOUNT_TOKEN. The references are not
+      # secret; what they point at is.
+      op-keystore:
+        description: "The keystore file"
+        type: string
+        required: true
+      op-store-password:
+        type: string
+        required: true
+      op-key-alias:
+        type: string
+        required: true
+      op-key-password:
+        type: string
+        required: true
+      # Required when firebase-app-id is set.
+      op-firebase-credentials:
+        description: "The Firebase service-account JSON file"
+        type: string
+        default: ""
+
+      # Empty builds, signs and attaches the APKs and distributes nothing.
+      firebase-app-id:
+        type: string
+        default: ""
+      # Comma-separated group aliases. Empty uploads the build to nobody.
+      firebase-groups:
+        type: string
+        default: ""
+
+      # Run as `./gradlew <gradle-task>`, split on spaces, so it can carry more
+      # than one task or a flag. The module and flavour belong to the caller.
+      gradle-task:
+        type: string
+        default: assembleRelease
+      # The built APKs, newline-separated globs relative to the workspace. An
+      # APK named `unsigned` is never uploaded. See actions/android-distribute.
+      apk-glob:
+        type: string
+        default: "**/build/outputs/apk/release/*.apk"
+
+      # Applied to the build, through setup-stack's env file, exactly as in
+      # pr-checks.yml: newline-separated KEY=VALUE, comments and blank lines
+      # skipped. Build tuning and placeholders only, never secrets: the signing
+      # values come from 1Password.
+      env:
+        type: string
+        default: ""
+
+      # Same meaning as in supabase-deploy.yml: the job is bound by the rules of
+      # a GitHub environment configured in the CALLER's repo (reviewers, wait
+      # timers, environment secrets). Empty means no environment.
+      environment:
+        type: string
+        default: ""
+
+      timeout-minutes: { type: number, default: 45 }
+
+    secrets:
+      OP_SERVICE_ACCOUNT_TOKEN:
+        required: true
+      # The release is uploaded with the org App's token when these are set,
+      # and with the job's own token otherwise.
+      GH_APP_CLIENT_ID:   { required: false }
+      GH_APP_PRIVATE_KEY: { required: false }
+
+# Granted on the job, so a job added later starts with nothing.
+permissions: {}
+
+jobs:
+  deploy:
+    # The heavy pool of a private repository, a hosted runner otherwise. The
+    # same text as the other shared jobs with the pool set to `large`, because
+    # `runs-on` cannot read an input or an env. What pick-runner resolves for
+    # weight `heavy`, inlined so there is no second job start.
+    runs-on: ${{ fromJSON((github.event.repository.private && !github.event.pull_request.head.repo.fork) && '["self-hosted","Linux","large"]' || '"ubuntu-latest"') }}
+    permissions:
+      contents: write
+    timeout-minutes: ${{ inputs.timeout-minutes }}
+    environment: ${{ inputs.environment }}
+    env:
+      # The one place firebase-tools is pinned. Exact, because a version this
+      # workflow does not name is one Renovate cannot see; renovate.json has a
+      # manager for this marker and cuts a release for a bump.
+      # renovate: datasource=npm depName=firebase-tools
+      FIREBASE_TOOLS_VERSION: 15.32.1
+    steps:
+      - uses: dodi-smart/.github/actions/runner-report@v1
+        with:
+          selector: '["self-hosted","Linux","large"]'
+
+      # A distribution needs its credentials, and finding that out after a
+      # 20-minute build is the expensive way.
+      - name: Check the inputs
+        env:
+          APP_ID: ${{ inputs.firebase-app-id }}
+          OP_FIREBASE: ${{ inputs.op-firebase-credentials }}
+        run: |
+          if [ -n "$APP_ID" ] && [ -z "$OP_FIREBASE" ]; then
+            echo "::error::firebase-app-id is set, so op-firebase-credentials is required"
+            exit 1
+          fi
+
+      # Empty when the caller has no App; the job's own token is used then.
+      - id: app
+        uses: dodi-smart/.github/actions/app-token@v1
+        with:
+          client-id:   ${{ secrets.GH_APP_CLIENT_ID }}
+          private-key: ${{ secrets.GH_APP_PRIVATE_KEY }}
+          permissions: contents:write
+
+      # Full history and tags: an Android version code is often derived from
+      # `git rev-list --count` or `git describe`, and a shallow clone of the
+      # tag would build a different number than the one the release means.
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.tag }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      # Isolated, unlike pr-checks.yml: a fresh Gradle home, never the one pull
+      # request builds on this pool share. Slower by one dependency download per
+      # release, which is the price of not signing with what a PR build left.
+      - id: setup
+        uses: dodi-smart/.github/actions/setup-stack@v1
+        with:
+          stack:        android
+          isolate:      true
+          cache:        false
+          env:          ${{ inputs.env }}
+
+      # firebase-tools needs Node, which setup-stack does not install for android.
+      - if: inputs.firebase-app-id != ''
+        uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+
+      # Made before anything secret exists, so the cleanup step always has a
+      # path to remove. mktemp takes an explicit template: with none, BSD mktemp
+      # ignores TMPDIR (see AGENTS.md). Mode 700 is mktemp's default.
+      - id: scratch
+        run: |
+          set -euo pipefail
+          dir="$(mktemp -d "${RUNNER_TEMP:?}/android-deploy-secrets.XXXXXX")"
+          echo "dir=$dir" >> "$GITHUB_OUTPUT"
+
+      # Loads the strings as masked step outputs, and installs the `op` CLI on
+      # the PATH when the runner has none, which the next step needs. Pinned to
+      # a commit SHA: see the header. The CLI version is exact too, for the same
+      # reason; Renovate has no datasource for it, so a bump is by hand.
+      - id: strings
+        uses: 1password/load-secrets-action@70062d7a876d3eb6334754fa26efd2fbd90c32f2 # v5.0.1
+        with:
+          version: 2.40.0
+        env:
+          OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
+          STORE_PASSWORD: ${{ inputs.op-store-password }}
+          KEY_ALIAS: ${{ inputs.op-key-alias }}
+          KEY_PASSWORD: ${{ inputs.op-key-password }}
+
+      # Files, which a step output cannot carry. `op read --out-file` writes
+      # them 0600.
+      - id: files
+        env:
+          OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
+          SCRATCH: ${{ steps.scratch.outputs.dir }}
+          OP_KEYSTORE: ${{ inputs.op-keystore }}
+          OP_FIREBASE: ${{ inputs.op-firebase-credentials }}
+          APP_ID: ${{ inputs.firebase-app-id }}
+          STORE_PASSWORD: ${{ steps.strings.outputs.STORE_PASSWORD }}
+          KEY_ALIAS: ${{ steps.strings.outputs.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ steps.strings.outputs.KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          op read --out-file "$SCRATCH/release.keystore" "$OP_KEYSTORE"
+          if [ -n "$APP_ID" ]; then
+            op read --out-file "$SCRATCH/firebase-credentials.json" "$OP_FIREBASE"
+            echo "firebase=$SCRATCH/firebase-credentials.json" >> "$GITHUB_OUTPUT"
+          fi
+          # Android Gradle Plugin's injected signing, as Gradle properties in the
+          # isolated Gradle home setup-stack made under RUNNER_TEMP. Gradle reads
+          # that file itself, so no password is an argument or sits in the
+          # environment of every process the build starts. Appended, because
+          # setup-gradle may have written the file already. A backslash is the
+          # properties escape, so one in a value is doubled.
+          case "${GRADLE_USER_HOME:-}" in
+            "$RUNNER_TEMP"/*) ;;
+            *) echo "::error::GRADLE_USER_HOME is not the isolated one under RUNNER_TEMP"; exit 1 ;;
+          esac
+          prop() { printf '%s=%s\n' "$1" "${2//\\/\\\\}"; }
+          ( umask 077
+            { prop android.injected.signing.store.file "$SCRATCH/release.keystore"
+              prop android.injected.signing.store.password "$STORE_PASSWORD"
+              prop android.injected.signing.key.alias "$KEY_ALIAS"
+              prop android.injected.signing.key.password "$KEY_PASSWORD"
+              echo "org.gradle.daemon=false"
+            } >> "$GRADLE_USER_HOME/gradle.properties" )
+
+      # Signed by the properties the previous step wrote. A build that ignored
+      # them would leave `*-unsigned.apk` behind, which the next step refuses.
+      - name: Build the signed release
+        env:
+          ENV_FILE: ${{ steps.setup.outputs.env-file }}
+          GRADLE_TASK: ${{ inputs.gradle-task }}
+        run: |
+          set -euo pipefail
+          # shellcheck source=/dev/null
+          . "$ENV_FILE"
+          # Unquoted on purpose: the input may hold several tasks or a flag.
+          # shellcheck disable=SC2086
+          ./gradlew $GRADLE_TASK
+
+      - uses: dodi-smart/.github/actions/android-distribute@v1
+        with:
+          tag: ${{ inputs.tag }}
+          apk-glob: ${{ inputs.apk-glob }}
+          firebase-app-id: ${{ inputs.firebase-app-id }}
+          firebase-groups: ${{ inputs.firebase-groups }}
+          firebase-tools-version: ${{ env.FIREBASE_TOOLS_VERSION }}
+          credentials-file: ${{ steps.files.outputs.firebase }}
+          token: ${{ steps.app.outputs.token || github.token }}
+
+      # Always, so a failed or cancelled build removes the keystore and the
+      # credentials too. The runner also empties RUNNER_TEMP before its next
+      # job, which covers a runner that is killed before this step runs.
+      - name: Remove the secrets
+        if: always()
+        env:
+          SCRATCH: ${{ steps.scratch.outputs.dir }}
+        run: |
+          case "$SCRATCH" in
+            "$RUNNER_TEMP"/android-deploy-secrets.*) rm -rf -- "$SCRATCH" ;;
+          esac
+          case "${GRADLE_USER_HOME:-}" in
+            "$RUNNER_TEMP"/*) rm -f -- "$GRADLE_USER_HOME/gradle.properties" ;;
+          esac

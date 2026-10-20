@@ -244,6 +244,78 @@ jobs:
       - name: Deployment wait proves the host's deployment
         run: ./actions/wait-for-deployment/test.sh
 
+      # Which APKs count, what is attached, when Firebase is called, what its notes
+      # say, and that no secret is ever an argument.
+      - name: android-distribute attaches, distributes and keeps secrets off argv
+        run: ./actions/android-distribute/test.sh
+
+      # The deploy holds a signing key on a machine other jobs share, so how it
+      # runs is asserted, not reviewed: the heavy-pool expression, the report
+      # first, nothing granted at the top, no persisted checkout token, every
+      # third-party action on a commit SHA, the cleanup last and unconditional.
+      - name: android-deploy is confined, pinned and cleans up on every outcome
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, re, sys, yaml
+          # No literal dollar-brace in this script: Actions would evaluate it before bash runs.
+          D = '$' + '{{ '
+          # pick-runner.yml holds the light expression; heavy is the same text with the pool set to large.
+          Q = chr(34)
+          EXPR = yaml.safe_load(open('.github/workflows/pick-runner.yml'))['jobs']['pick']['runs-on'].replace(Q + 'light' + Q, Q + 'large' + Q)
+          path = '.github/workflows/android-deploy.yml'
+          src = open(path).read()
+          doc = yaml.safe_load(src)
+          bad = []
+          job = doc['jobs']['deploy']
+          steps = job['steps']
+          if job.get('runs-on') != EXPR:
+              bad.append('runs-on is not the heavy-or-hosted expression, character for character')
+          if steps[0].get('uses') != 'dodi-smart/.github/actions/runner-report@v1':
+              bad.append('the first step is not runner-report')
+          if doc.get('permissions') != {}:
+              bad.append('the workflow has no top-level permissions: {}')
+          if job.get('permissions') != {'contents': 'write'}:
+              bad.append('the job holds more than contents: write')
+          checkouts = [s for s in steps if str(s.get('uses', '')).startswith('actions/checkout@')]
+          if len(checkouts) != 1 or (checkouts[0].get('with') or {}).get('persist-credentials') is not False:
+              bad.append('the checkout does not set persist-credentials: false')
+          cleanup = [s for s in steps if 'rm -rf' in str(s.get('run', ''))]
+          if len(cleanup) != 1 or str(cleanup[0].get('if', '')).strip() not in ('always()', D + 'always() }}'):
+              bad.append('the step that deletes the secrets is not if: always()')
+          elif steps[-1] is not cleanup[0]:
+              bad.append('the cleanup is not the last step, so a later step could leave a secret behind')
+          # Signing goes through gradle.properties in the isolated Gradle home: a -P
+          # argument is readable by every process on the machine, and an env var
+          # reaches every process the build starts.
+          runs = ' '.join(str(s.get('run', '')) + str(s.get('env', '')) for s in steps)
+          if '-Pandroid.injected' in runs or 'ORG_GRADLE_PROJECT_android' in runs:
+              bad.append('signing reaches Gradle as an argument or an environment variable')
+          setup = [s for s in steps if str(s.get('uses', '')).startswith('dodi-smart/.github/actions/setup-stack@')]
+          if len(setup) != 1 or str((setup[0].get('with') or {}).get('isolate')).lower() != 'true':
+              bad.append('setup-stack is not isolated, so the signing build would share a Gradle home with pull request builds')
+          # Third-party actions that see secrets are on a full commit SHA. The first-party
+          # ones (actions/*, dodi-smart/*) stay on this repo's tag convention.
+          sha = re.compile(r'^[\w.-]+/[\w./-]+@[0-9a-f]{40}$')
+          action = yaml.safe_load(open('actions/android-distribute/action.yml'))['runs']['steps']
+          for where, ss in ((path, steps), ('actions/android-distribute/action.yml', action)):
+              for s in ss:
+                  u = str(s.get('uses', ''))
+                  if u and not u.startswith(('actions/', 'dodi-smart/')) and not sha.match(u):
+                      bad.append(where + ': ' + u + ' is third-party and not pinned to a 40-hex commit SHA')
+          # firebase-tools is pinned exact in one place, behind a marker a Renovate manager reads.
+          marker = re.compile(r'# renovate: datasource=npm depName=firebase-tools\n\s+FIREBASE_TOOLS_VERSION: \d+\.\d+\.\d+\n')
+          if src.count('FIREBASE_TOOLS_VERSION:') != 1 or not marker.search(src):
+              bad.append('firebase-tools is not pinned exact, once, behind a renovate marker')
+          managers = [m for m in json.load(open('renovate.json')).get('customManagers', [])
+                      if any('android-deploy' in p for p in m.get('managerFilePatterns', []))]
+          if not managers or not re.search(managers[0]['matchStrings'][0].replace('(?<', '(?P<'), src):
+              bad.append('renovate.json has no manager that reads the firebase-tools marker')
+          if bad:
+              sys.exit('::error::' + '; '.join(bad))
+          print('android-deploy: heavy-or-hosted runner, report first, permissions: {}, no persisted token, SHA-pinned secrets actions, cleanup last and always')
+          PY
+
       # `sticky-comment` is read only in tag mode, which a non-empty `prompt`
       # switches off. The pair costs a full agent run and posts nothing.
       # run-agent refuses it at runtime; this catches it at review time.

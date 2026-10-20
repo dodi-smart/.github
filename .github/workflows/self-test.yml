@@ -714,6 +714,8 @@ jobs:
               # message fails the job on its own step.
               if at != [len(steps) - 1] or '!cancelled()' not in str(steps[-1].get('if', '')):
                   errors.append(name + ' must run actions/commitlint once, as its last step, on !cancelled().')
+              elif 'github.event.pull_request' not in str(steps[-1].get('if', '')):
+                  errors.append(name + ': commitlint must be gated on github.event.pull_request; a push has no PR number.')
               if (jobs[name].get('permissions') or {}).get('pull-requests') != 'read':
                   errors.append(name + ' must hold pull-requests: read, which commitlint lists the commits with.')
           if 'inputs.commitlint' not in str(jobs['checks'].get('if', '')):

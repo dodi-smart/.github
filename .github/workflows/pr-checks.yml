@@ -216,7 +216,7 @@ jobs:
       # Only when some light job will run: the split `checks`, commitlint, zavet,
       # react-doctor or coverage.
       - id: light
-        if: ${{ (!inputs.single-job && steps.docs.outputs.all-matched != 'true') || inputs.commitlint || inputs.zavet || steps.rd.outputs.matched == 'true' || (steps.docs.outputs.all-matched != 'true' && inputs.coverage != 'none') }}
+        if: ${{ (!inputs.single-job && steps.docs.outputs.all-matched != 'true') || (inputs.commitlint && github.event.pull_request) || inputs.zavet || steps.rd.outputs.matched == 'true' || (steps.docs.outputs.all-matched != 'true' && inputs.coverage != 'none') }}
         uses: dodi-smart/.github/actions/pick-runner@v1
         with:
           weight: ${{ inputs.light-weight }}
@@ -281,7 +281,7 @@ jobs:
   # On a docs-only change this runs for commitlint alone, even with `single-job`,
   # so every other step skips on `docs_only`.
   checks:
-    if: ${{ (!inputs.single-job && needs.pick.outputs.docs_only != 'true') || (inputs.commitlint && needs.pick.outputs.docs_only == 'true') }}
+    if: ${{ (!inputs.single-job && needs.pick.outputs.docs_only != 'true') || (inputs.commitlint && github.event.pull_request && needs.pick.outputs.docs_only == 'true') }}
     needs: [pick]
     runs-on: ${{ fromJson(needs.pick.outputs.light) }}
     timeout-minutes: ${{ inputs.timeout-minutes }}
@@ -358,10 +358,11 @@ jobs:
         with:
           fail-on: ${{ inputs.dependency-check-fail-on }}
       # Last, on !cancelled(): a red phase still gets its messages checked. A CLI,
-      # not a Docker action: see actions/commitlint.
+      # not a Docker action: see actions/commitlint. A push or dispatch has no pull
+      # request to list commits from, so it skips.
       - &commitlint
         name: commitlint
-        if: ${{ !cancelled() && inputs.commitlint }}
+        if: ${{ !cancelled() && inputs.commitlint && github.event.pull_request }}
         uses: dodi-smart/.github/actions/commitlint@v1
         with:
           config: ${{ inputs.commitlint-config }}

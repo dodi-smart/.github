@@ -107,14 +107,14 @@ jobs:
       run-id:   ${{ steps.decide.outputs.run-id }}
       runner:   ${{ steps.pick.outputs.runner }}
     steps:
-      - uses: dodi-smart/.github/actions/runner-report@v1
+      - uses: dodi-smart/.github/actions/runner-report@pinned/v1.39.5
         with:
           selector: light
 
       # agent:no-touch first, unconditionally. A workflow_run or status payload
       # carries no labels, so `decide` reads the PR's and the issue's live.
       - id: gate
-        uses: dodi-smart/.github/actions/agent-gate@v1
+        uses: dodi-smart/.github/actions/agent-gate@pinned/v1.39.5
         with:
           labels:        ${{ toJson(github.event.pull_request.labels.*.name) }}
           number:        ${{ github.event.pull_request.number || github.event.workflow_run.pull_requests[0].number }}
@@ -130,7 +130,7 @@ jobs:
       # A sweep decides nothing about one PR: it lists the conflicted ones below.
       - id: decide
         if: steps.gate.outputs.proceed == 'true' && !contains(fromJSON('["schedule","workflow_dispatch"]'), github.event_name)
-        uses: dodi-smart/.github/actions/factory@v1
+        uses: dodi-smart/.github/actions/factory@pinned/v1.39.5
         with:
           command:    decide
           pr:         ${{ github.event.pull_request.number || github.event.workflow_run.pull_requests[0].number }}
@@ -152,7 +152,7 @@ jobs:
 
       - id: pick
         if: steps.gate.outputs.proceed == 'true' && (steps.route.outputs.action == 'fix-ci' || steps.route.outputs.action == 'fix-review')
-        uses: dodi-smart/.github/actions/pick-runner@v1
+        uses: dodi-smart/.github/actions/pick-runner@pinned/v1.39.5
         with:
           weight:             ${{ inputs.runner-weight }}
           labels:             ${{ inputs.runner-labels }}
@@ -165,7 +165,7 @@ jobs:
       # the App pinned to the head it read.
       - id: land
         if: steps.route.outputs.action == 'land'
-        uses: dodi-smart/.github/actions/merge-gate@v1
+        uses: dodi-smart/.github/actions/merge-gate@pinned/v1.39.5
         with:
           policy:      factory
           number:      ${{ steps.decide.outputs.number }}
@@ -179,7 +179,7 @@ jobs:
       # caller's schedule came round. A listing only; `relay-dirty` acts on it.
       - id: sweep
         if: steps.gate.outputs.proceed == 'true' && (contains(fromJSON('["schedule","workflow_dispatch"]'), github.event_name) || steps.land.outputs.merged == 'true')
-        uses: dodi-smart/.github/actions/factory@v1
+        uses: dodi-smart/.github/actions/factory@pinned/v1.39.5
         with:
           command: sweep
 
@@ -188,7 +188,7 @@ jobs:
       # write as well as pull-requests write.
       - id: app-token
         if: contains(fromJSON('["ready","review","land","handoff","give-up","relay"]'), steps.route.outputs.action) || steps.sweep.outputs.dirty != ''
-        uses: dodi-smart/.github/actions/app-token@v1
+        uses: dodi-smart/.github/actions/app-token@pinned/v1.39.5
         with:
           client-id:   ${{ secrets.GH_APP_CLIENT_ID }}
           private-key: ${{ secrets.GH_APP_PRIVATE_KEY }}
@@ -275,7 +275,7 @@ jobs:
       REPO:     ${{ github.repository }}
       PR:       ${{ needs.gate.outputs.number }}
     steps:
-      - uses: dodi-smart/.github/actions/runner-report@v1
+      - uses: dodi-smart/.github/actions/runner-report@pinned/v1.39.5
         with:
           selector: light
 
@@ -313,7 +313,7 @@ jobs:
       # may not hand-edit either.
       - id: holdout
         if: steps.merge.outputs.refused == ''
-        uses: dodi-smart/.github/actions/factory@v1
+        uses: dodi-smart/.github/actions/factory@pinned/v1.39.5
         with:
           command:  holdout
           base-sha: ${{ steps.merge.outputs.base-sha }}
@@ -322,7 +322,7 @@ jobs:
       # Only this step pushes, with the fix job's identity and checks.
       - id: push
         if: steps.merge.outputs.refused == ''
-        uses: dodi-smart/.github/actions/push-round@v1
+        uses: dodi-smart/.github/actions/push-round@pinned/v1.39.5
         with:
           merge:        'true'
           base-sha:     ${{ steps.merge.outputs.base-sha }}
@@ -372,7 +372,7 @@ jobs:
       REPO:     ${{ github.repository }}
       PR:       ${{ needs.gate.outputs.number }}
     steps:
-      - uses: dodi-smart/.github/actions/runner-report@v1
+      - uses: dodi-smart/.github/actions/runner-report@pinned/v1.39.5
         with:
           selector: ${{ needs.gate.outputs.runner }}
 
@@ -413,7 +413,7 @@ jobs:
       # the status, the App after a round. The gate has already tied the event
       # to an agent:iterate PR on its current head.
       - id: agent
-        uses: dodi-smart/.github/actions/run-agent@v1
+        uses: dodi-smart/.github/actions/run-agent@pinned/v1.39.5
         with:
           oauth-token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           # actions/pick-model: a first CI fix is usually mechanical, lint
@@ -465,7 +465,7 @@ jobs:
       # The holdout list as round 0 wrote it, as push-round's refuse-paths.
       - id: holdout
         if: ${{ !cancelled() && steps.agent.outcome != 'skipped' }}
-        uses: dodi-smart/.github/actions/factory@v1
+        uses: dodi-smart/.github/actions/factory@pinned/v1.39.5
         with:
           command:  holdout
           base-sha: ${{ steps.facts.outputs.base-sha }}
@@ -476,7 +476,7 @@ jobs:
       # mints the App token itself, after its checks.
       - id: push
         if: ${{ !cancelled() && steps.agent.outcome != 'skipped' }}
-        uses: dodi-smart/.github/actions/push-round@v1
+        uses: dodi-smart/.github/actions/push-round@pinned/v1.39.5
         with:
           base-sha:     ${{ steps.facts.outputs.base-sha }}
           head-ref:     ${{ needs.gate.outputs.head-ref }}

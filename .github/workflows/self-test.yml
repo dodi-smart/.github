@@ -622,35 +622,53 @@ jobs:
           print('pr-checks.yml has one picker job (%s) and an always-on pr-checks summary job' % pickers[0])
           "
 
-      # zavet and react-doctor must never join the required context, and each
-      # standalone workflow and its pr-checks job must run one shared action.
-      - name: pr-checks keeps zavet and react-doctor out of the summary
+      # zavet and react-doctor join the required context only when their
+      # `*-blocking` input is on, and each standalone workflow and its pr-checks
+      # job must run one shared action. `needs` cannot vary with an input, so the
+      # summary needs both always and its env decides: a non-blocking result is
+      # read as `skipped`, which the loop never fails on.
+      - name: pr-checks counts zavet and react-doctor only when blocking
         run: |
           set -euo pipefail
           python3 -c "
           import sys, yaml
-          load = lambda p: yaml.safe_load(open(p))['jobs']
-          jobs = load('.github/workflows/pr-checks.yml')
+          load = lambda p: yaml.safe_load(open(p))
+          doc = load('.github/workflows/pr-checks.yml')
+          jobs = doc['jobs']
+          inputs = doc[True]['workflow_call']['inputs']
           uses = lambda job: str([s.get('uses', '') for s in job['steps']])
+          S = chr(39)
           errors = []
           summary = jobs['pr-checks']
-          loop = ' '.join(str(s.get('run', '')) for s in summary['steps'])
+          step = [s for s in summary['steps'] if s.get('name') == 'Summarize'][0]
           for j in ('zavet', 'react-doctor'):
-              if j in summary['needs'] or ('\"' + j + ':') in loop:
-                  errors.append('the pr-checks summary must not need or loop over ' + j + '.')
+              inp = inputs.get(j + '-blocking')
+              if not inp or inp.get('type') != 'boolean' or inp.get('default') is not False:
+                  errors.append(j + '-blocking must be a boolean input defaulting to false, or an advisory check silently starts blocking merges.')
+              if j not in summary['needs']:
+                  errors.append('the pr-checks summary must need ' + j + ', or a blocking ' + j + ' cannot fail it.')
+              var = j.upper().replace('-', '_')
+              want = '$' + '{{ inputs.' + j + '-blocking && needs.' + j + '.result || ' + S + 'skipped' + S + ' }}'
+              if step['env'].get(var) != want:
+                  errors.append('the Summarize env ' + var + ' must be ' + want + ', so a non-blocking result can never fail the context, not ' + repr(step['env'].get(var)) + '.')
+              if ('\"' + j + ':\$' + var + '\"') not in step['run']:
+                  errors.append('the Summarize loop must name ' + j + ':' + var + '.')
+          rd = [s for s in jobs['react-doctor']['steps'] if 'actions/react-doctor@' in str(s.get('uses', ''))]
+          if not rd or 'inputs.react-doctor-blocking' not in str(rd[0].get('with', {}).get('blocking', '')):
+              errors.append('the react-doctor step must pass a blocking that reads inputs.react-doctor-blocking.')
           for job, action, wf, wfjob in (
               ('zavet', 'actions/zavet-check@', 'zavet-check.yml', 'check'),
               ('react-doctor', 'actions/react-doctor@', 'react-doctor.yml', 'doctor')):
               if action not in uses(jobs[job]):
                   errors.append('pr-checks ' + job + ' must use ' + action)
-              if action not in uses(load('.github/workflows/' + wf)[wfjob]):
+              if action not in uses(load('.github/workflows/' + wf)['jobs'][wfjob]):
                   errors.append(wf + ' must use ' + action)
           pickers = [n for n, j in jobs.items() if 'pick-runner' in uses(j)]
           if len(pickers) != 1:
               errors.append('exactly one pick-runner job is allowed, found ' + repr(pickers))
           if errors:
               sys.exit('::error::' + ' '.join(errors))
-          print('zavet and react-doctor stay out of the summary and share their actions')
+          print('zavet and react-doctor reach the summary only when blocking, and share their actions')
           "
 
       # react-doctor.yml has no callers since pr-checks runs the same action, and

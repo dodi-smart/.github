@@ -1,3 +1,9 @@
+## [1.38.0](https://github.com/dodi-smart/.github/compare/v1.37.0...v1.38.0) (2026-10-20)
+
+### ✨ Features
+
+* **release:** run pr-checks end to end against each pinned release and hold auto-promotion on its result ([1da52a0](https://github.com/dodi-smart/.github/commit/1da52a03aca6cda7569086415d224635b1b53063)), references [#103](https://github.com/dodi-smart/.github/issues/103)
+
 ## [1.37.0](https://github.com/dodi-smart/.github/compare/v1.36.0...v1.37.0) (2026-10-20)
 
 ### ✨ Features

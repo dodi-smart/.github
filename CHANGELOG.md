@@ -1,3 +1,14 @@
+## [1.32.0](https://github.com/dodi-smart/.github/compare/v1.31.0...v1.32.0) (2026-10-20)
+
+### ✨ Features
+
+* **setup-stack:** expose cache-enabled and move the per-stack command table into defaults.sh ([6031a25](https://github.com/dodi-smart/.github/commit/6031a25aa9598cd4498a9fef1d351372b5f6e8f2)), references [#102](https://github.com/dodi-smart/.github/issues/102)
+* **supabase-checks:** lint changed migrations with squawk ([ad2680a](https://github.com/dodi-smart/.github/commit/ad2680a7e7c6b2e604c593e67be48532eaabf0b6)), references [#110](https://github.com/dodi-smart/.github/issues/110)
+
+### ⚡ Performance Improvements
+
+* **setup-stack:** keep the Next.js build cache, through a runner directory or the Actions cache ([9a4f32d](https://github.com/dodi-smart/.github/commit/9a4f32dd4bc2143857c5321d6afdcf891d205ed9)), closes [#61](https://github.com/dodi-smart/.github/issues/61)
+
 ## [1.31.0](https://github.com/dodi-smart/.github/compare/v1.30.5...v1.31.0) (2026-10-20)
 
 ### ✨ Features

@@ -20,7 +20,7 @@ ok()  { printf '  ok   %s\n' "$1"; pass=$((pass + 1)); }
 bad() { printf '  FAIL %s (%s)\n' "$1" "$2"; fail=$((fail + 1)); }
 
 BIN="$WORK/bin"; FIX="$WORK/fix"; REPO_DIR="$WORK/repo"; BASE="$WORK/base"
-OUTS="$WORK/out"; SUMM="$WORK/summary.md"; LOG="$WORK/log"
+SUMM="$WORK/summary.md"; LOG="$WORK/log"
 SCANLOG="$WORK/scanned.log"; GHLOG="$WORK/gh.log"
 mkdir -p "$BIN"
 
@@ -76,17 +76,21 @@ fx() {
 }
 
 # run VAR=value ...: runs the script in the fake repo with the given inputs.
-# Sets rc, and leaves the outputs, summary and log in files.
+# Sets rc, and leaves the summary and log in files. The verdict is the log's
+# `dependency-check: result=... new=... existing=... errors=...` line.
 run() {
-  : > "$OUTS"; : > "$SUMM"; : > "$SCANLOG"; : > "$GHLOG"
+  : > "$SUMM"; : > "$SCANLOG"; : > "$GHLOG"
   ( cd "$REPO_DIR" && env -i PATH="$BIN:$PATH" HOME="$WORK" TMPDIR="$WORK" \
-      GITHUB_OUTPUT="$OUTS" GITHUB_STEP_SUMMARY="$SUMM" OSV_SCANNER="$BIN/osv-scanner" \
+      GITHUB_STEP_SUMMARY="$SUMM" OSV_SCANNER="$BIN/osv-scanner" \
       FIX="$FIX" BASEDIR="$BASE" SCANLOG="$SCANLOG" GHLOG="$GHLOG" \
-      REPO=o/r NUMBER=7 BASE_SHA=basesha GH_TOKEN=t FAIL_ON=none \
+      REPO=o/r NUMBER=7 BASE_SHA=basesha GH_TOKEN=t FAIL_ON=none LIST_COMPLETE=true \
       "$@" "$SCRIPT" > "$LOG" 2>&1 )
   rc=$?
 }
-out() { grep "^$1=" "$OUTS" | head -1 | cut -d= -f2-; }
+out() { # result | new | existing | errors, from the verdict line
+  sed -n 's/^dependency-check: result=\([^ ]*\) new=\([^ ]*\) existing=\([^ ]*\) errors=\(.*\)$/\1 \2 \3 \4/p' "$LOG" \
+    | awk -v k="$1" 'BEGIN { split("result new existing errors", n, " ") } { for (i = 1; i <= 4; i++) if (n[i] == k) print $i }' | head -1
+}
 expect() { # name, output key, want
   local got; got="$(out "$2")"
   if [ "$got" = "$3" ]; then ok "$1"; else bad "$1" "$2 is '$got', wanted '$3'"; fi
@@ -120,7 +124,7 @@ run FILES=$'README.md\nsrc/a.ts' OSV_SCANNER=
 expect_rc "no lockfile changed passes" 0
 expect "no lockfile changed is skipped" result skipped
 expect_in "the summary says no lockfile changed" "$SUMM" "no lockfile changed"
-expect "nothing counted when skipped" new-count 0
+expect "nothing counted when skipped" new 0
 
 fresh; put $LOCK head-x
 run AUTHOR_KIND=dependency FILES=$LOCK FAIL_ON=critical OSV_SCANNER=
@@ -138,7 +142,7 @@ expect_in "and says why" "$SUMM" "not a pull request"
 fresh; put $LOCK head-x; fx head-x 0
 run FILES=$'vendor/xbun.lock\ndocs/requirements.md'
 expect "changed paths that are no lockfile are skipped" result skipped
-expect "and nothing is scanned" new-count 0
+expect "and nothing is scanned" new 0
 expect_scans "no scanner run for it" 0
 
 fresh; put $LOCK head-x; fx head-x 0
@@ -166,20 +170,25 @@ expect_not_in "go.sum is not scanned" "$SCANLOG" "go.sum"
 expect_not_in "Podfile.lock is not scanned" "$SCANLOG" "Podfile.lock"
 expect_not_in "package.json is not scanned" "$SCANLOG" "package.json"
 
-# changed-files answers matched=true with an empty list when it could not read
-# one, and a cut-off list at its cap. Neither says no lockfile changed.
+# changed-files says `complete` is not true when it could not read the list (an
+# empty one) or when it stopped at its cap. Neither says no lockfile changed.
 fresh; put $LOCK head-x; put README.md hello; fx head-x 0
-run FILES=
+run FILES= LIST_COMPLETE=false
 expect "an unread list scans the checkout" result clean
 expect_in "and says so" "$LOG" "scanning every supported lockfile in the checkout"
 expect_scans "only the lockfile is scanned" 1
 mkdir -p "$REPO_DIR/node_modules/x"; put node_modules/x/package-lock.json head-x
-run FILES=
+run FILES= LIST_COMPLETE=false
 expect_scans "node_modules is left alone" 1
 big="$(seq 1 3000 | sed 's|^|src/f|')"
-run FILES="$big"
+run FILES="$big" LIST_COMPLETE=false
 expect_in "a list at the 3000-file cap scans the checkout" "$LOG" "scanning every supported lockfile in the checkout"
 expect_scans "the lockfile past the cut is found" 1
+run FILES= LIST_COMPLETE=
+expect_scans "a missing complete flag is a doubt too" 1
+run FILES="$big"
+expect_not_in "a list changed-files read in full is trusted" "$LOG" "scanning every supported lockfile in the checkout"
+expect_scans "so the lockfile it does not name is not scanned" 0
 
 fresh; put $LOCK head-x; fx head-x 0
 run LOCKFILES="$LOCK" FILES=README.md
@@ -203,8 +212,8 @@ fx head-a 1 "$LODASH_HIGH"; fx base-a 1 "$LODASH_HIGH"
 run LOCKFILES=$LOCK FAIL_ON=low
 expect_rc "a finding present at base does not fail fail-on low" 0
 expect "and the result is clean" result clean
-expect "no new finding" new-count 0
-expect "one existing" existing-count 1
+expect "no new finding" new 0
+expect "one existing" existing 1
 expect_in "the summary counts it as already present" "$SUMM" "1 already present at the base commit"
 
 # The version is not part of the identity: the same advisory on a newer release
@@ -212,7 +221,7 @@ expect_in "the summary counts it as already present" "$SUMM" "1 already present 
 fresh; put $LOCK head-a; base $LOCK base-a
 fx head-a 1 "$(pkg lodash 4.17.20 npm GHSA-35jh-r3h4-6jhm CVE-2021-23337 7.2)"; fx base-a 1 "$LODASH_HIGH"
 run LOCKFILES=$LOCK FAIL_ON=low
-expect "a bumped version of the same advisory is existing" existing-count 1
+expect "a bumped version of the same advisory is existing" existing 1
 expect_rc "and does not fail" 0
 
 # Matched by any shared id or alias, since two scans may group them differently.
@@ -220,15 +229,15 @@ fresh; put $LOCK head-a; base $LOCK base-a
 fx head-a 1 "$(pkg lodash 4.17.15 npm GHSA-35jh-r3h4-6jhm CVE-2021-23337 7.2)"
 fx base-a 1 "$(pkg lodash 4.17.15 npm OSV-2021-1 CVE-2021-23337 7.2)"
 run LOCKFILES=$LOCK FAIL_ON=low
-expect "a shared alias makes it existing" existing-count 1
+expect "a shared alias makes it existing" existing 1
 
 # Same advisory on another package, or another advisory on the same package, is new.
 fresh; put $LOCK head-a; base $LOCK base-a
 fx head-a 1 "$LODASH_HIGH" "$(pkg minimist 1.2.0 npm GHSA-xvch-5gv4-984h CVE-2021-44906 9.8)"
 fx base-a 1 "$LODASH_HIGH"
 run LOCKFILES=$LOCK FAIL_ON=critical
-expect "an advisory on another package is new" new-count 1
-expect "the old one stays old" existing-count 1
+expect "an advisory on another package is new" new 1
+expect "the old one stays old" existing 1
 expect_rc "a new critical fails fail-on critical" 1
 expect "the result is failed" result failed
 expect_in "the error says how many" "$LOG" "1 new vulnerabilities at critical or above"
@@ -239,7 +248,7 @@ fx head-a 1 "$LODASH_HIGH"; fx base-a 0
 run LOCKFILES=$LOCK FAIL_ON=high
 expect_rc "a new high fails fail-on high" 1
 expect "failed" result failed
-expect "one new" new-count 1
+expect "one new" new 1
 run LOCKFILES=$LOCK FAIL_ON=critical
 expect_rc "a new high passes fail-on critical" 0
 expect "and is reported as findings" result findings
@@ -256,8 +265,8 @@ expect_in "base was read for the lockfile" "$GHLOG" "package-lock.json"
 # A lockfile the base does not have: everything in it is new.
 fresh; put svc/$LOCK head-a; fx head-a 1 "$LODASH_HIGH" "$(pkg minimist 1.2.0 npm GHSA-xvch-5gv4-984h CVE-2021-44906 9.8)"
 run LOCKFILES=svc/$LOCK FAIL_ON=high
-expect "a lockfile new in the PR has every finding new" new-count 2
-expect "and none existing" existing-count 0
+expect "a lockfile new in the PR has every finding new" new 2
+expect "and none existing" existing 0
 expect_rc "and fails" 1
 expect_in "the log says the base lacks it" "$LOG" "not in the base commit"
 
@@ -265,7 +274,7 @@ expect_in "the log says the base lacks it" "$LOG" "not in the base commit"
 fresh; put "my app/$LOCK" head-a; base "my app/$LOCK" base-a
 fx head-a 1 "$LODASH_HIGH"; fx base-a 1 "$LODASH_HIGH"
 run LOCKFILES="my app/$LOCK" FAIL_ON=low
-expect "a path with a space is read at base" existing-count 1
+expect "a path with a space is read at base" existing 1
 expect_in "the request encodes it" "$GHLOG" "my%20app/package-lock.json"
 
 # Nothing found at head: base is never read.
@@ -321,14 +330,14 @@ run LOCKFILES=$LOCK FAIL_ON=none
 expect_rc "a scanner error passes under fail-on none" 0
 expect "and is not called clean" result skipped
 expect "and is counted as an error" errors 1
-expect "and not as a finding" new-count 0
+expect "and not as a finding" new 0
 expect_in "with a warning" "$LOG" "::warning::dependency-check could not check package-lock.json"
 expect_in "the summary lists it apart" "$SUMM" "**Could not check 1:**"
 run LOCKFILES=$LOCK FAIL_ON=high
 expect_rc "a scanner error fails a threshold" 1
 expect "the result is failed" result failed
 expect "still counted as an error" errors 1
-expect "and still not a finding" new-count 0
+expect "and still not a finding" new 0
 expect_in "the error says the check did not run" "$LOG" "this is not a finding"
 
 # Unparsable output, or a code that is neither 0, 1 nor 128, is an error too.
@@ -351,7 +360,7 @@ fresh; put $LOCK head-a; fx head-a 1 "$LODASH_HIGH"; base $LOCK base-a; : > "$BA
 run LOCKFILES=$LOCK FAIL_ON=high
 expect_rc "an unreadable base fails a threshold" 1
 expect "as an error" errors 1
-expect "not as a finding" new-count 0
+expect "not as a finding" new 0
 run LOCKFILES=$LOCK FAIL_ON=none
 expect_rc "and passes under none" 0
 fresh; put $LOCK head-a; base $LOCK base-a; fx head-a 1 "$LODASH_HIGH"; fx base-a 127
@@ -365,7 +374,7 @@ run LOCKFILES=$'a/package-lock.json\nb/package-lock.json' FAIL_ON=none
 expect_rc "an error and a finding pass under none" 0
 expect "the finding is reported" result findings
 expect "the error is counted" errors 1
-expect "the finding is counted" new-count 1
+expect "the finding is counted" new 1
 
 # The base commit is needed to compare anything.
 fresh; put $LOCK head-a; fx head-a 1 "$LODASH_HIGH"
@@ -378,6 +387,17 @@ expect "and is not called clean" result skipped
 
 run LOCKFILES=$LOCK FAIL_ON=urgent
 expect_rc "an unknown fail-on is refused" 2
+
+# ---- the wrapper -------------------------------------------------------------
+
+ACTION="$HERE/action.yml"
+GATE="$ROOT/actions/agent-gate/gate.sh"
+check "the author is classified by agent-gate's gate.sh" "no gate.sh kind call" grep -qF 'agent-gate/gate.sh" kind "$AUTHOR"' "$ACTION"
+check "and gate.sh tells a dependency bot from a human" "$("$GATE" kind 'renovate[bot]') $("$GATE" kind alice)" \
+  [ "$("$GATE" kind 'renovate[bot]')" = dependency ] && [ "$("$GATE" kind alice)" = human ]
+check "changed-files is not asked about a dependency PR" "no kind guard" grep -qF "steps.kind.outputs.kind != 'dependency'" "$ACTION"
+check "changed-files' complete output reaches the script" "no LIST_COMPLETE" grep -qF 'LIST_COMPLETE: ${{ steps.files.outputs.complete }}' "$ACTION"
+check "the action has no outputs" "an outputs: block is back" [ -z "$(grep -n '^outputs:' "$ACTION")" ]
 
 # ---- install -----------------------------------------------------------------
 

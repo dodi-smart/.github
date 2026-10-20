@@ -793,7 +793,7 @@ jobs:
       # dependency-check is an opt-in step of `checks` and `all`, not a job: a job
       # would pay a runner start for seconds of work. It runs after the phases on
       # !cancelled(), on the checkout (a docs-only change skips it), before
-      # commitlint, and reads author-kind from the gate in the same job. Never
+      # commitlint, and classifies the author itself. Never
       # dependency-review-action, which needs GHAS and `security-events`.
       - name: pr-checks runs dependency-check as an opt-in step of checks and all
         run: |
@@ -834,11 +834,8 @@ jobs:
                   errors.append(name + ': dependency-check must come after the phases and right before commitlint.')
               if not any(st.get('id') == 'checkout' and 'actions/checkout@' in str(st.get('uses', '')) for st in steps):
                   errors.append(name + ': the checkout step must have id: checkout, which dependency-check is conditioned on.')
-              gate = [i for i, st in enumerate(steps) if st.get('id') == 'author' and 'actions/agent-gate@' in str(st.get('uses', ''))]
-              if len(gate) != 1 or gate[0] > at[0]:
-                  errors.append(name + ': author-kind must come from an actions/agent-gate step with id: author, earlier in the same job.')
-              if 'steps.author.outputs.author-kind' not in str((step.get('with') or {}).get('author-kind', '')):
-                  errors.append(name + ': dependency-check must be given steps.author.outputs.author-kind.')
+              if any('actions/agent-gate@' in str(st.get('uses', '')) for st in steps) or 'author-kind' in (step.get('with') or {}):
+                  errors.append(name + ': dependency-check classifies the author itself, so the job needs no agent-gate step.')
               if 'inputs.dependency-check-fail-on' not in str((step.get('with') or {}).get('fail-on', '')):
                   errors.append(name + ': dependency-check must pass inputs.dependency-check-fail-on as fail-on.')
           if errors:
@@ -916,8 +913,6 @@ jobs:
           python3 -c "
           import sys, yaml
           errors = []
-          # Built in pieces: a run script never holds an expression of its own.
-          OFF = '\$' + '{{ !inputs.hk'
           doc = yaml.safe_load(open('.github/workflows/pr-checks.yml'))
           inp = doc[True]['workflow_call']['inputs'].get('hk')
           if not inp or inp.get('type') != 'boolean' or inp.get('default') is not False:
@@ -949,12 +944,14 @@ jobs:
               inst = [i for i, st in enumerate(steps) if st.get('id') == 'install' and phases(st) and hk_on(st)]
               if not inst or inst[0] > hk[0]:
                   errors.append(name + ' must run install (id: install, hk only) before hk-check.')
-              after = [st for st in steps[hk[0] + 1:] if phases(st) and 'inputs.hk' in str(st.get('if', '')) and '!inputs.hk' not in str(st.get('if', ''))]
-              cond = str(after[0].get('if', '')) if after else ''
-              if len(after) != 1 or '!cancelled()' not in cond or 'steps.install.outcome == \'success\'' not in cond:
-                  errors.append(name + ' must run the phases after hk with !cancelled() and the install outcome, so a red hk does not hide lint and a failed install stops everything.')
-              if not any(str(st.get('if', '')).startswith(OFF) for st in steps if phases(st)):
-                  errors.append(name + ' must skip its ordinary Run phases step when hk is on, or lint runs twice.')
+              # One Run phases step serves both modes: with hk it runs after a red hk
+              # unless the install failed, and it repeats no install.
+              rest = [st for st in steps[hk[0] + 1:] if phases(st)]
+              cond = str(rest[0].get('if', '')) if rest else ''
+              if len(rest) != 1 or not all(t in cond for t in ('success()', 'inputs.hk', '!cancelled()', 'steps.install.outcome == \'success\'')):
+                  errors.append(name + ' must run ONE Run phases step after hk, on success() or (hk, !cancelled() and the install outcome), so a red hk does not hide lint and a failed install stops everything.')
+              if rest and '!inputs.hk' not in str((rest[0].get('with') or {}).get('install', '')):
+                  errors.append(name + ': the Run phases step must pass an empty install when hk is on, or the install runs twice.')
           if any('security-events' in (j.get('permissions') or {}) for j in jobs.values()):
               errors.append('no pr-checks job may hold security-events: a code scanning upload would force that permission on every caller.')
           act = yaml.safe_load(open('actions/hk-check/action.yml'))['runs']['steps']

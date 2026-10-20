@@ -13,7 +13,8 @@ inputs:
   cache-save:
     description: >-
       'true' or 'false': whether this job may write mise's cache. Pass
-      setup-stack's `cache-save` output, which is true on the default branch only.
+      setup-stack's `cache-save` output, which is true on the default branch only
+      and never while caching is off, so it needs no check against `cache`.
     default: 'false'
   artifact-name:
     description: Name of the uploaded SARIF artifact. Unique per workflow run.
@@ -26,7 +27,7 @@ runs:
     - uses: jdx/mise-action@v5
       with:
         cache: ${{ inputs.cache == 'true' }}
-        cache_save: ${{ inputs.cache == 'true' && inputs.cache-save == 'true' }}
+        cache_save: ${{ inputs.cache-save == 'true' }}
 
     - shell: bash
       env:

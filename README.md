@@ -750,6 +750,14 @@ that cgroup see. A footnote under the table says where the figures come from.
 Measuring never changes a phase's exit code, and nothing it reports reaches the
 phase's output or `log-dir` file.
 
+**Right-sizing `heavy-weight`.** In `pr-checks.yml`, `test` and `build` take the
+heavy pool by default. Read their peak-memory column over a week of pull
+requests: when both stay well under a light runner's memory, set
+`heavy-weight: light`. The large runners also carry `light`, so GitHub's queue
+then spreads those jobs over both pools instead of queuing them on the large one.
+Go by the cgroup figure, not by a `/usr/bin/time` one: `time` reports the
+largest single process, so a build that forks many workers reads low.
+
 ### Docs-only changes, and the one context to require
 
 `pick` also decides whether the change is docs-only: every file the PR touches

@@ -79,7 +79,8 @@ check "no bun under [tools] -> latest" "latest none" "$(resolve "$d" auto)"
 # --- action.yml, read once: the resolve and next scripts, setup-bun's no-cache, who saves, and the wiring.
 python3 - "$HERE/action.yml" "$TMP" <<'EOF'
 import sys, yaml
-steps = yaml.safe_load(open(sys.argv[1]))['runs']['steps']
+doc = yaml.safe_load(open(sys.argv[1]))
+steps = doc['runs']['steps']
 for id in ('resolve', 'next'):
     open(f'{sys.argv[2]}/{id}.sh', 'w').write([s for s in steps if s.get('id') == id][0]['run'])
 bun = [s for s in steps if str(s.get('uses', '')).startswith('oven-sh/setup-bun@')][0]
@@ -110,13 +111,14 @@ bad = [m for m, broken in (
     ('rust-cache save-if ignores cache_save', 'cache_save' not in str(rust.get('save-if'))),
 ) if broken]
 open(f'{sys.argv[2]}/saves', 'w').write('; '.join(bad) or 'ok')
-# The wiring: cache-enabled is resolve's cache_enabled, and the per-stack table
+# The wiring: cache-enabled and cache-save are resolve's own outputs, and the per-stack table
 # lives in defaults.sh, not in the step that runs it.
-doc = yaml.safe_load(open(sys.argv[1]))
 dstep = [s for s in steps if s.get('id') == 'defaults'][0]
 bad = [m for m, broken in (
     ('cache-enabled is not exposed', 'cache-enabled' not in doc['outputs']),
     ('cache-enabled is not steps.resolve.outputs.cache_enabled', doc['outputs'].get('cache-enabled', {}).get('value') != '${{ steps.resolve.outputs.cache_enabled }}'),
+    ('cache-save is not exposed', 'cache-save' not in doc['outputs']),
+    ('cache-save is not steps.resolve.outputs.cache_save', doc['outputs'].get('cache-save', {}).get('value') != '${{ steps.resolve.outputs.cache_save }}'),
     ('the defaults step does not run defaults.sh', dstep['run'].strip() != '"$ACTION_PATH/defaults.sh"'),
     ('the defaults step still carries a case table', 'case ' in dstep['run']),
 ) if broken]
@@ -190,7 +192,7 @@ check "defaults: ...and through a relative path"         "$(defaults bun lockfil
 check "defaults: lockfiles.re is read from beside it"    "$(cat "$HERE/lockfiles.re")" "$(defaults bun lockfiles)"
 
 # The wiring in action.yml: the new output, and the table out of the step.
-check "action.yml: cache-enabled and the defaults step"  ok "$(< "$TMP/wiring")"
+check "action.yml: cache-enabled, cache-save and the defaults step" ok "$(< "$TMP/wiring")"
 
 # --- the resolve step: which runners get GitHub cache, setup-bun's included.
 cached() { # environment os arch [isolate] [cache] -> cache_enabled

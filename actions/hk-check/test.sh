@@ -120,5 +120,26 @@ run PATH=/usr/bin:/bin
 DETAIL="got $STATUS"
 check "a runner without hk fails" test "$STATUS" -ne 0
 
+# action.yml: mise writes where `cache-save` says, never by a branch rule of its own.
+wiring="$(python3 - "$HERE/action.yml" <<'EOF'
+import sys, yaml
+doc = yaml.safe_load(open(sys.argv[1]))
+mise = [s for s in doc['runs']['steps'] if str(s.get('uses', '')).startswith('jdx/mise-action@')]
+given = (mise[0].get('with') or {}) if mise else {}
+save = str(given.get('cache_save', ''))
+bad = [m for m, broken in (
+    ('no jdx/mise-action step', not mise),
+    ('no cache-save input', 'cache-save' not in doc.get('inputs', {})),
+    ('cache-save does not default to false', str(doc.get('inputs', {}).get('cache-save', {}).get('default')) != 'false'),
+    ('cache_save does not read inputs.cache-save', 'inputs.cache-save' not in save),
+    ('cache_save does not also need inputs.cache', "inputs.cache == 'true'" not in save),
+    ('cache_save restates the default-branch rule', 'github.ref' in save or 'default_branch' in save),
+) if broken]
+print('; '.join(bad) or 'ok')
+EOF
+)"
+DETAIL="$wiring"
+check "mise saves only where cache-save says, and owns no branch rule" test "$wiring" = ok
+
 printf '%s passed, %s failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

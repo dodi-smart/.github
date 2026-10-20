@@ -156,6 +156,11 @@ outputs:
   cache-enabled:
     description: 'true when this job uses the GitHub Actions cache. See the README, Caches.'
     value: ${{ steps.resolve.outputs.cache_enabled }}
+  cache-save:
+    description: >-
+      'true' when this job may write the GitHub Actions cache: the cache is on
+      and the ref is the default branch. Every other ref restores only.
+    value: ${{ steps.resolve.outputs.cache_save }}
   env-file:
     description: >-
       Path to a shell file exporting the `env` input. Always written, empty when

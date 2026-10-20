@@ -21,6 +21,17 @@
       "datasourceTemplate": "github-releases",
       "extractVersionTemplate": "^v?(?<version>.+)$",
       "autoReplaceStringTemplate": "package://github.com/jdx/hk/releases/download/v{{{newValue}}}/hk@{{{newValue}}}#"
+    },
+    {
+      "description": "The react-doctor version the action and its workflow default to, read from the trailing renovate marker on each default",
+      "customType": "regex",
+      "managerFilePatterns": [
+        "/^actions/react-doctor/action\\.yml$/",
+        "/^\\.github/workflows/react-doctor\\.yml$/"
+      ],
+      "matchStrings": [
+        "default:\\s*['\"](?<currentValue>\\d+\\.\\d+\\.\\d+)['\"][^#\\n]*# renovate: datasource=(?<datasource>\\S+) depName=(?<depName>\\S+)"
+      ]
     }
   ],
   "packageRules": [
@@ -40,6 +51,14 @@
         "aqua:jdx/hk"
       ],
       "groupName": "hk"
+    },
+    {
+      "description": "A react-doctor bump changes what every caller's scan runs, so it must release, unlike the lint tools above. Later rules win, so this overrides ci(self-test) with the chore(deps) this repo releases on",
+      "matchDepNames": [
+        "react-doctor"
+      ],
+      "semanticCommitType": "chore",
+      "semanticCommitScope": "deps"
     }
   ]
 }

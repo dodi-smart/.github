@@ -72,7 +72,7 @@ caller keeps working.
 | `claude-assist.yml` | `@claude <anything else>` | The general assistant |
 | `release.yml` | push to a release branch | semantic-release, single or multi-module |
 | `supabase-deploy.yml` | called after `release.yml` | Pushes a Supabase project's schema and functions for the tag a release just cut |
-| `react-doctor.yml` | pull request, React repos | Static analysis of React/TS source. Advisory by default. `pr-checks.yml` can run it as a job instead (`react-doctor: true`) |
+| `react-doctor.yml` | pull request, React repos | Static analysis of React/TS source. Advisory by default, on a pinned React Doctor version that Renovate bumps here (`version` overrides it). `pr-checks.yml` can run it as a job instead (`react-doctor: true`) |
 | `zavet-check.yml` | pull request | Knowledge-layer checks, for repos that have one. Report-only on dependency and automation bot PRs. `pr-checks.yml` can run it as a job instead (`zavet: true`) |
 | `supabase-checks.yml` | pull request, Supabase repos | Deno edge-function check, generated-types check, pgTAP tests. Hosted only. |
 | `pick-runner.yml` | called by the others | Resolves a runner weight to a `runs-on` selector. Static: no API call, no token |
@@ -298,6 +298,17 @@ request is report-only; `claude[bot]` and people still fail closed. An
 automation that opens PRs with `GITHUB_TOKEN` triggers no pull request workflows
 at all, so nothing here would run on its PR. Open them with the org App token
 (`actions/create-github-app-token`) instead.
+
+**`actions/zavet-check`: lazy install and promotion PRs.** Nothing is installed
+unless a decision or spec declares `checks:` and the CLI is vendored: a repo
+whose decisions and specs carry no checks skips `setup-stack` and the install
+(yq still installs when the CLI is present, because guards read frontmatter
+with it). A declared check with no CLI still fails closed. The
+`integration-branch` input (default `develop`, `""` turns it off) names the
+branch whose promotion PRs, a same-repo head from that branch into another,
+walk no guard commits: they already passed the guard wall on their own pull
+requests and are logged as `skip (promotion)`. A commit pushed straight to that
+branch is not walked on promotion, so it should require pull requests.
 
 ## What you stop maintaining
 

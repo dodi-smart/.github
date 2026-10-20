@@ -15,7 +15,8 @@ inputs:
   directory: { description: 'Project directory to scan', default: '.' }
   scope:     { description: 'changed | files | lines | full', default: 'changed' }
   blocking:  { description: 'Severity that fails the run: none | warning | error', default: 'none' }
-  version:   { description: "react-doctor npm spec; empty keeps the vendor's latest", default: '' }
+  # Pinned: the job holds write scopes, so an unreviewed upstream publish must not run there.
+  version:   { description: 'react-doctor npm spec. The default is a pinned exact version, bumped by Renovate as a reviewed PR; a caller may pass its own spec', default: '0.9.18' } # renovate: datasource=npm depName=react-doctor
 
 runs:
   using: composite

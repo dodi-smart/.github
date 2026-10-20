@@ -189,9 +189,11 @@ jobs:
           print('the agent jobs cannot push, and pr-iterate lands through merge-gate')
           PY
 
-      # Only a bot's `chore(release): … [skip ci]` skips the guard wall; either
-      # half alone is still checked.
-      - name: zavet-check skips only release bots' version bumps
+      # Only a bot's `chore(release): … [skip ci]` skips the guard wall (either
+      # half alone is still checked), only a decision or spec declaring `checks:`
+      # needs an install, and only a same-repo PR from the integration branch is a
+      # promotion.
+      - name: zavet-check release skip, lazy install and promotion rules
         run: ./actions/zavet-check/test.sh
 
       # The wait must never pass on the job's own Deployment, and must count the
@@ -335,6 +337,15 @@ jobs:
               bad.append('zavet-check no longer reads the author from agent-gate')
           if any(s.get('id') == 'mode' for s in zsteps):
               bad.append('zavet-check has its own mode step again')
+          # The install is gated on need.outputs.install and the guards step asks
+          # promotion.sh, or those two costs come back on every PR.
+          for sid in ('setup', 'install'):
+              cond = str(([s for s in zsteps if s.get('id') == sid] or [{}])[0].get('if', ''))
+              if 'steps.need.outputs.install' not in cond:
+                  bad.append('zavet-check %s step no longer depends on steps.need.outputs.install' % sid)
+          guard = [s for s in zsteps if s.get('id') == 'guards']
+          if not guard or 'promotion.sh' not in str(guard[0].get('run', '')):
+              bad.append('zavet-check guards step no longer consults promotion.sh')
           triage = [s for s in wf('issue-triage.yml')['gate']['steps'] if s.get('id') == 'gate'][0]
           events = str((triage.get('with') or {}).get('events', '')).split()
           if not events or any(e.startswith('pull_request') for e in events):
@@ -448,6 +459,40 @@ jobs:
               sys.exit('::error::' + ' '.join(errors))
           print('zavet and react-doctor stay out of the summary and share their actions')
           "
+
+      # Both react-doctor `version` defaults stay one exact version that Renovate
+      # bumps. The manager has to read each, or the pin silently goes stale.
+      - name: react-doctor version is pinned and bumped by Renovate
+        run: |
+          set -euo pipefail
+          python3 - <<'PIN'
+          import json, re, sys
+          files = ('actions/react-doctor/action.yml', '.github/workflows/react-doctor.yml')
+          ren = json.load(open('renovate.json'))
+          managers = [m for m in ren.get('customManagers', []) if m.get('customType') == 'regex']
+          bad, found = [], {}
+          if not any('react-doctor' in r.get('matchDepNames', []) and r.get('semanticCommitType') == 'chore' and r.get('semanticCommitScope') == 'deps' for r in ren.get('packageRules', [])):
+              bad.append('renovate.json has no packageRule typing react-doctor bumps chore(deps), so a bump would not release')
+          # Run each manager's own matchStrings over the file, so one match proves
+          # the default is an exact x.y.z, carries the marker, and is reached.
+          for f in files:
+              text = open(f).read()
+              hits = [re.search(s.replace('(?<', '(?P<'), text)
+                      for m in managers
+                      if any(re.search(p[1:-1], f) for p in m.get('managerFilePatterns', []))
+                      for s in m.get('matchStrings', [])]
+              hit = next((h for h in hits if h), None)
+              if not hit or (hit['datasource'], hit['depName']) != ('npm', 'react-doctor'):
+                  bad.append(f + ' has no exact x.y.z version default with a # renovate: datasource=npm depName=react-doctor marker that a renovate.json customManager reads')
+              else:
+                  found[f] = hit['currentValue']
+          if len(set(found.values())) > 1:
+              bad.append('the two version defaults differ: ' + repr(found))
+          if bad:
+              print('::error::' + '; '.join(bad) + '. See AGENTS.md.')
+              sys.exit(1)
+          print('react-doctor pinned at ' + next(iter(found.values())) + ' in both files, read by a Renovate manager')
+          PIN
 
       # `build` runs beside `checks`, and the summary must still require
       # `checks`, or a red lint stops failing the required context.

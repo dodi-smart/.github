@@ -1,3 +1,9 @@
+## [1.33.0](https://github.com/dodi-smart/.github/compare/v1.32.0...v1.33.0) (2026-10-20)
+
+### ✨ Features
+
+* **android-deploy:** add a reusable signed-APK deploy after release ([54280e0](https://github.com/dodi-smart/.github/commit/54280e0638fa16495585363f7cc757c5ec5e8282)), closes [#116](https://github.com/dodi-smart/.github/issues/116)
+
 ## [1.32.0](https://github.com/dodi-smart/.github/compare/v1.31.0...v1.32.0) (2026-10-20)
 
 ### ✨ Features

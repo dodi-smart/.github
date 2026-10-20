@@ -1,3 +1,14 @@
+## [1.34.0](https://github.com/dodi-smart/.github/compare/v1.33.1...v1.34.0) (2026-10-20)
+
+### ✨ Features
+
+* **dependency-check:** add an osv-scanner action that reports only the vulnerabilities a PR introduces ([47adf34](https://github.com/dodi-smart/.github/commit/47adf343c019edda4064bedfef98278313421dee))
+* **factory:** bring a conflicted agent PR up to date with its base ([f31b465](https://github.com/dodi-smart/.github/commit/f31b4659f173c411ca428f93dde305b8e7c6d822)), closes [#152](https://github.com/dodi-smart/.github/issues/152)
+
+### 🐛 Bug Fixes
+
+* **factory:** give each issue its own holdout list ([1a1cc28](https://github.com/dodi-smart/.github/commit/1a1cc2808ebc1fcdc0ee6ed41e3be68d53cee5d7)), closes [#151](https://github.com/dodi-smart/.github/issues/151)
+
 ## [1.33.1](https://github.com/dodi-smart/.github/compare/v1.33.0...v1.33.1) (2026-10-20)
 
 ### ⚡ Performance Improvements

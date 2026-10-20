@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Tests for envfile.sh, bun-version.sh and the resolve and defaults steps.
+# Tests for envfile.sh, bun-version.sh and the resolve, next and defaults steps.
 #
 # Run: actions/setup-stack/test.sh
 set -uo pipefail
@@ -80,15 +80,18 @@ check "no bun under [tools] -> latest" "latest none" "$(resolve "$d" auto)"
 python3 - "$HERE/action.yml" "$TMP" <<'EOF'
 import sys, yaml
 steps = yaml.safe_load(open(sys.argv[1]))['runs']['steps']
-for id in ('defaults', 'resolve'):
+for id in ('defaults', 'resolve', 'next'):
     open(f'{sys.argv[2]}/{id}.sh', 'w').write([s for s in steps if s.get('id') == id][0]['run'])
 bun = [s for s in steps if str(s.get('uses', '')).startswith('oven-sh/setup-bun@')][0]
 open(f'{sys.argv[2]}/bun-no-cache', 'w').write(str(bun['with'].get('no-cache', '')))
 # Only cache_save decides who writes: ~/.konan restores where it is false and
-# saves (post step, on a miss) where it is true, under one exact key.
+# saves (post step, on a miss) where it is true, under one exact key. The
+# .next/cache pair follows the same gate and is the only one with restore-keys.
 uses = lambda s: str(s.get('uses', ''))
 konan = [s for s in steps if '.konan' in str((s.get('with') or {}).get('path', ''))]
 by = {u: [s for s in konan if uses(s).startswith(u)] for u in ('actions/cache/restore@', 'actions/cache@')}
+nxt = [s for s in steps if 'steps.next.outputs.key' in str((s.get('with') or {}).get('key', ''))]
+nby = {u: [s for s in nxt if uses(s).startswith(u)] for u in ('actions/cache/restore@', 'actions/cache@')}
 gradle = [s for s in steps if uses(s).startswith('gradle/actions/setup-gradle@')][0]['with']
 rust = [s for s in steps if uses(s).startswith('Swatinem/rust-cache@')][0]['with']
 bad = [m for m, broken in (
@@ -97,6 +100,11 @@ bad = [m for m, broken in (
     ('konan steps use different keys', len({s['with'].get('key') for s in konan}) != 1),
     ('restore-only konan step not gated on cache_save != true', "cache_save != 'true'" not in str(by['actions/cache/restore@'][:1])),
     ('saving konan step not gated on cache_save == true', "cache_save == 'true'" not in str(by['actions/cache@'][:1])),
+    ('want one restore-only and one saving .next/cache step', len(nxt) != 2 or any(len(v) != 1 for v in nby.values())),
+    ('.next/cache steps use different keys', len({s['with'].get('key') for s in nxt}) != 1),
+    ('a .next/cache step has no restore-keys', any(not s['with'].get('restore-keys') for s in nxt)),
+    ('restore-only .next/cache step not gated on mode and cache_save != true', any(g not in str(nby['actions/cache/restore@'][:1]) for g in ("steps.next.outputs.mode == 'actions'", "cache_save != 'true'"))),
+    ('saving .next/cache step not gated on mode and cache_save == true', any(g not in str(nby['actions/cache@'][:1]) for g in ("steps.next.outputs.mode == 'actions'", "cache_save == 'true'"))),
     ('an inline actions/cache/save saves before the build', any(uses(s).startswith('actions/cache/save') for s in steps)),
     ('setup-gradle cache-read-only ignores cache_save', 'cache_save' not in str(gradle.get('cache-read-only'))),
     ('rust-cache save-if ignores cache_save', 'cache_save' not in str(rust.get('save-if'))),
@@ -137,7 +145,7 @@ check "lockfiles does not cover a manifest"    no  "$(locked package.json)"
 # --- the resolve step: which runners get GitHub cache, setup-bun's included.
 cached() { # environment os arch [isolate] [cache] -> cache_enabled
   : > "$TMP/resolve.out"
-  env -i PATH="$PATH" STACK=bun ISOLATE="${4:-false}" CACHE="${5:-auto}" RUNNER_ENVIRONMENT="$1" RUNNER_OS="$2" \
+  env -i PATH="$PATH" STACK=bun ISOLATE="${4:-false}" CACHE="${5:-auto}" NEXT_CACHE=auto RUNNER_ENVIRONMENT="$1" RUNNER_OS="$2" \
     RUNNER_ARCH="$3" RUNNER_TEMP="$TMP" GITHUB_ENV=/dev/null GITHUB_OUTPUT="$TMP/resolve.out" \
     bash "$TMP/resolve.sh" >/dev/null 2>&1
   sed -n 's/^cache_enabled=//p' "$TMP/resolve.out"
@@ -154,7 +162,7 @@ check "setup-bun's cache follows the mode"     '${{ steps.resolve.outputs.cache_
 # VAR=VALUE pairs on top of a self-hosted macOS gradle job on a pull request ref.
 res() {
   : > "$TMP/p.env"; : > "$TMP/p.out"
-  env -i PATH="$PATH" STACK=gradle ISOLATE=false CACHE=auto RUNNER_ENVIRONMENT=self-hosted RUNNER_OS=macOS \
+  env -i PATH="$PATH" HOME="$TMP/home" STACK=gradle ISOLATE=false CACHE=auto NEXT_CACHE=auto RUNNER_ENVIRONMENT=self-hosted RUNNER_OS=macOS \
     RUNNER_ARCH=ARM64 RUNNER_TEMP="$TMP" REF=refs/pull/7/merge DEFAULT_BRANCH=main \
     GITHUB_ENV="$TMP/p.env" GITHUB_OUTPUT="$TMP/p.out" "$@" bash "$TMP/resolve.sh" > "$TMP/p.log" 2>&1
 }
@@ -201,6 +209,109 @@ res REF=refs/heads/ DEFAULT_BRANCH=; check "no default branch in the payload nev
 res REF=refs/heads/main RUNNER_OS=Linux RUNNER_ARCH=X64; check "no cache, nothing to save (self-hosted Linux)" false "$(out cache_save)"
 res REF=refs/heads/main RUNNER_PERSISTENT_CACHE="$share"; check "a persistent dir saves nothing to Actions" false "$(out cache_save)"
 check "every cache step's save follows cache_save" ok "$(< "$TMP/saves")"
+
+res NEXT_CACHE=bogus; rc=$?
+check "next-cache: an invalid value fails resolve" 1 "$rc"
+check "next-cache: the error names the input"      1 "$(grep -c '::error::next-cache must be' "$TMP/p.log")"
+for v in auto true false; do res NEXT_CACHE="$v"; check "next-cache: $v is accepted" 0 "$?"; done
+
+# --- cache_dir: the one directory that outlives the job.
+res RUNNER_PERSISTENT_CACHE="$share";   check "cache_dir: the runner's declaration"      "$share" "$(out cache_dir)"
+res RUNNER_PERSISTENT_CACHE="$share" RUNNER_OS=Linux RUNNER_ARCH=X64
+check "cache_dir: a declaration beats the Linux home"                                    "$share" "$(out cache_dir)"
+res RUNNER_OS=Linux RUNNER_ARCH=X64;    check "cache_dir: self-hosted Linux, the home"   "$TMP/home/.cache" "$(out cache_dir)"
+res;                                    check "cache_dir: self-hosted macOS, none"       '' "$(out cache_dir)"
+res RUNNER_ENVIRONMENT=github-hosted RUNNER_OS=Linux RUNNER_ARCH=X64; check "cache_dir: hosted, none" '' "$(out cache_dir)"
+res RUNNER_OS=Linux RUNNER_ARCH=X64 ISOLATE=true; check "cache_dir: isolated, none"      '' "$(out cache_dir)"
+
+# --- the next step: where .next/cache goes. `nrun` runs it in a fixture repo
+# with a cache_dir under a fake HOME and stack bun, unless a pair says otherwise.
+nfx() { rm -rf "${TMP:?}/home"; fx; }
+cdir="$TMP/home/.cache"; home="$cdir/next"
+nrun() { # dir [VAR=VALUE...]
+  local dir="$1"; shift
+  : > "$TMP/n.out"
+  (cd "$dir" && env -i PATH="$PATH" GITHUB_REPOSITORY=acme/web STACK=bun NEXT_CACHE=auto ISOLATED=false \
+    CACHE_ENABLED=false CACHE_DIR="$cdir" RUNNER_OS=Linux RUNNER_ARCH=X64 ACTION_PATH="$HERE" \
+    GITHUB_OUTPUT="$TMP/n.out" "$@" bash "$TMP/next.sh" > "$TMP/n.log" 2>&1)
+}
+nout() { sed -n "s/^$1=//p" "$TMP/n.out"; }
+npaths() { awk '$0 == "paths<<__SETUP_STACK_EOF__" { on = 1; next } $0 == "__SETUP_STACK_EOF__" { on = 0 } on' "$TMP/n.out" | paste -sd, -; }
+link() { readlink "$1/.next/cache" || echo none; }
+
+d="$(nfx)"; touch "$d/next.config.ts"; nrun "$d"
+check "next: auto, root config, a cache_dir: link"            link "$(nout mode)"
+check "next: the link targets <cache_dir>/next/<owner>-<repo>" "$home/acme-web" "$(link "$d")"
+
+d="$(nfx)"; mkdir "$d/cloud"; touch "$d/cloud/next.config.mjs"; nrun "$d"
+check "next: a subdirectory app links its own target"        "$home/acme-web/cloud" "$(link "$d/cloud")"
+check "next: ...and the root gets none"                      none "$(link "$d")"
+
+d="$(nfx)"; touch "$d/next.config.js"; mkdir -p "$d/apps/b/c"; touch "$d/apps/next.config.cjs" "$d/apps/b/c/next.config.mts"; nrun "$d"
+check "next: three apps: root"                               "$home/acme-web" "$(link "$d")"
+check "next: three apps: one level down"                     "$home/acme-web/apps" "$(link "$d/apps")"
+check "next: a config four levels deep is not found"         none "$(link "$d/apps/b/c")"
+
+d="$(nfx)"; mkdir -p "$d/node_modules/pkg" "$d/.git"; touch "$d/node_modules/pkg/next.config.js" "$d/.git/next.config.js"; nrun "$d"
+check "next: configs in node_modules and .git are ignored"   off "$(nout mode)"
+
+for st in rust gradle android flutter xcode none; do
+  d="$(nfx)"; touch "$d/next.config.ts"; nrun "$d" STACK="$st"
+  check "next: auto on stack $st is off"                     off "$(nout mode)"
+done
+d="$(nfx)"; touch "$d/next.config.ts"; nrun "$d" STACK=node
+check "next: auto on stack node is on"                       link "$(nout mode)"
+
+d="$(nfx)"; nrun "$d"
+check "next: auto with no config is off"                     off "$(nout mode)"
+nrun "$d" NEXT_CACHE=true
+check "next: true with no config links the root"             "$home/acme-web" "$(link "$d")"
+d="$(nfx)"; nrun "$d" NEXT_CACHE=true STACK=rust
+check "next: true ignores the stack"                         link "$(nout mode)"
+
+d="$(nfx)"; touch "$d/next.config.ts"; nrun "$d" NEXT_CACHE=false
+check "next: false is off and links nothing"                 "off none" "$(nout mode) $(link "$d")"
+nrun "$d" NEXT_CACHE=true ISOLATED=true CACHE_ENABLED=true
+check "next: isolated is off, true and the cache included"   "off none no" "$(nout mode) $(link "$d") $([ -e "$TMP/home" ] && echo yes || echo no)"
+
+share="$TMP/ci cache"; mkdir -p "$share"
+d="$(nfx)"; touch "$d/next.config.ts"; nrun "$d" CACHE_DIR="$share"
+check "next: a cache_dir with a space"                       "$share/next/acme-web" "$(link "$d")"
+nrun "$d" CACHE_DIR="$share" CACHE_ENABLED=true
+check "next: a cache_dir beats the Actions cache"            link "$(nout mode)"
+
+# The Actions path keys on the lockfiles' index hashes, then the commit's tree.
+d="$(nfx)"; touch "$d/next.config.ts"; mkdir "$d/cloud"; touch "$d/cloud/next.config.js"; echo 1 > "$d/bun.lock"
+git -C "$d" init -q && git -C "$d" add . && git -C "$d" -c user.name=t -c user.email=t@t.test commit -qm one
+nrun "$d" CACHE_DIR= CACHE_ENABLED=true; key1="$(nout key)"; restore1="$(nout restore)"
+check "next: no cache_dir, the Actions cache"                actions "$(nout mode)"
+check "next: ...with every app's path"                       ".next/cache,cloud/.next/cache" "$(npaths)"
+check "next: ...and no link"                                 none "$(link "$d")"
+check "next: the key is the restore prefix plus the tree"    "$restore1$(git -C "$d" rev-parse 'HEAD^{tree}')" "$key1"
+check "next: the prefix names OS and arch"                   yes "$(case "$restore1" in next-Linux-X64-*-) echo yes ;; *) echo no ;; esac)"
+echo 2 > "$d/cloud/page.tsx"; git -C "$d" add . && git -C "$d" -c user.name=t -c user.email=t@t.test commit -qm two
+nrun "$d" CACHE_DIR= CACHE_ENABLED=true
+check "next: a source change keeps the prefix"               "$restore1" "$(nout restore)"
+check "next: ...and changes the key"                         no "$([ "$(nout key)" = "$key1" ] && echo yes || echo no)"
+echo 3 > "$d/bun.lock"; git -C "$d" add . && git -C "$d" -c user.name=t -c user.email=t@t.test commit -qm three
+nrun "$d" CACHE_DIR= CACHE_ENABLED=true
+check "next: a lockfile change moves the prefix"             no "$([ "$(nout restore)" = "$restore1" ] && echo yes || echo no)"
+nrun "$d" CACHE_DIR= CACHE_ENABLED=false
+check "next: no cache_dir and the cache off is off, no key"  "off " "$(nout mode) $(nout key)"
+d="$(nfx)"; touch "$d/next.config.ts"; nrun "$d" CACHE_DIR= CACHE_ENABLED=true
+check "next: outside a git repo it still keys, and passes"   "actions 0" "$(nout mode) $(grep -c '::error' "$TMP/n.log")"
+
+d="$(nfx)"; touch "$d/next.config.ts"; mkdir -p "$d/.next/cache/webpack"; touch "$d/.next/cache/webpack/stale"
+nrun "$d"
+check "next: a real .next/cache is replaced by the link"     "$home/acme-web" "$(link "$d")"
+check "next: ...its stale content is not in the target"      no "$([ -e "$home/acme-web/webpack/stale" ] && echo yes || echo no)"
+touch "$home/acme-web/kept"; nrun "$d"
+check "next: a second run keeps the link and the cache"      "$home/acme-web yes" "$(link "$d") $([ -e "$home/acme-web/kept" ] && echo yes || echo no)"
+check "next: ...without nesting a link inside the target"    no "$([ -e "$home/acme-web/cache" ] && echo yes || echo no)"
+
+d="$(nfx)"; touch "$d/next.config.ts"; mkdir -p "$TMP/home"; : > "$cdir"
+nrun "$d"; rc=$?
+check "next: a target that cannot be made warns, is off, passes" "0 off 1" "$rc $(nout mode) $(grep -c '::warning::could not link' "$TMP/n.log")"
 
 echo "setup-stack: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

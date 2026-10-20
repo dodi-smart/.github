@@ -60,6 +60,19 @@ jobs:
       # lints with the real commitlint (the preset declares no dependency, so only that
       # proves it resolves config-conventional). Without it that section is skipped and
       # nothing fails, which the commitlint step below asserts.
+      # Under `set -o pipefail`, `cmd | head` kills `cmd` with SIGPIPE whenever head exits
+      # first, so `x=$(cmd | head -n 1)` exits the script at random under load. Take the
+      # first line with `sed -n 1p`, which reads all input, or drain the rest with `cat`.
+      - name: No shipped script cuts a pipe short with head
+        run: |
+          set -euo pipefail
+          if hits=$(grep -nE '\|[[:space:]]*\{?[[:space:]]*head([[:space:]]|$)' actions/*/*.sh scripts/*.sh \
+                      | grep -v -e '/test\.sh:' -e '\.test\.sh:' | grep -v 'cat >/dev/null'); then
+            echo "::error::a pipe into head can kill its writer with SIGPIPE under pipefail; use sed -n 1p:"
+            echo "$hits"; exit 1
+          fi
+          echo "no shipped script pipes into head without draining the rest"
+
       - name: Shell tests, four at a time
         env:
           REAL: "1"

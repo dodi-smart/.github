@@ -71,10 +71,10 @@ check() {
              | while read -r c e; do [ "$e" = "$AUTHOR_EMAIL" ] || git show --format= --name-only "$c"; done | sort -u)
     while read -r f; do
       [ -n "$f" ] || continue
-      printf '%s\n' "$kept" | grep -qxF "$f" || continue
+      grep -qxF "$f" <<<"$kept" || continue
       added=$(git diff "${KEEP_RANGE%%..*}" "${KEEP_RANGE##*..}" -- "$f" | sed -n 's/^+//p' | grep -v '^++' || true)
       removed=$(git diff "$BASE_SHA" HEAD -- "$f" | sed -n 's/^-//p' | grep -v '^--' || true)
-      if [ -n "$added" ] && [ -n "$removed" ] && printf '%s\n' "$removed" | grep -qxF -f <(printf '%s\n' "$added"); then
+      if [ -n "$added" ] && [ -n "$removed" ] && grep -qxF -f <(printf '%s\n' "$added") <<<"$removed"; then
         refuse "a commit changed a line another author set, in $f"
       fi
     done <<<"$changed"
@@ -154,7 +154,7 @@ push() {
 }
 
 push_squash() {
-  first=$(git log --reverse --format='%s' "$BASE_SHA..HEAD" | head -n 1)
+  first=$(git log --reverse --format='%s' "$BASE_SHA..HEAD" | sed -n 1p)
   rest=$(git log --reverse --format='- %s' "$BASE_SHA..HEAD" | tail -n +2)
   trailers="$TRAILER_KEY: $(( ROUNDS + 1 ))"
   if [ "${RECORDED:-}" = true ] && [ -n "${RECORD_TRAILER:-}" ]; then

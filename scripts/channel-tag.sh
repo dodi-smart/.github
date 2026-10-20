@@ -78,7 +78,7 @@ tag_commit() { git rev-parse -q --verify "refs/tags/$1^{commit}" 2>/dev/null || 
 # The version a pinned commit was cut for, read from the tag that names it.
 version_at() {
   local t
-  t="$(git tag --points-at "$1" --list 'pinned/v*' | head -n1)"
+  t="$(git tag --points-at "$1" --list 'pinned/v*' | sed -n 1p)"
   [ -n "$t" ] && echo "${t#pinned/v}"
   return 0
 }

@@ -128,7 +128,7 @@ if [ -z "${body//[[:space:]]/}" ]; then
 elif [ "$(printf '%s' "$body" | wc -c)" -gt "$NOTES_MAX" ]; then
   # Cut on bytes; `iconv -c` drops a multibyte character the cut split, and
   # exits non-zero when it did.
-  cut="$(printf '%s' "$body" | head -c "$NOTES_MAX" | { iconv -c -f UTF-8 -t UTF-8 2>/dev/null || true; })"
+  cut="$(printf '%s' "$body" | { head -c "$NOTES_MAX"; cat >/dev/null; } | { iconv -c -f UTF-8 -t UTF-8 2>/dev/null || true; })"
   printf '%s\n\n[Release notes truncated. The full text is on the GitHub release: %s/%s/releases/tag/%s]\n' \
     "$cut" "${GITHUB_SERVER_URL:-https://github.com}" "$REPO" "$TAG" > "$notes"
 else

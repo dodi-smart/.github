@@ -902,7 +902,10 @@ nothing was given, so source them unconditionally), plus the resolved `install`,
 `lint`, `typecheck`, `test`, `build` and `design-lint` commands. `cache-enabled`
 is `true` when the job uses the GitHub Actions cache (hosted, or self-hosted
 macOS without `RUNNER_PERSISTENT_CACHE`) and `false` when isolated, on
-self-hosted Linux, or with a runner cache directory.
+self-hosted Linux, or with a runner cache directory. `cache-save` is `true`
+when the job may also write it: the cache is on and the ref is the default
+branch. A caller with a cache of its own passes `cache-save` on, as
+`pr-checks.yml` does to `actions/hk-check` for mise.
 
 ```sh
 . "$ENV_FILE"          # every command step

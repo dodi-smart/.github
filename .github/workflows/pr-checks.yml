@@ -346,6 +346,7 @@ jobs:
         uses: dodi-smart/.github/actions/hk-check@v1
         with:
           cache:         ${{ steps.setup.outputs.cache-enabled }}
+          cache-save:    ${{ steps.setup.outputs.cache-save }}
           artifact-name: hk-sarif-${{ needs.pick.outputs.key }}
       - name: Run phases
         if: ${{ !inputs.hk && needs.pick.outputs.docs_only != 'true' }}

@@ -947,6 +947,8 @@ jobs:
               given = step.get('with') or {}
               if 'steps.setup.outputs.cache-enabled' not in str(given.get('cache', '')):
                   errors.append(name + ': hk-check must take its cache from setup-stack cache-enabled, or mise caches on a self-hosted Linux runner whose volume is the cache.')
+              if 'steps.setup.outputs.cache-save' not in str(given.get('cache-save', '')):
+                  errors.append(name + ': hk-check must take cache-save from setup-stack, the one place the default-branch save rule lives.')
               if 'needs.pick.outputs.key' not in str(given.get('artifact-name', '')):
                   errors.append(name + ': the hk-check artifact name must carry needs.pick.outputs.key, or two calls of pr-checks collide.')
               inst = [i for i, st in enumerate(steps) if st.get('id') == 'install' and phases(st) and hk_on(st)]
@@ -965,8 +967,6 @@ jobs:
           given = (mise[0].get('with') or {}) if mise else {}
           if not mise or 'inputs.cache' not in str(given.get('cache', '')):
               errors.append('hk-check must run jdx/mise-action with cache read from its cache input; a bare default turns the GitHub cache on for self-hosted Linux.')
-          if mise and 'default_branch' not in str(given.get('cache_save', '')):
-              errors.append('hk-check must save the mise cache from the default branch only.')
           if errors:
               sys.exit('::error::' + ' '.join(errors))
           print('hk defaults off, runs through hk-check over the whole tree, a red hk hides nothing, and no job holds security-events')
@@ -2014,6 +2014,9 @@ jobs:
         uses: ./actions/hk-check
         with:
           cache: 'true'    # hosted, so the GitHub cache is the only cache
+          # No setup-stack here to say it, so the same rule inline: only the
+          # default branch writes.
+          cache-save: ${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
           artifact-name: self-test-hk-sarif
       # hk-check only warns on a bad SARIF file; here it fails, so an hk bump that
       # renames the flag or breaks the format shows up before a caller uploads it.

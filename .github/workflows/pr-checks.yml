@@ -205,7 +205,7 @@ jobs:
       react_doctor: ${{ inputs.react-doctor && steps.rd.outputs.matched == 'true' }}
       key:       ${{ steps.key.outputs.key }}
     steps:
-      - uses: dodi-smart/.github/actions/runner-report@v1
+      - uses: dodi-smart/.github/actions/runner-report@pinned/v1.38.0
       # Artifact names are per workflow run, and a caller may call this workflow
       # twice (a `checks` job and an `ios` job), so each call's names carry a hash
       # of its inputs. Not `github.job`: both calls have a job called `test`.
@@ -225,7 +225,7 @@ jobs:
       # large runner. Bash only, no checkout. An unknown stack fails `pick` here,
       # earlier than it used to fail inside `checks`.
       - id: cmds
-        uses: dodi-smart/.github/actions/setup-stack/resolve@v1
+        uses: dodi-smart/.github/actions/setup-stack/resolve@pinned/v1.38.0
         with:
           stack: ${{ inputs.stack }}
           test:  ${{ inputs.test }}
@@ -236,13 +236,13 @@ jobs:
       # A `workflow_dispatch` (no PR), an API error, an empty list and the
       # 3000-file cap all come out `false`.
       - id: docs
-        uses: dodi-smart/.github/actions/changed-files@v1
+        uses: dodi-smart/.github/actions/changed-files@pinned/v1.38.0
         with:
           patterns: ${{ inputs.docs-only-paths }}
 
       - id: rd
         if: ${{ inputs.react-doctor }}
-        uses: dodi-smart/.github/actions/changed-files@v1
+        uses: dodi-smart/.github/actions/changed-files@pinned/v1.38.0
         with:
           patterns: ${{ inputs.react-doctor-paths }}
 
@@ -265,13 +265,13 @@ jobs:
 
       - id: light
         if: ${{ steps.need.outputs.needs_light == 'true' }}
-        uses: dodi-smart/.github/actions/pick-runner@v1
+        uses: dodi-smart/.github/actions/pick-runner@pinned/v1.38.0
         with:
           weight:        ${{ inputs.light-weight }}
 
       - id: heavy
         if: ${{ steps.docs.outputs.all-matched != 'true' }}
-        uses: dodi-smart/.github/actions/pick-runner@v1
+        uses: dodi-smart/.github/actions/pick-runner@pinned/v1.38.0
         with:
           weight:        ${{ inputs.heavy-weight }}
 
@@ -286,14 +286,14 @@ jobs:
       contents: read
       pull-requests: write     # the failure comment
     steps:
-      - uses: dodi-smart/.github/actions/runner-report@v1
+      - uses: dodi-smart/.github/actions/runner-report@pinned/v1.38.0
         with:
           selector: ${{ needs.pick.outputs.light }}
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
           persist-credentials: false
-      - uses: dodi-smart/.github/actions/zavet-check@v1
+      - uses: dodi-smart/.github/actions/zavet-check@pinned/v1.38.0
         with:
           zavet-dir:       ${{ inputs.zavet-dir }}
           stack:           ${{ inputs.zavet-stack }}
@@ -315,10 +315,10 @@ jobs:
       pull-requests: write     # the action posts its own sticky comment
       statuses: write          # and a commit status carrying the score
     steps:
-      - uses: dodi-smart/.github/actions/runner-report@v1
+      - uses: dodi-smart/.github/actions/runner-report@pinned/v1.38.0
         with:
           selector: ${{ needs.pick.outputs.light }}
-      - uses: dodi-smart/.github/actions/react-doctor@v1
+      - uses: dodi-smart/.github/actions/react-doctor@pinned/v1.38.0
         with:
           directory: ${{ inputs.react-doctor-directory }}
           # `error`, not `warning`: a gate on findings nobody agreed to fix
@@ -345,7 +345,7 @@ jobs:
       contents: read
       pull-requests: read      # commitlint
     steps:
-      - uses: dodi-smart/.github/actions/runner-report@v1
+      - uses: dodi-smart/.github/actions/runner-report@pinned/v1.38.0
         with:
           selector: ${{ needs.pick.outputs.light }}
       - id: checkout
@@ -357,7 +357,7 @@ jobs:
       # the four calls identical, so this one is written once and aliased.
       - id: setup
         if: ${{ needs.pick.outputs.docs_only != 'true' }}
-        uses: dodi-smart/.github/actions/setup-stack@v1
+        uses: dodi-smart/.github/actions/setup-stack@pinned/v1.38.0
         with: &setup-stack
           stack:           ${{ inputs.stack }}
           isolate:         false
@@ -380,20 +380,20 @@ jobs:
       - id: install
         name: Run phases (install)
         if: ${{ inputs.hk && needs.pick.outputs.docs_only != 'true' }}
-        uses: dodi-smart/.github/actions/run-phases@v1
+        uses: dodi-smart/.github/actions/run-phases@pinned/v1.38.0
         with:
           env-file: ${{ steps.setup.outputs.env-file }}
           install:  ${{ steps.setup.outputs.install }}
       # The whole tree, never `--pr`; see actions/hk-check. Its mise cache
       # follows setup-stack's, so it stays off on a self-hosted Linux runner.
       - if: ${{ inputs.hk && needs.pick.outputs.docs_only != 'true' }}
-        uses: dodi-smart/.github/actions/hk-check@v1
+        uses: dodi-smart/.github/actions/hk-check@pinned/v1.38.0
         with:
           cache:         ${{ steps.setup.outputs.cache-enabled }}
           artifact-name: hk-sarif-${{ needs.pick.outputs.key }}
       - name: Run phases
         if: ${{ !inputs.hk && needs.pick.outputs.docs_only != 'true' }}
-        uses: dodi-smart/.github/actions/run-phases@v1
+        uses: dodi-smart/.github/actions/run-phases@pinned/v1.38.0
         with:
           env-file:    ${{ steps.setup.outputs.env-file }}
           install:     ${{ steps.setup.outputs.install }}
@@ -403,7 +403,7 @@ jobs:
       # A red hk does not hide the rest: they run unless the install failed.
       - name: Run phases (after hk)
         if: ${{ !cancelled() && inputs.hk && steps.install.outcome == 'success' }}
-        uses: dodi-smart/.github/actions/run-phases@v1
+        uses: dodi-smart/.github/actions/run-phases@pinned/v1.38.0
         with:
           env-file:    ${{ steps.setup.outputs.env-file }}
           lint:        ${{ steps.setup.outputs.lint }}
@@ -418,7 +418,7 @@ jobs:
       - &dependency-author
         id: author
         if: ${{ !cancelled() && inputs.dependency-check && steps.checkout.outcome == 'success' }}
-        uses: dodi-smart/.github/actions/agent-gate@v1
+        uses: dodi-smart/.github/actions/agent-gate@pinned/v1.38.0
         with:
           labels:     ${{ toJson(github.event.pull_request.labels.*.name) }}
           event-name: ${{ github.event_name }}
@@ -428,7 +428,7 @@ jobs:
       - &dependency-check
         name: Dependency check
         if: ${{ !cancelled() && inputs.dependency-check && steps.checkout.outcome == 'success' }}
-        uses: dodi-smart/.github/actions/dependency-check@v1
+        uses: dodi-smart/.github/actions/dependency-check@pinned/v1.38.0
         with:
           author-kind: ${{ steps.author.outputs.author-kind }}
           fail-on:     ${{ inputs.dependency-check-fail-on }}
@@ -436,7 +436,7 @@ jobs:
       # not a Docker action: see actions/commitlint.
       - name: commitlint
         if: ${{ !cancelled() && inputs.commitlint }}
-        uses: dodi-smart/.github/actions/commitlint@v1
+        uses: dodi-smart/.github/actions/commitlint@pinned/v1.38.0
         with:
           config: ${{ inputs.commitlint-config }}
           number: ${{ github.event.pull_request.number }}
@@ -449,7 +449,7 @@ jobs:
     outputs:
       workspace: ${{ github.workspace }}    # the coverage job maps report paths with it
     steps:
-      - uses: dodi-smart/.github/actions/runner-report@v1
+      - uses: dodi-smart/.github/actions/runner-report@pinned/v1.38.0
         with:
           selector: ${{ needs.pick.outputs.heavy }}
       # Default depth: no reporter needs history; they list changed files
@@ -457,10 +457,10 @@ jobs:
       - uses: actions/checkout@v7
         with: { persist-credentials: false }
       - id: setup
-        uses: dodi-smart/.github/actions/setup-stack@v1
+        uses: dodi-smart/.github/actions/setup-stack@pinned/v1.38.0
         with: *setup-stack
       - name: Run phases
-        uses: dodi-smart/.github/actions/run-phases@v1
+        uses: dodi-smart/.github/actions/run-phases@pinned/v1.38.0
         with:
           env-file: ${{ steps.setup.outputs.env-file }}
           install:  ${{ steps.setup.outputs.install }}
@@ -491,16 +491,16 @@ jobs:
     runs-on: ${{ fromJson(needs.pick.outputs.heavy) }}
     timeout-minutes: ${{ inputs.timeout-minutes }}
     steps:
-      - uses: dodi-smart/.github/actions/runner-report@v1
+      - uses: dodi-smart/.github/actions/runner-report@pinned/v1.38.0
         with:
           selector: ${{ needs.pick.outputs.heavy }}
       - uses: actions/checkout@v7
         with: { persist-credentials: false }
       - id: setup
-        uses: dodi-smart/.github/actions/setup-stack@v1
+        uses: dodi-smart/.github/actions/setup-stack@pinned/v1.38.0
         with: *setup-stack
       - name: Run phases
-        uses: dodi-smart/.github/actions/run-phases@v1
+        uses: dodi-smart/.github/actions/run-phases@pinned/v1.38.0
         with:
           env-file:       ${{ steps.setup.outputs.env-file }}
           build-env-file: ${{ steps.setup.outputs.build-env-file }}
@@ -540,34 +540,34 @@ jobs:
     outputs:
       workspace: ${{ github.workspace }}    # the coverage job maps report paths with it
     steps:
-      - uses: dodi-smart/.github/actions/runner-report@v1
+      - uses: dodi-smart/.github/actions/runner-report@pinned/v1.38.0
         with:
           selector: ${{ needs.pick.outputs.heavy }}
       - id: checkout
         uses: actions/checkout@v7
         with: { persist-credentials: false }
       - id: setup
-        uses: dodi-smart/.github/actions/setup-stack@v1
+        uses: dodi-smart/.github/actions/setup-stack@pinned/v1.38.0
         with: *setup-stack
       # Opt-in `hk`: install first, then hk, then the rest of the phases. With
       # `hk: false` the single `Run phases` step below runs as it always did.
       - id: install
         name: Run phases (install)
         if: ${{ inputs.hk }}
-        uses: dodi-smart/.github/actions/run-phases@v1
+        uses: dodi-smart/.github/actions/run-phases@pinned/v1.38.0
         with:
           env-file: ${{ steps.setup.outputs.env-file }}
           install:  ${{ steps.setup.outputs.install }}
       # The whole tree, never `--pr`; see actions/hk-check. Its mise cache
       # follows setup-stack's, so it stays off on a self-hosted Linux runner.
       - if: ${{ inputs.hk }}
-        uses: dodi-smart/.github/actions/hk-check@v1
+        uses: dodi-smart/.github/actions/hk-check@pinned/v1.38.0
         with:
           cache:         ${{ steps.setup.outputs.cache-enabled }}
           artifact-name: hk-sarif-${{ needs.pick.outputs.key }}
       - name: Run phases
         if: ${{ !inputs.hk }}
-        uses: dodi-smart/.github/actions/run-phases@v1
+        uses: dodi-smart/.github/actions/run-phases@pinned/v1.38.0
         with:
           env-file:       ${{ steps.setup.outputs.env-file }}
           build-env-file: ${{ steps.setup.outputs.build-env-file }}
@@ -580,7 +580,7 @@ jobs:
       # A red hk does not hide the rest: they run unless the install failed.
       - name: Run phases (after hk)
         if: ${{ !cancelled() && inputs.hk && steps.install.outcome == 'success' }}
-        uses: dodi-smart/.github/actions/run-phases@v1
+        uses: dodi-smart/.github/actions/run-phases@pinned/v1.38.0
         with:
           env-file:       ${{ steps.setup.outputs.env-file }}
           build-env-file: ${{ steps.setup.outputs.build-env-file }}
@@ -608,7 +608,7 @@ jobs:
       # not a Docker action: see actions/commitlint.
       - name: commitlint
         if: ${{ !cancelled() && inputs.commitlint }}
-        uses: dodi-smart/.github/actions/commitlint@v1
+        uses: dodi-smart/.github/actions/commitlint@pinned/v1.38.0
         with:
           config: ${{ inputs.commitlint-config }}
           number: ${{ github.event.pull_request.number }}
@@ -636,7 +636,7 @@ jobs:
       # `test` or `all`, whichever ran: the workspace the report was written in.
       WRITER_WORKSPACE: ${{ needs.test.outputs.workspace || needs.all.outputs.workspace }}
     steps:
-      - uses: dodi-smart/.github/actions/runner-report@v1
+      - uses: dodi-smart/.github/actions/runner-report@pinned/v1.38.0
         with:
           selector: ${{ needs.pick.outputs.light }}
       # The artifact holds one file, or vitest's two, named by basename, so the
@@ -653,7 +653,7 @@ jobs:
         with:
           file-coverage-root-path: ${{ env.WRITER_WORKSPACE }}
       - if: inputs.coverage == 'lcov'
-        uses: dodi-smart/.github/actions/lcov-report@v1
+        uses: dodi-smart/.github/actions/lcov-report@pinned/v1.38.0
         with:
           path:        coverage/*
           source-root: ${{ env.WRITER_WORKSPACE }}
@@ -714,7 +714,7 @@ jobs:
       contents: read
       pull-requests: write     # the sticky comment
     steps:
-      - uses: dodi-smart/.github/actions/runner-report@v1
+      - uses: dodi-smart/.github/actions/runner-report@pinned/v1.38.0
         with:
           selector: ${{ needs.pick.outputs.light }}
       # An upload that found no files leaves no artifact: say so and carry on, as
@@ -738,7 +738,7 @@ jobs:
           fail-on-cache-miss: false
       - id: report
         if: ${{ steps.artifact.outcome == 'success' }}
-        uses: dodi-smart/.github/actions/bundle-report@v1
+        uses: dodi-smart/.github/actions/bundle-report@pinned/v1.38.0
         with:
           next-dir:        ${{ runner.temp }}/bundle-next
           base-file:       ${{ steps.base.outputs.cache-hit == 'true' && format('{0}/bundle-base/report.json', github.workspace) || '' }}
@@ -791,11 +791,11 @@ jobs:
     runs-on: ${{ fromJSON((github.event.repository.private && !github.event.pull_request.head.repo.fork) && '["self-hosted","Linux","control"]' || '"ubuntu-latest"') }}
     timeout-minutes: 2
     steps:
-      - uses: dodi-smart/.github/actions/runner-report@v1
+      - uses: dodi-smart/.github/actions/runner-report@pinned/v1.38.0
       # The "Where it ran" table for every job of this run attempt. Before
       # Summarize, which exits non-zero on a red run. `actions: read` is not
       # granted here, so queue times read "n/a" and the runner names still show.
-      - uses: dodi-smart/.github/actions/runner-report@v1
+      - uses: dodi-smart/.github/actions/runner-report@pinned/v1.38.0
         with:
           mode: run
       - name: Summarize

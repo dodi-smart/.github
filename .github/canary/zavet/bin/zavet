@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+# A stand-in for the CLI a repo vendors into its own .zavet/bin. The release
+# canary points the zavet job at this directory so the action's whole decision
+# path runs (need.sh, the yq install, the checks step, the verdict) on a
+# dispatch, where this repo has no knowledge layer of its own. It verifies
+# nothing but that the action reaches it.
+set -euo pipefail
+[ "${1:-}" = "verify" ] || { echo "canary zavet: only 'verify' is stubbed" >&2; exit 2; }
+echo "PASS	canary	the zavet action reached the vendored CLI"

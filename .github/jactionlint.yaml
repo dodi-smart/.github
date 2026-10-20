@@ -11,7 +11,8 @@ rules:
   unpinned-uses:
     policies:
       "*": ref-pin
-  # The one `./` call is Publish release running this repo's own Self test.
+  # The two `./` calls are Publish release running this repo's own Self test and
+  # Release canary running this repo's own pr-checks.yml at the pinned release.
   self-repository: off
 
 # Capability labels the runner picker hands out. Jobs here get them through

@@ -3,7 +3,7 @@
 #
 #   channel-tag.sh pin     [--version X.Y.Z] [--remote R] [--no-push] [--force]
 #   channel-tag.sh promote [--version X.Y.Z] [--auto] [--min-age-hours N]
-#                          [--remote R] [--no-push]
+#                          [--canary-gate PATH] [--remote R] [--no-push]
 #
 # `pin` runs after semantic-release has cut vX.Y.Z on main. It builds a child
 # commit of that tag, which is NOT on main, where every internal reference to
@@ -21,6 +21,12 @@
 # its own tag is used: its internal references say `@v1`, which is exactly the
 # tag being moved onto it.
 #
+# With --canary-gate PATH, `promote` asks that script about the target commit
+# right before it moves the tag, as `PATH auto <sha>` for --auto and `PATH
+# manual <sha>` otherwise (scripts/canary-gate.sh). An automatic promotion the
+# script refuses moves nothing and reports promoted=false; a manual one always
+# goes ahead, and the script's own warning says what the canary said.
+#
 # Both are idempotent: running one twice leaves the same tags in the same place.
 # Progress goes to stderr; stdout carries key=value lines a workflow can append
 # to its step summary or output. With CHANNEL_TOKEN set the pushes go to
@@ -34,7 +40,7 @@ note() { echo "channel-tag: $*" >&2; }
 
 cmd="${1:-}"; [ -n "$cmd" ] || usage
 shift
-version="" remote=origin push=1 force=0 auto=0 min_age=24
+version="" remote=origin push=1 force=0 auto=0 min_age=24 canary_gate=""
 # actions/checkout persists GITHUB_TOKEN as an http extraheader, and git sends
 # that header in place of the token in the URL. Pushing workflow files with it
 # is refused, so the token remote clears the header for this script's own
@@ -52,6 +58,7 @@ while [ $# -gt 0 ]; do
     --force) force=1; shift ;;
     --auto) auto=1; shift ;;
     --min-age-hours) min_age="${2:?--min-age-hours needs a value}"; shift 2 ;;
+    --canary-gate) canary_gate="${2:?--canary-gate needs a value}"; shift 2 ;;
     -h|--help) usage ;;
     *) die "unknown argument: $1" ;;
   esac
@@ -168,7 +175,7 @@ pin() {
 
 promote() {
   fetch_tags
-  local nextc target major target_tag cur curc age now
+  local nextc target major target_tag cur curc age now gate_mode gate_out
   if [ -z "$version" ]; then
     nextc="$(tag_commit next)"
     [ -n "$nextc" ] || die "no version given and there is no next tag"
@@ -193,6 +200,23 @@ promote() {
     age=$(( (now - $(git log -1 --format=%ct "$target")) / 3600 ))
     if [ "$age" -lt "$min_age" ]; then
       note "$version has been on next for ${age}h; waiting for ${min_age}h"; echo "promoted=false"; return 0
+    fi
+  fi
+
+  # Last of the checks, so a held promotion is reported only when everything
+  # else would have moved the tag. The gate's stderr (its annotations) passes
+  # through; its one stdout line is the reason.
+  if [ -n "$canary_gate" ]; then
+    gate_mode=manual; [ "$auto" = 1 ] && gate_mode=auto
+    if gate_out="$("$canary_gate" "$gate_mode" "$target")"; then
+      echo "canary: $gate_out"
+    elif [ "$auto" = 1 ]; then
+      echo "canary: ${gate_out:-the canary gate failed}"
+      echo "promoted=false"
+      return 0
+    else
+      # A gate that crashed must not stand between a person and a rollback.
+      echo "::warning title=Canary gate failed::$canary_gate could not run; promoting by hand anyway." >&2
     fi
   fi
 

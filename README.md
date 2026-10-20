@@ -335,6 +335,7 @@ Renovate marker, and a bump releases as `chore(deps)`.
 | `actions/semantic-release-config` | Links the shared semantic-release config into a consumer's `node_modules` from a private prefix, never from a registry and never into the checkout it came with |
 | `actions/lcov-report` | Overall and changed-file line coverage from an LCOV file, posted as a sticky comment, with optional floors. What `pr-checks.yml`'s `coverage: lcov` calls |
 | `actions/bundle-report` | First-load JS per route and in total (gzip) from a Next.js build's manifests, compared with a default-branch report and posted as a sticky comment, with an optional growth limit. Reads Turbopack and webpack builds alike |
+| `actions/hk-check` | Installs the repo's mise tools, runs `hk check --all --sarif`, appends the output to the job summary, warns on a SARIF file that is not valid JSON, and keeps the SARIF as an artifact. What `pr-checks.yml`'s `hk: true` runs |
 | `actions/changed-files` | A pull request's changed files through the API, with no checkout, and whether any, or every one, match a set of globs. Pure bash: it needs `gh` and nothing else |
 | `actions/migration-lint` | Lints the `*.sql` migrations a pull request added or changed with a pinned squawk, as annotations. Advisory unless `blocking: true`; squawk failing to install or run always fails it. What `supabase-checks.yml`'s `migration-lint` job calls. The caller checks out first |
 | `actions/runner-report` | Writes which runner a job got (name, pool, labels, OS, image, queue time) to the job summary and a notice, or with `mode: run` a "Where it ran" table for every job of the run. Needs `actions: read` for queue time; without it the runner is still named. Never fails the job |
@@ -551,11 +552,14 @@ jobs:
 With `hk: true`, `checks` (or `all`, with `single-job`) runs `install`, then
 `jdx/mise-action` (which installs the tools the caller's `mise.toml` pins), then
 `hk check --all --sarif hk.sarif`, then the remaining phases. `--all`, never
-`--pr`: type-aware and cross-file rules need the whole tree.
+`--pr`: type-aware and cross-file rules need the whole tree. A red `hk check`
+fails the job but does not skip the remaining phases, so lint and the rest still
+report in the same run; a failed install does stop them.
 
 Findings show in the job log, and the first 50 KB of hk's output is appended to
-the job summary. The SARIF file is kept as the `hk-sarif` artifact (one day),
-even when `hk check` failed. This workflow does not upload it to code scanning:
+the job summary. The SARIF file is kept as an `hk-sarif-<n>` artifact (one day;
+`<n>` tells two calls of `pr-checks.yml` in one workflow apart), even when
+`hk check` failed. This workflow does not upload it to code scanning:
 that needs `security-events: write`, and GitHub checks a called workflow's
 permissions when the run starts, so every caller would have to grant it, hk on
 or off. A repo that wants code scanning downloads the artifact in its own

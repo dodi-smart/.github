@@ -1,0 +1,41 @@
+# hk check over the whole tree, for pr-checks.yml's `hk` input. The run, the
+# summary and the SARIF check are in hk-check.sh.
+name: hk check
+description: Install the repo's mise tools, run `hk check --all --sarif`, write the findings to the job summary and keep the SARIF as an artifact.
+
+inputs:
+  cache:
+    description: >-
+      'true' or 'false': whether mise's GitHub Actions cache is on. Pass
+      setup-stack's `cache-enabled` output, so a self-hosted Linux runner, whose
+      persistent volume is the cache, never turns it on.
+    default: 'false'
+  artifact-name:
+    description: Name of the uploaded SARIF artifact. Unique per workflow run.
+    default: hk-sarif
+
+runs:
+  using: composite
+  steps:
+    # The cache is read where `cache` says and written from the default branch
+    # only, the rule setup-stack applies: an entry saved on a pull request ref is
+    # visible to no other pull request, so the save is time spent for nothing.
+    - uses: jdx/mise-action@v5
+      with:
+        cache: ${{ inputs.cache == 'true' }}
+        cache_save: ${{ inputs.cache == 'true' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
+
+    - shell: bash
+      env:
+        ACTION_PATH: ${{ github.action_path }}
+      run: '"$ACTION_PATH/hk-check.sh"'
+
+    # The SARIF needs no token to keep, so it is uploaded even when hk failed. A
+    # repo that wants code scanning uploads this artifact from its own workflow.
+    - if: ${{ !cancelled() }}
+      uses: actions/upload-artifact@v7
+      with:
+        name: ${{ inputs.artifact-name }}
+        path: hk.sarif
+        if-no-files-found: ignore
+        retention-days: 1

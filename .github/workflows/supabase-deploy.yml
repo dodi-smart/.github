@@ -228,7 +228,7 @@ jobs:
 
       - name: Wait for the deployment of this commit
         if: inputs.health-url != '' && env.HEALTH_WAIT == 'true'
-        uses: dodi-smart/.github/actions/wait-for-deployment@v1
+        uses: dodi-smart/.github/actions/wait-for-deployment@pinned/v1.34.2
         with:
           environment: ${{ inputs.health-wait-environment }}
           sha-url: ${{ inputs.health-sha-route != '' && format('{0}{1}', inputs.health-url, inputs.health-sha-route) || '' }}

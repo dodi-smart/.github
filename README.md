@@ -699,6 +699,9 @@ branch (it publishes no version tags), and Renovate can still move that pin.
 - **Hosted uses one mechanism per stack**, `setup-gradle` / `rust-cache` /
   `flutter-action`. Never a package store, and never `restore-keys` on one, which
   is how a partial tarball comes back on every retry.
+- **setup-bun's cache of the bun executable follows the same mode**, so it is
+  off on self-hosted Linux, where a moved work dir made it restore bun to the
+  wrong path.
 - **Gradle repos with a cache on** get `setup-gradle`, including `stack: xcode`
   when the repo has a root `gradlew`. A repo whose `gradle/libs.versions.toml`
   names the multiplatform plugin and a `kotlin` version also caches `~/.konan`,

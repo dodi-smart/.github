@@ -699,9 +699,10 @@ phase's output or `log-dir` file.
 
 `pick` also decides whether the change is docs-only: every file the PR touches
 must match one of `docs-only-paths` (newline-separated globs, default `**.md`
-and `docs/**`), read from the pull request's file list through the API. When it is, `checks`, `test`, `build` and
-`all` all skip -- but `commitlint` and `zavet` still run, because they check the commit
-message and the knowledge layer, not the files. The default catches a Markdown-only change; widen it
+and `docs/**`), read from the pull request's file list through the API. When it is, `test`, `build` and
+`all` skip -- but `zavet` still runs, and with `commitlint: true` so does `checks`, for its
+commitlint step alone and on the light runner even with `single-job`, because the
+commit messages and the knowledge layer are not the files. The default catches a Markdown-only change; widen it
 per caller for e.g. `docs/** design/**`.
 
 ```yaml
@@ -718,7 +719,7 @@ or more, where the API stops listing), `docs_only` is `false` and every job runs
 as normal.
 
 `pr-checks.yml` grants `contents: read` at the workflow level, so a job that
-needs more asks for it: `pick` and `commitlint` read pull requests, `zavet` and
+needs more asks for it: `pick`, `checks` and `all` read pull requests (`checks` and `all` for commitlint), `zavet` and
 `react-doctor` write them for their comments, and only the `coverage` job
 writes them for the coverage comment, so `test` and `all` run your tests with no
 write token. A checkout in these workflows never keeps the job
@@ -735,7 +736,7 @@ context.
 
 That context is `pr-checks`, a summary job that runs unconditionally
 (`if: always()`) after everything else, whether or not anything was skipped.
-It fails if `checks`, `test`, `build`, `all` or `commitlint` failed or was
+It fails if `checks`, `test`, `build`, `all` or `coverage` failed or was
 cancelled, and passes -- printing "docs-only change, checks skipped" -- when
 they were only skipped. It is the one job a branch ruleset should require:
 `<caller job id> / pr-checks` exists on every push in both single-job and
@@ -749,8 +750,8 @@ A repo that calls `pr-checks.yml`, `zavet-check.yml` and `react-doctor.yml`
 starts three workflow runs per push, and each of the last two starts its own
 runner picker job. `pr-checks.yml` already has one `pick` job, so `zavet` and
 `react-doctor` can be opt-in jobs beside `checks`, on the light pool. That saves
-two job starts per push, per repo that used both. `commitlint` runs on the light
-pool too, so a repo with it enabled saves a third.
+two job starts per push, per repo that used both. `commitlint` is a step of `checks`
+and `all` rather than a job, so a repo with it enabled saves a third.
 
 ```yaml
 jobs:
@@ -783,8 +784,9 @@ pull request touching no matching file shows a skipped job, and a required
 context that is never created would wait forever.
 
 `commitlint` runs the commitlint CLI (`actions/commitlint`, pinned by lockfile)
-on the light runner. It reads the pull request's commit messages through the
-API and checks out only the config file. With no config it lints against the org
+as the last step of `checks` (the light runner) or `all`, and it runs even when an
+earlier phase failed. It reads the pull request's commit messages and its config
+through the API. With no config it lints against the org
 preset, `@dodi-smart/commitlint-config`: config-conventional with the body and
 footer line limits as warnings at 180 and the header limit an error at 180
 (agent-written commits carry long `Why:` lines and session URLs). A repo that has

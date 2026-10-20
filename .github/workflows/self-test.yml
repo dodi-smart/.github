@@ -704,6 +704,46 @@ jobs:
           print('build needs only pick, and pr-checks still needs checks and build')
           "
 
+      # commitlint is the last step of `checks` and `all`, not a job: as a job it
+      # cost a runner start and the cleanup hook for about 5 s of linting. On a
+      # docs-only change `checks` runs for it alone, never a heavy runner.
+      - name: pr-checks runs commitlint as a step of checks and all
+        run: |
+          set -euo pipefail
+          python3 - <<'CL'
+          import sys, yaml
+          DOCS = 'needs.pick.outputs.docs_only'
+          jobs = yaml.safe_load(open('.github/workflows/pr-checks.yml'))['jobs']
+          errors = []
+          if 'commitlint' in jobs:
+              errors.append('commitlint must stay a step of checks and all, not a job: a job pays a runner start and the cleanup hook for about 5 s of work.')
+          for name in ('checks', 'all'):
+              steps = jobs[name]['steps']
+              at = [i for i, st in enumerate(steps) if 'actions/commitlint@' in str(st.get('uses', ''))]
+              # Last and on !cancelled(): a red phase must not skip it, and a bad
+              # message fails the job on its own step.
+              if at != [len(steps) - 1] or '!cancelled()' not in str(steps[-1].get('if', '')):
+                  errors.append(name + ' must run actions/commitlint once, as its last step, on !cancelled().')
+              if (jobs[name].get('permissions') or {}).get('pull-requests') != 'read':
+                  errors.append(name + ' must hold pull-requests: read, which commitlint lists the commits with.')
+          if 'inputs.commitlint' not in str(jobs['checks'].get('if', '')):
+              errors.append('checks must also run on a docs-only change when inputs.commitlint is on.')
+          if 'commitlint' in str(jobs['all'].get('if', '')):
+              errors.append('all must skip on a docs-only change even with commitlint on: never start a heavy runner to lint commit messages.')
+          # Every other step of checks skips on docs-only; the phases after hk
+          # follow the install step, which does.
+          for st in jobs['checks']['steps'][1:-1]:
+              cond = str(st.get('if', ''))
+              if DOCS not in cond and 'steps.install.outcome' not in cond:
+                  errors.append('checks step %r must skip on a docs-only change.' % (st.get('name') or st.get('uses')))
+          need = next(st for st in jobs['pick']['steps'] if st.get('id') == 'need')
+          if 'inputs.commitlint' not in str(need.get('env', {}).get('COMMITLINT', '')):
+              errors.append('pick must keep inputs.commitlint in its need step, or a docs-only change picks no light runner for commitlint.')
+          if errors:
+              sys.exit('::error::' + ' '.join(errors))
+          print('commitlint is the last step of checks and all, and checks runs for it alone on docs-only')
+          CL
+
       # This workflow runs the caller's own code, so no job holds a write token
       # it does not use. jactionlint covers checkouts and script expressions.
       - name: pr-checks keeps a read-only token and clones nothing to list files
@@ -743,7 +783,6 @@ jobs:
           import sys, yaml
           errors = []
           # Built in pieces: a run script never holds an expression of its own.
-          ON = '\$' + '{{ inputs.hk }}'
           OFF = '\$' + '{{ !inputs.hk'
           doc = yaml.safe_load(open('.github/workflows/pr-checks.yml'))
           inp = doc[True]['workflow_call']['inputs'].get('hk')
@@ -751,6 +790,7 @@ jobs:
               errors.append('the hk input must be a boolean that defaults to false, so a caller that never sets it behaves as before.')
           jobs = doc['jobs']
           phases = lambda st: 'actions/run-phases@' in str(st.get('uses', ''))
+          hk_on = lambda st: 'inputs.hk' in str(st.get('if', '')) and '!inputs.hk' not in str(st.get('if', ''))
           for name in ('checks', 'all'):
               job = jobs[name]
               if 'security-events' in (job.get('permissions') or {}):
@@ -763,14 +803,14 @@ jobs:
                   errors.append(name + ' must use actions/hk-check exactly once.')
                   continue
               step = steps[hk[0]]
-              if step.get('if') != ON:
+              if not hk_on(step):
                   errors.append(name + ': the hk-check step must run only when hk is on.')
               given = step.get('with') or {}
               if 'steps.setup.outputs.cache-enabled' not in str(given.get('cache', '')):
                   errors.append(name + ': hk-check must take its cache from setup-stack cache-enabled, or mise caches on a self-hosted Linux runner whose volume is the cache.')
               if 'needs.pick.outputs.key' not in str(given.get('artifact-name', '')):
                   errors.append(name + ': the hk-check artifact name must carry needs.pick.outputs.key, or two calls of pr-checks collide.')
-              inst = [i for i, st in enumerate(steps) if st.get('id') == 'install' and phases(st) and st.get('if') == ON]
+              inst = [i for i, st in enumerate(steps) if st.get('id') == 'install' and phases(st) and hk_on(st)]
               if not inst or inst[0] > hk[0]:
                   errors.append(name + ' must run install (id: install, hk only) before hk-check.')
               after = [st for st in steps[hk[0] + 1:] if phases(st) and 'inputs.hk' in str(st.get('if', '')) and '!inputs.hk' not in str(st.get('if', ''))]

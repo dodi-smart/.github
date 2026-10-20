@@ -857,8 +857,10 @@ A JSON config's `extends` may name only a package in the pinned set,
 the run with the allowed list, because nothing is installed on a config's say-so.
 A config in another format
 (a `.js` file, say) is not checked, and an import outside the pinned set fails to
-resolve. To allow another package, add it to that `package.json`. The installed
-tree is cached on the lockfile. The preset is not published, so its name resolves
+resolve. To allow another package, add it to that `package.json`. The pinned
+set is installed with `npm ci --prefer-offline` on every run (a cache saved on a
+pull request is unreadable by other pull requests), and the action installs Node
+only when the job's own is older than 22.12. The preset is not published, so its name resolves
 in this action only: a local commit-msg hook cannot load a config that extends it.
 
 ### setup-stack inputs and outputs
@@ -1029,7 +1031,8 @@ pull request reads what those runs saved.
 (checked against the release's sha256 digest) into the runner's temp directory,
 and lints the changed migrations only. Findings are annotations on the file and
 line, plus a table in the job summary. Turn `migration-lint-blocking` on once the
-baseline is clean. On any event but a pull request there is no diff, so it
+baseline is clean. When no file under `migrations-path` changed it succeeds before
+the checkout. On any event but a pull request there is no diff, so it
 reports success without linting. When the file list cannot be read in full
 (an API error, or the 3000-file cap) it lints every `*.sql` under the path rather
 than none. It adds no permission: it needs the `pull-requests: read` the other

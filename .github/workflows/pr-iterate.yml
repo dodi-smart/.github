@@ -211,7 +211,7 @@ jobs:
             echo "::error title=No App token::GH_APP_CLIENT_ID is not set. A GITHUB_TOKEN label or ready starts no workflow."
             exit 1
           fi
-          unlabel() { gh api -X DELETE "/repos/$REPO/issues/$PR/labels/agent:iterate" >/dev/null 2>&1 || true; }
+          unlabel() { gh api -X DELETE "/repos/$REPO/issues/$1/labels/agent:iterate" >/dev/null 2>&1 || true; }
           say()     { gh pr comment "$PR" --repo "$REPO" --body "$1" >/dev/null; }
           case "$ACTION" in
             ready)
@@ -222,18 +222,18 @@ jobs:
               gh pr edit "$PR" --repo "$REPO" --add-label agent:review
               echo "::notice title=Review requested::$REASON" ;;
             land)
-              unlabel
+              unlabel "$PR"
               [ "$MERGED" = true ] || say "**Not merged.** ${NOT_WHY:-the merge gate made no decision}. A person merges." ;;
             handoff)
-              unlabel
+              unlabel "$PR"
               say "Review approved this head. The issue's fields put it on tier \`$TIER\`, which stops here: a person merges." ;;
             give-up)
-              unlabel
+              unlabel "$PR"
               say "**Stopping the fix loop.** $REASON. A person takes it from here." ;;
             relay)
               # A labeled event the agent can run on. The removal starts nothing:
               # callers listen to `labeled` only.
-              unlabel
+              unlabel "$PR"
               gh pr edit "$PR" --repo "$REPO" --add-label agent:iterate
               echo "::notice title=Relayed::$REASON. The fix round runs on the labeled event." ;;
           esac
@@ -252,8 +252,9 @@ jobs:
             echo "::error title=No App token::GH_APP_CLIENT_ID is not set. A GITHUB_TOKEN label starts no workflow."
             exit 1
           fi
+          unlabel() { gh api -X DELETE "/repos/$REPO/issues/$1/labels/agent:iterate" >/dev/null 2>&1 || true; }
           for pr in $DIRTY; do
-            gh api -X DELETE "/repos/$REPO/issues/$pr/labels/agent:iterate" >/dev/null 2>&1 || true
+            unlabel "$pr"
             gh pr edit "$pr" --repo "$REPO" --add-label agent:iterate
             echo "::notice title=Relayed::#$pr conflicts with its base; the update runs on the labeled event."
           done
@@ -350,7 +351,8 @@ jobs:
           # shellcheck disable=SC2016  # the backticks are markdown, not a substitution
           printf '**Branch not updated:** %s\n\nA person brings it up to date; the loop has stopped (`agent:iterate` removed). [Run log](%s)\n' "$why" "$RUN" > "$RUNNER_TEMP/handoff.md"
           gh pr comment "$PR" --repo "$REPO" --body-file "$RUNNER_TEMP/handoff.md" || true
-          gh api -X DELETE "/repos/$REPO/issues/$PR/labels/agent:iterate" >/dev/null 2>&1 || true
+          unlabel() { gh api -X DELETE "/repos/$REPO/issues/$1/labels/agent:iterate" >/dev/null 2>&1 || true; }
+          unlabel "$PR"
 
   # One fix round. The agent commits; the push step writes the round and
   # refuses a holdout edit, a stranger's commit, the cap, or a moved branch.

@@ -417,7 +417,7 @@ sweep_pr() {  # sweep_pr NUM STATE [LABEL...]: an open PR as the issues list and
   l=$(printf '%s\n' "$@" | jq -R . | jq -sc 'map({name: .})')
   jq -c --argjson n "$n" --argjson l "$l" '. + [{number: $n, pull_request: {}, labels: $l}]' "$WORK/api/_repos_o_r_issues" > "$WORK/api/x" \
     && mv "$WORK/api/x" "$WORK/api/_repos_o_r_issues"
-  api "/repos/o/r/pulls/$n" "{\"state\":\"open\",\"mergeable_state\":\"$st\",\"head\":{\"repo\":{\"full_name\":\"${FORK:-o/r}\"}},\"base\":{\"repo\":{\"full_name\":\"o/r\"}},\"user\":{\"login\":\"${AUTHOR:-claude[bot]}\"}}"
+  api "/repos/o/r/pulls/$n" "{\"state\":\"open\",\"labels\":$l,\"mergeable_state\":\"$st\",\"head\":{\"repo\":{\"full_name\":\"${FORK:-o/r}\"}},\"base\":{\"repo\":{\"full_name\":\"o/r\"}},\"user\":{\"login\":\"${AUTHOR:-claude[bot]}\"}}"
 }
 sweep() {
   : > "$WORK/out"; : > "$WORK/sleeps"; rm -f "$WORK"/api/*.n

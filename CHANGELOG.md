@@ -1,9 +1,3 @@
-## [1.39.1](https://github.com/dodi-smart/.github/compare/v1.39.0...v1.39.1) (2026-10-20)
-
-### 🐛 Bug Fixes
-
-* **pr-checks:** remove the opt-in bundle report ([b92e3fc](https://github.com/dodi-smart/.github/commit/b92e3fc60a6bc9550bc09434f85e58f52479af70)), references [#64](https://github.com/dodi-smart/.github/issues/64)
-
 ## [1.39.0](https://github.com/dodi-smart/.github/compare/v1.38.1...v1.39.0) (2026-10-20)
 
 ### ✨ Features
@@ -21,12 +15,6 @@
 ### ✨ Features
 
 * **release:** run pr-checks end to end against each pinned release and hold auto-promotion on its result ([1da52a0](https://github.com/dodi-smart/.github/commit/1da52a03aca6cda7569086415d224635b1b53063)), references [#103](https://github.com/dodi-smart/.github/issues/103)
-
-## [1.37.0](https://github.com/dodi-smart/.github/compare/v1.36.0...v1.37.0) (2026-10-20)
-
-### ✨ Features
-
-* **pr-checks:** add an opt-in Next.js bundle size report with a cache-backed base ([2ea6cac](https://github.com/dodi-smart/.github/commit/2ea6cacb6fc7793842ae0210377e3d7b75f35370)), closes [#64](https://github.com/dodi-smart/.github/issues/64)
 
 ## [1.36.0](https://github.com/dodi-smart/.github/compare/v1.35.0...v1.36.0) (2026-10-20)
 
@@ -90,7 +78,6 @@
 
 ### ✨ Features
 
-* **bundle-report:** add a first-load JS report action for Next.js builds ([b9a398d](https://github.com/dodi-smart/.github/commit/b9a398de20934bb140bf9e50a307f6c9e2df70b7))
 * **commitlint:** ship an org preset, read the config at the base sha, pin extends ([007f9ec](https://github.com/dodi-smart/.github/commit/007f9ecc6b658fd1fcadede9fd1cd824092f2a33)), references [#103](https://github.com/dodi-smart/.github/issues/103) [#104](https://github.com/dodi-smart/.github/issues/104)
 * **run-phases:** record each phase's peak memory in the summary and a peak-rss output ([00456d6](https://github.com/dodi-smart/.github/commit/00456d6832b8d05ec43f3b7f3f9e982103156dcf)), references [#102](https://github.com/dodi-smart/.github/issues/102)
 

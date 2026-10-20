@@ -32,19 +32,17 @@
 # it reads the changelogs and the build, labels the PR and decides what happens
 # next, and a second check here would block the very updates that fix things.
 #
-# Env: LOCKFILES (newline list; overrides the computed one), AUTHOR_KIND,
-# FAIL_ON, REPO, NUMBER, BASE_SHA, GH_TOKEN, FILES (changed-files' `files` output,
-# every changed path), OSV_SCANNER (a binary to use instead of installing one).
-# Writes result, new-count, existing-count and errors to $GITHUB_OUTPUT and a
-# short report to $GITHUB_STEP_SUMMARY. test.sh runs it with a fake binary and gh.
+# Env: LOCKFILES (newline list; overrides the computed one), AUTHOR_KIND
+# (action.yml classifies the author), FAIL_ON, REPO, NUMBER, BASE_SHA, GH_TOKEN,
+# FILES and LIST_COMPLETE (changed-files' `files` and `complete`: every changed
+# path, and whether the list was read in full), OSV_SCANNER (a binary to use
+# instead of installing one). Writes a short report to $GITHUB_STEP_SUMMARY and
+# logs a one-line verdict. test.sh runs it with a fake binary and gh.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
-out="${GITHUB_OUTPUT:-/dev/stdout}"
 summary="${GITHUB_STEP_SUMMARY:-/dev/null}"
 fail_on="${FAIL_ON:-none}"
-# changed-files stops at 3000 files without saying so (see its script).
-CAP=3000
 
 case "$fail_on" in
   none|low|moderate|high|critical) ;;
@@ -78,12 +76,6 @@ rank() {
 limit="$(rank "$fail_on")"
 
 finish() { # result new existing errors
-  {
-    echo "result=$1"
-    echo "new-count=$2"
-    echo "existing-count=$3"
-    echo "errors=$4"
-  } >> "$out"
   echo "dependency-check: result=$1 new=$2 existing=$3 errors=$4"
 }
 
@@ -123,14 +115,12 @@ elif [ -z "${NUMBER:-}" ]; then
   skip "not a pull request, so there is no base to compare against"
 else
   files="${FILES:-}"
-  count="$(printf '%s' "$files" | grep -c . || true)"
-  if [ "$count" -eq 0 ] || [ "$count" -ge "$CAP" ]; then
-    # A pull request always changes a file, so an empty list means changed-files
-    # could not read it, and a list at the cap is cut off. Neither says no
-    # lockfile changed, so look at every supported lockfile in the checkout. That
-    # is safe because only findings absent at base are reported: a lockfile the
-    # change did not touch has none. (A rename counts as new: its base path is
-    # not the new one.)
+  if [ "${LIST_COMPLETE:-}" != true ]; then
+    # changed-files could not read the list in full (an API error, an empty list,
+    # the 3000-file cap). That does not say no lockfile changed, so look at every
+    # supported lockfile in the checkout. That is safe because only findings
+    # absent at base are reported: a lockfile the change did not touch has none.
+    # (A rename counts as new: its base path is not the new one.)
     echo "the changed-file list was not read in full; scanning every supported lockfile in the checkout"
     files="$(find . \( -name node_modules -o -name .git \) -prune -o -type f -print | sed 's|^\./||')"
   fi

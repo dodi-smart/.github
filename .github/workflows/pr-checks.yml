@@ -279,7 +279,7 @@ jobs:
   # ---------------------------------------------------------------------------
 
   # On a docs-only change this runs for commitlint alone, even with `single-job`,
-  # so every other step skips on `docs_only`. See AGENTS.md.
+  # so every other step skips on `docs_only`.
   checks:
     if: ${{ (!inputs.single-job && needs.pick.outputs.docs_only != 'true') || (inputs.commitlint && needs.pick.outputs.docs_only == 'true') }}
     needs: [pick]
@@ -305,6 +305,8 @@ jobs:
           stack:           ${{ inputs.stack }}
           isolate:         false
           cache:           auto
+          # Only a job that builds has a `.next/cache` worth keeping.
+          next-cache:      ${{ (github.job == 'build' || github.job == 'all') && 'auto' || 'false' }}
           env:             ${{ inputs.env }}
           build-env:       ${{ inputs.build-env }}
           install:         ${{ inputs.install }}
@@ -319,8 +321,7 @@ jobs:
           flutter-version: ${{ inputs.flutter-version }}
           rust-toolchain:  ${{ inputs.rust-toolchain }}
       # Opt-in `hk`: install first, then hk (the whole tree, never `--pr`; its
-      # mise cache follows setup-stack's), then the rest of the phases. With
-      # `hk: false` the single `Run phases` step runs as it always did.
+      # mise cache follows setup-stack's), then `Run phases` for the rest.
       - &hk-install
         id: install
         name: Run phases (install)
@@ -336,45 +337,26 @@ jobs:
           cache:         ${{ steps.setup.outputs.cache-enabled }}
           cache-save:    ${{ steps.setup.outputs.cache-save }}
           artifact-name: hk-sarif-${{ needs.pick.outputs.key }}
+      # One step either way. With `hk` the install already ran above, so it is not
+      # repeated (an empty command is skipped) and a red hk does not hide the
+      # rest: they run unless the install failed.
       - name: Run phases
-        if: ${{ !inputs.hk && needs.pick.outputs.docs_only != 'true' }}
+        if: ${{ needs.pick.outputs.docs_only != 'true' && (success() || (inputs.hk && !cancelled() && steps.install.outcome == 'success')) }}
         uses: dodi-smart/.github/actions/run-phases@v1
         with:
           env-file:    ${{ steps.setup.outputs.env-file }}
-          install:     ${{ steps.setup.outputs.install }}
-          lint:        ${{ steps.setup.outputs.lint }}
-          design-lint: ${{ steps.setup.outputs.design-lint }}
-          typecheck:   ${{ steps.setup.outputs.typecheck }}
-      # A red hk does not hide the rest: they run unless the install failed.
-      - name: Run phases (after hk)
-        if: ${{ !cancelled() && inputs.hk && steps.install.outcome == 'success' }}
-        uses: dodi-smart/.github/actions/run-phases@v1
-        with:
-          env-file:    ${{ steps.setup.outputs.env-file }}
+          install:     ${{ !inputs.hk && steps.setup.outputs.install || '' }}
           lint:        ${{ steps.setup.outputs.lint }}
           design-lint: ${{ steps.setup.outputs.design-lint }}
           typecheck:   ${{ steps.setup.outputs.typecheck }}
       # Opt-in `dependency-check`, a step and not a job, on `!cancelled()` and the
       # checkout so a red lint does not hide it and a docs-only change skips it.
-      # The gate is called for `author-kind` alone (`proceed` is ignored; a missing
-      # value scans). See AGENTS.md.
-      - &dependency-author
-        id: author
-        if: ${{ !cancelled() && inputs.dependency-check && steps.checkout.outcome == 'success' }}
-        uses: dodi-smart/.github/actions/agent-gate@v1
-        with:
-          labels:     ${{ toJson(github.event.pull_request.labels.*.name) }}
-          event-name: ${{ github.event_name }}
-          author:     ${{ github.event.pull_request.user.login }}
-          bots:       'allow'
-          skip-draft: 'false'
       - &dependency-check
         name: Dependency check
         if: ${{ !cancelled() && inputs.dependency-check && steps.checkout.outcome == 'success' }}
         uses: dodi-smart/.github/actions/dependency-check@v1
         with:
-          author-kind: ${{ steps.author.outputs.author-kind }}
-          fail-on:     ${{ inputs.dependency-check-fail-on }}
+          fail-on: ${{ inputs.dependency-check-fail-on }}
       # Last, on !cancelled(): a red phase still gets its messages checked. A CLI,
       # not a Docker action: see actions/commitlint.
       - &commitlint
@@ -458,37 +440,24 @@ jobs:
       - *hk-install
       - *hk-check
       - name: Run phases
-        if: ${{ !inputs.hk }}
+        if: ${{ needs.pick.outputs.docs_only != 'true' && (success() || (inputs.hk && !cancelled() && steps.install.outcome == 'success')) }}
         uses: dodi-smart/.github/actions/run-phases@v1
         with:
           env-file:       ${{ steps.setup.outputs.env-file }}
           build-env-file: ${{ steps.setup.outputs.build-env-file }}
-          install:        ${{ steps.setup.outputs.install }}
-          lint:           ${{ steps.setup.outputs.lint }}
-          design-lint:    ${{ steps.setup.outputs.design-lint }}
-          typecheck:      ${{ steps.setup.outputs.typecheck }}
-          test:           ${{ steps.setup.outputs.test }}
-          build:          ${{ steps.setup.outputs.build }}
-      - name: Run phases (after hk)
-        if: ${{ !cancelled() && inputs.hk && steps.install.outcome == 'success' }}
-        uses: dodi-smart/.github/actions/run-phases@v1
-        with:
-          env-file:       ${{ steps.setup.outputs.env-file }}
-          build-env-file: ${{ steps.setup.outputs.build-env-file }}
+          install:        ${{ !inputs.hk && steps.setup.outputs.install || '' }}
           lint:           ${{ steps.setup.outputs.lint }}
           design-lint:    ${{ steps.setup.outputs.design-lint }}
           typecheck:      ${{ steps.setup.outputs.typecheck }}
           test:           ${{ steps.setup.outputs.test }}
           build:          ${{ steps.setup.outputs.build }}
       - *coverage-upload
-      - *dependency-author
       - *dependency-check
       - *commitlint
 
   # ---------------------------------------------------------------------------
-  # The coverage comment. Why a separate light job that runs none of the caller's
-  # code: AGENTS.md, "The coverage comment comes from a separate `coverage` job".
-  # The checkout below only gives the vitest reporter the source tree.
+  # The coverage comment, from a separate light job so no caller code runs beside
+  # the write token. The checkout below only gives the vitest reporter the tree.
   # ---------------------------------------------------------------------------
 
   coverage:
@@ -534,8 +503,7 @@ jobs:
           min-coverage-overall: ${{ inputs.coverage-min-overall }}
           min-coverage-changed-files: ${{ inputs.coverage-min-changed }}
       # kover-report only comments on a breached minimum, so the overall floor is
-      # enforced here; the changed-files floor stays comment-only (AGENTS.md,
-      # "With `coverage: kover`").
+      # enforced here; the changed-files floor stays comment-only.
       - if: inputs.coverage == 'kover'
         uses: dodi-smart/.github/actions/kover-floor@v1
         with:
@@ -543,11 +511,9 @@ jobs:
           min-overall: ${{ inputs.coverage-min-overall }}
 
   # ---------------------------------------------------------------------------
-  # One stable context, on every push, in both modes. This is the job a branch
-  # ruleset should require, never `checks` or `all` (AGENTS.md, "The `pr-checks`
-  # job always runs"). Its name is the required status context, so it never
-  # changes. It runs no caller code: the control pool of a private repo, like
-  # `pick`.
+  # One stable context, on every push, in both modes: the job a branch ruleset
+  # should require, never `checks` or `all`, so its name never changes. It runs
+  # no caller code: the control pool of a private repo, like `pick`.
   #
   # `zavet` and `react-doctor` are always in `needs` (it cannot vary with an
   # input) but are ignored unless their `*-blocking` input is on.

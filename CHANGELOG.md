@@ -1,3 +1,9 @@
+## [1.37.0](https://github.com/dodi-smart/.github/compare/v1.36.0...v1.37.0) (2026-10-20)
+
+### ✨ Features
+
+* **pr-checks:** add an opt-in Next.js bundle size report with a cache-backed base ([2ea6cac](https://github.com/dodi-smart/.github/commit/2ea6cacb6fc7793842ae0210377e3d7b75f35370)), closes [#64](https://github.com/dodi-smart/.github/issues/64)
+
 ## [1.36.0](https://github.com/dodi-smart/.github/compare/v1.35.0...v1.36.0) (2026-10-20)
 
 ### ✨ Features

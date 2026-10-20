@@ -72,6 +72,7 @@ caller keeps working.
 | `claude-assist.yml` | `@claude <anything else>` | The general assistant |
 | `release.yml` | push to a release branch | semantic-release, single or multi-module |
 | `supabase-deploy.yml` | called after `release.yml` | Pushes a Supabase project's schema and functions for the tag a release just cut |
+| `android-deploy.yml` | called after `release.yml` | Builds the signed release APK for the tag a release just cut, attaches it to the GitHub Release and, if asked, distributes it through Firebase App Distribution. Signing material comes from 1Password |
 | `react-doctor.yml` | pull request, React repos | Static analysis of React/TS source. Advisory by default, on a pinned React Doctor version that Renovate bumps here (`version` overrides it). `pr-checks.yml` can run it as a job instead (`react-doctor: true`) |
 | `zavet-check.yml` | pull request | Knowledge-layer checks, for repos that have one. Report-only on dependency and automation bot PRs. `pr-checks.yml` can run it as a job instead (`zavet: true`) |
 | `supabase-checks.yml` | pull request, Supabase repos | Deno edge-function check, generated-types check, pgTAP tests, and an opt-in squawk lint of the migrations a pull request changed. The jobs that start Postgres are hosted only; the lint runs on the light pool |
@@ -224,6 +225,97 @@ Set one, and the check waits for this commit first:
 
 The log shows the deployment id and commit before the routes are probed.
 
+### Release, then deploy an Android build
+
+`android-deploy.yml` follows the same shape as `supabase-deploy.yml`: a job the
+caller chains on `release.yml` with `needs:`, so it builds the tag a release
+actually cut:
+
+```yaml
+jobs:
+  release:
+    uses: dodi-smart/.github/.github/workflows/release.yml@v1
+    secrets: inherit
+
+  deploy:
+    needs: release
+    if: ${{ !cancelled() && needs.release.outputs.released == 'true' && github.ref == 'refs/heads/main' && !contains(needs.release.outputs.tag, '-') }}
+    uses: dodi-smart/.github/.github/workflows/android-deploy.yml@v1
+    permissions:
+      contents: write
+    with:
+      tag: ${{ needs.release.outputs.tag }}
+      op-keystore:             op://<vault>/<item>/keystore.jks
+      op-store-password:       op://<vault>/<item>/store-password
+      op-key-alias:            op://<vault>/<item>/key-alias
+      op-key-password:         op://<vault>/<item>/key-password
+      op-firebase-credentials: op://<vault>/<item>/service-account.json
+      firebase-app-id:         1:000000000000:android:0000000000000000
+      firebase-groups:         testers
+      environment: production
+    secrets:
+      OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
+      GH_APP_CLIENT_ID:         ${{ secrets.GH_APP_CLIENT_ID }}
+      GH_APP_PRIVATE_KEY:       ${{ secrets.GH_APP_PRIVATE_KEY }}
+```
+
+The called job needs `contents: write` to upload to the release, and a called
+job cannot hold more than its caller grants, so a caller that narrows
+`permissions:` grants it on the `deploy` job as above.
+
+Everything product-specific comes from the caller: the 1Password references,
+the Firebase app and groups, the Gradle task and the APK glob. Nothing about
+the app is written in this repo.
+
+The job checks out the tag with its full history, installs the Android toolchain
+(and Node when it distributes), loads the signing material from 1Password, runs `./gradlew
+<gradle-task>` with Android Gradle Plugin's injected signing, attaches the APKs
+to the release (`--clobber`, so a re-run replaces them), then distributes. The
+release notes are the GitHub Release's body. An empty body becomes `Release
+<tag>`, and a body over 8000 bytes is cut and points at the Release.
+
+#### Inputs
+
+| Input | Default | Meaning |
+|---|---|---|
+| `tag` | *(required)* | Tag to build and attach to. Pass `needs.release.outputs.tag` |
+| `op-keystore` | *(required)* | 1Password reference of the keystore file |
+| `op-store-password` | *(required)* | Reference of the keystore password |
+| `op-key-alias` | *(required)* | Reference of the key alias |
+| `op-key-password` | *(required)* | Reference of the key password |
+| `op-firebase-credentials` | `""` | Reference of the Firebase service-account JSON. Required with `firebase-app-id` |
+| `firebase-app-id` | `""` | Firebase app id. Empty builds, signs and attaches the APKs and distributes nothing |
+| `firebase-groups` | `""` | Comma-separated tester group aliases. Empty uploads the build to nobody |
+| `gradle-task` | `assembleRelease` | Run as `./gradlew <gradle-task>`, split on spaces |
+| `apk-glob` | `**/build/outputs/apk/release/*.apk` | Newline-separated globs of the built APKs. Zero matches fails; an APK with `unsigned` in its name is ignored; every match is attached, but Firebase takes one, so more than one fails the distribution after the upload |
+| `env` | `""` | Newline-separated `KEY=VALUE` applied to the build through setup-stack, parsed as in `pr-checks.yml`. Tuning and placeholders only, never secrets |
+| `environment` | `""` | A GitHub environment in the caller's repo, as in `supabase-deploy.yml`. Empty means none |
+| `timeout-minutes` | `45` | Job timeout |
+
+#### Secrets
+
+| Secret | Required | Meaning |
+|---|---|---|
+| `OP_SERVICE_ACCOUNT_TOKEN` | yes | 1Password service account that can read the references above |
+| `GH_APP_CLIENT_ID`, `GH_APP_PRIVATE_KEY` | no | The org App. The release upload uses its token when both are set and the job's own token otherwise |
+
+#### Where it runs, and what happens to the secrets
+
+The job takes the heavy pool of a private repository and a hosted runner for a
+public one or a fork. That differs from `supabase-deploy.yml`, which stays
+hosted because a self-hosted machine is one other jobs also land on. An Android
+release build needs the heavy pool's memory, so the secrets are confined
+instead. The build is isolated: its own Gradle home under `RUNNER_TEMP`, no
+daemon, and no cache a pull request build wrote. The keystore and the Firebase
+credentials are written to a fresh `0700` directory under `RUNNER_TEMP`, never
+the workspace, and the passwords reach Gradle through a `gradle.properties` in
+the isolated home, never as arguments. The last step deletes both with
+`if: always()`, and 1Password values are masked in the log. The 1Password action is pinned to a commit SHA, since a moved tag
+would run with the service-account token.
+
+`firebase-tools` is pinned to an exact version in the workflow, behind a
+Renovate marker, and a bump releases as `chore(deps)`.
+
 ### Composite actions
 
 | Action | Purpose |
@@ -249,6 +341,7 @@ The log shows the deployment id and commit before the routes are probed.
 | `actions/run-phases` | Runs a job's install, lint, design-lint, typecheck, test, build and smoke commands as timed phases, each in its own shell, and writes a timing and peak-memory table to the job summary. `log-dir` also writes each phase's output to a file; `keep-going: true` runs every phase and the `failed` output lists the ones that failed. The `peak-rss` output is the largest per-phase peak memory in MiB. What `pr-checks.yml` and `deps-verify.yml` run their commands with |
 | `actions/wait-for-deployment` | Waits for the frontend host's successful GitHub Deployment of the checked-out commit, or for a route to report its sha. What `supabase-deploy.yml`'s health check calls |
 | `actions/supabase-start` | Starts the local Supabase database with the stack's Docker images restored from the cache, saved on a miss. What both jobs of `supabase-checks.yml` call |
+| `actions/android-distribute` | The steps after a signed Android build: resolves the APK glob (an unsigned APK never counts), attaches every APK to the tag's GitHub Release, and hands one to Firebase App Distribution with the Release body as its notes. What `android-deploy.yml` runs |
 | `actions/zavet-check` | Verifies a repo's `.zavet/` knowledge layer: decision checks, guard trailers, an optional audit, and a comment only on failure. What `zavet-check.yml` and `pr-checks.yml`'s `zavet` job run. The caller checks out with full history first. |
 | `actions/react-doctor` | Checks out with full history and runs React Doctor. What `react-doctor.yml` and `pr-checks.yml`'s `react-doctor` job run. |
 | `actions/pick-model` | The model policy as one script, `pick.sh`: an agent stage, the issue's Effort, Priority and Risk, and the run's signals in, a model id and a turn cap out. run-agent runs it on every agent run; see [Models](#models). |

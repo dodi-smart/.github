@@ -33,6 +33,16 @@
       ]
     },
     {
+      "description": "firebase-tools, pinned exact in android-deploy.yml behind a renovate marker. The shared preset enables no manager for _VERSION markers, so this one reads that single file",
+      "customType": "regex",
+      "managerFilePatterns": [
+        "/^\\.github/workflows/android-deploy\\.yml$/"
+      ],
+      "matchStrings": [
+        "# renovate: datasource=(?<datasource>[a-z-]+) depName=(?<depName>[^\\s]+)\\s+FIREBASE_TOOLS_VERSION: (?<currentValue>\\d+\\.\\d+\\.\\d+)\\s"
+      ]
+    },
+    {
       "description": "The react-doctor version the action and its workflow default to, read from the trailing renovate marker on each default",
       "customType": "regex",
       "managerFilePatterns": [
@@ -69,6 +79,25 @@
       ],
       "semanticCommitType": "chore",
       "semanticCommitScope": "deps"
+    },
+    {
+      "description": "A firebase-tools bump changes what the deploy workflow runs for every caller, so unlike the other custom.regex pins it releases as chore(deps)",
+      "matchPackageNames": [
+        "firebase-tools"
+      ],
+      "semanticCommitType": "chore",
+      "semanticCommitScope": "deps"
+    },
+    {
+      "description": "android-deploy.yml pins this action to a commit SHA because it runs with the signing key's service-account token, so a bump is read by a person and never merged unattended",
+      "matchManagers": [
+        "github-actions"
+      ],
+      "matchPackageNames": [
+        "1password/load-secrets-action"
+      ],
+      "groupName": "1password",
+      "automerge": false
     },
     {
       "description": "A react-doctor bump changes what every caller's scan runs, so it must release, unlike the lint tools above. Later rules win, so this overrides ci(self-test) with the chore(deps) this repo releases on",

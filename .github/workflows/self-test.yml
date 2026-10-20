@@ -744,6 +744,38 @@ jobs:
           print('commitlint is the last step of checks and all, and checks runs for it alone on docs-only')
           CL
 
+      # A `test` or `build` with no command must not start a large runner, which
+      # cost one caller 5 minutes of queue for 2 seconds of work. `pick` decides,
+      # from the one command table and with no checkout (the step below asserts
+      # that), and the two jobs read its answer.
+      - name: pr-checks skips test and build that have no command
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import sys, yaml
+          jobs = yaml.safe_load(open('.github/workflows/pr-checks.yml'))['jobs']
+          pick = jobs['pick']
+          errors = []
+          cmds = [s for s in pick['steps'] if str(s.get('uses', '')).startswith('dodi-smart/.github/actions/setup-stack/resolve@')]
+          if len(cmds) != 1:
+              errors.append('pick must resolve the commands through actions/setup-stack/resolve, once.')
+          for name in ('has_test', 'has_build'):
+              if name not in pick['outputs']:
+                  errors.append('pick must output ' + name + '.')
+          for job, out in (('test', 'has_test'), ('build', 'has_build')):
+              if 'needs.pick.outputs.' + out + " == 'true'" not in str(jobs[job].get('if')):
+                  errors.append(job + ' must run only when pick.' + out + ' is true.')
+          action = open('actions/setup-stack/resolve/action.yml').read()
+          if 'defaults.sh' not in action:
+              errors.append('the resolve action must run defaults.sh.')
+          for table in ('bun run build', 'npm ci', './gradlew'):
+              if table in action:
+                  errors.append('the resolve action carries part of the command table (' + table + '); it lives in defaults.sh only.')
+          if errors:
+              sys.exit('::error::' + ' '.join(errors))
+          print('pick resolves test and build through the one table, and the jobs skip when empty')
+          PY
+
       # This workflow runs the caller's own code, so no job holds a write token
       # it does not use. jactionlint covers checkouts and script expressions.
       - name: pr-checks keeps a read-only token and clones nothing to list files

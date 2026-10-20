@@ -71,7 +71,7 @@ runs:
 
     # Post before failing, so the comment says why the job is red.
     - if: ${{ inputs.number != '' }}
-      uses: dodi-smart/.github/actions/sticky-comment@v1
+      uses: dodi-smart/.github/actions/sticky-comment@pinned/v1.35.0
       with:
         key:       bundle-report
         body-file: ${{ runner.temp }}/bundle-report.md

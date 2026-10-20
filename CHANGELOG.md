@@ -1,3 +1,9 @@
+## [1.36.0](https://github.com/dodi-smart/.github/compare/v1.35.0...v1.36.0) (2026-10-20)
+
+### ✨ Features
+
+* **pr-checks:** run dependency-check as an opt-in step of checks and all ([0961f67](https://github.com/dodi-smart/.github/commit/0961f671857a97b8234a06f52f7f0a5b4cdca41e)), closes [#110](https://github.com/dodi-smart/.github/issues/110)
+
 ## [1.35.0](https://github.com/dodi-smart/.github/compare/v1.34.2...v1.35.0) (2026-10-20)
 
 ### ✨ Features

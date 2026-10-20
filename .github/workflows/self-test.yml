@@ -124,6 +124,11 @@ jobs:
       - name: LCOV report does the arithmetic and enforces the floors
         run: ./actions/lcov-report/test.sh
 
+      # A chunk counted twice, a delta with the wrong sign or a limit that never
+      # trips reads as a bundle that is fine.
+      - name: Bundle report sizes chunks once and enforces the limit
+        run: ./actions/bundle-report/test.sh
+
       # A phase's command reaches the shell unmangled, each phase gets its own
       # subshell, and the first failure stops the rest. pr-checks runs on this.
       - name: run-phases runs each phase alone and stops at the first failure

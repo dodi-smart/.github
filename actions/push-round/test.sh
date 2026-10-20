@@ -41,12 +41,13 @@ repo() {
   git -C "$r" config user.name 'claude[bot]'
   git -C "$r" config user.email "$CLAUDE_EMAIL"
 }
-# commit EMAIL FILE [CONTENT]: a commit as the agent would leave it.
+# commit EMAIL FILE [CONTENT] [TRAILERS]: a commit as the agent would leave it;
+# TRAILERS is a paragraph of its own.
 commit() {
   mkdir -p "$(dirname "$WORK/r/$2")"
   printf '%s\n' "${3:-$RANDOM}" > "$WORK/r/$2"
   git -C "$WORK/r" add -A
-  git -C "$WORK/r" -c user.name=who -c "user.email=$1" commit -q -m "fix: adapt to x ($2)"
+  git -C "$WORK/r" -c user.name=who -c "user.email=$1" commit -q -m "fix: adapt to x ($2)" ${4:+-m "$4"}
 }
 records() { printf '%s' "$1" > "$WORK/records.json"; }
 
@@ -93,6 +94,28 @@ expect "and nothing is rewritten"                    test "$(git -C "$WORK/r" re
 repo; commit "$CLAUDE_EMAIL" src/a.ts; commit 'renovate@example.com' src/b.ts
 round
 expect "one stranger among agent commits refuses the round" test "$(refused)" = 'a commit carries another author: renovate@example.com'
+
+# What else the agent signed its commits with is kept, after the round's own.
+# The trailers the loop counts or writes are never the agent's to supply.
+trailers() { git -C "$WORK/r" log -1 --format='%(trailers:only,unfold)' | sed '/^$/d'; }
+repo; commit "$CLAUDE_EMAIL" src/a.ts '' $'Decision: D-12\nCo-Authored-By: A <a@example.com>'
+commit "$CLAUDE_EMAIL" src/b.ts '' 'Decision: D-12'
+round
+expect "a trailer the agent wrote is kept after the round's, once though two commits carried it" \
+  test "$(trailers)" = $'Deps-Verify-Round: 1\nDecision: D-12\nCo-Authored-By: A <a@example.com>'
+expect "and git parses it as part of the one trailer block" \
+  test "$(body | git interpret-trailers --parse | grep -c '^Decision: D-12$')" = 1
+repo; commit "$CLAUDE_EMAIL" src/a.ts '' $'Deps-Verify-Round: 9\nDeps-Verify-Bump: peer 1 -> 9\nFactory-Round: 7\nDecision: D-3'
+commit "$CLAUDE_EMAIL" src/b.ts '' $'deps-verify-round : 8'
+round
+expect "forged round and record trailers are dropped" test "$(trailers)" = $'Deps-Verify-Round: 1\nDecision: D-3'
+expect "and no forged value is anywhere in the message" \
+  bash -c '! grep -qE "Round: 9|Round: 7|peer 1 -> 9|round : 8" <<<"$1"' _ "$(body)"
+repo; commit "$CLAUDE_EMAIL" package.json "$(printf '{\n  "peer": "5",\n  "x": "2"\n}')" $'Deps-Verify-Bump: peer 1 -> 9\nDecision: D-3'
+records '[{"name":"peer","from":"4","to":"5","why":"w"}]'
+round
+expect "a recorded bump's own trailer replaces a forged one" \
+  test "$(trailers)" = $'Deps-Verify-Round: 1\nDeps-Verify-Bump: peer 4 -> 5\nDecision: D-3'
 
 # The caller's precondition and the cap.
 repo; commit "$CLAUDE_EMAIL" src/a.ts

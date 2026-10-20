@@ -52,10 +52,10 @@ repo() {   # repo ROUND-0-HOLDOUT? -> leaves $WORK/r on branch feat/1-x, BASE se
   git -C "$WORK/r" checkout -q -b feat/1-x
   BASE="$(git -C "$WORK/r" rev-parse HEAD)"
 }
-commit() {  # commit EMAIL FILE [SUBJECT]
+commit() {  # commit EMAIL FILE [SUBJECT] [TRAILERS]: TRAILERS is a paragraph of its own
   mkdir -p "$(dirname "$WORK/r/$2")"; echo "$RANDOM" >> "$WORK/r/$2"
   git -C "$WORK/r" add -A
-  git -C "$WORK/r" -c user.name=a -c "user.email=$1" commit -q -m "${3:-wip $2}"
+  git -C "$WORK/r" -c user.name=a -c "user.email=$1" commit -q -m "${3:-wip $2}" ${4:+-m "$4"}
 }
 push() {   # push ROUND [SUBJECT]
   : > "$WORK/out"
@@ -75,6 +75,26 @@ expect "and the round and issue trailers"     bash -c 'grep -q "^Factory-Round: 
 expect "authored as the factory identity"     test "$(git -C "$WORK/r" log -1 --format='%an <%ae>')" = "claude[bot] <$AGENT>"
 expect "round 0 may write the holdout"        bash -c '! grep -q "holdout" "$1"' _ "$WORK/out"
 expect "with no App token it stops before any push" test "$(val refused)" = 'GH_APP_CLIENT_ID is not set, and a GITHUB_TOKEN push starts no checks'
+
+# The agent's own trailers survive the squash, after the round's; the ones the
+# loop counts do not.
+trailers() { git -C "$WORK/r" log -1 --format='%(trailers:only,unfold)' | sed '/^$/d'; }
+repo
+commit "$AGENT" src/a.ts 'feat: a' $'Decision: D-12\nCo-Authored-By: A <a@example.com>'
+commit "$AGENT" src/b.ts 'feat: b' 'Decision: D-12'
+push 0 'feat: ab'
+expect "a trailer the agent wrote is kept after the round's, once though two commits carried it" \
+  test "$(trailers)" = $'Factory-Round: 0\nFactory-Issue: 1\nDecision: D-12\nCo-Authored-By: A <a@example.com>'
+expect "and git parses it as part of the one trailer block" \
+  test "$(msg | git interpret-trailers --parse | grep -c '^Decision: D-12$')" = 1
+repo
+commit "$AGENT" src/a.ts 'feat: a' $'Factory-Round: 7\nFactory-Issue: 99\nDecision: D-3'
+commit "$AGENT" src/b.ts 'feat: b' $'factory-round : 8\nDecision: D-4'
+push 0 'feat: ab'
+expect "a forged round or issue trailer is dropped" \
+  test "$(trailers)" = $'Factory-Round: 0\nFactory-Issue: 1\nDecision: D-3\nDecision: D-4'
+expect "and no forged value is anywhere in the message" \
+  bash -c '! grep -qE "Factory-Round: 7|99|round : 8" <<<"$1"' _ "$(msg)"
 
 repo; commit "$AGENT" src/a.ts 'not conventional'
 push 0 'Add the thing'

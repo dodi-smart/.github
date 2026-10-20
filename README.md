@@ -657,8 +657,26 @@ context that is never created would wait forever.
 
 `commitlint` runs the commitlint CLI (`actions/commitlint`, pinned by lockfile)
 on the light runner. It reads the pull request's commit messages through the
-API and checks out only the config file. `config-conventional` is always there,
-and any other package a JSON config extends is installed beside it.
+API and checks out only the config file. With no config it lints against the org
+preset, `@dodi-smart/commitlint-config`: config-conventional with the body and
+footer line limits as warnings at 180 and the header limit an error at 180
+(agent-written commits carry long `Why:` lines and session URLs). A repo that has
+its own rules extends the preset by name and adds only what is its own:
+
+```json
+{ "extends": ["@dodi-smart/commitlint-config"], "rules": { "scope-empty": [2, "never"] } }
+```
+
+The config is read at the pull request's base commit, so a pull request cannot
+change the rules it is linted by: a config change takes effect once it merges.
+A JSON config's `extends` may name only a package in the pinned set,
+`actions/commitlint/package.json`. Anything else, a relative path included, fails
+the run with the allowed list, because nothing is installed on a config's say-so.
+A config in another format
+(a `.js` file, say) is not checked, and an import outside the pinned set fails to
+resolve. To allow another package, add it to that `package.json`. The installed
+tree is cached on the lockfile. The preset is not published, so its name resolves
+in this action only: a local commit-msg hook cannot load a config that extends it.
 
 ### setup-stack inputs and outputs
 

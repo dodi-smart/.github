@@ -1,15 +1,18 @@
 # Lint a pull request's commit messages with the commitlint CLI.
 # Thin wrapper; the reasoning is in lint.sh.
+# A cache written on a pull request stays with that pull request (GitHub scopes it
+# to the PR ref). Nothing seeds it from the default branch on purpose: callers run
+# commitlint on PRs only, and on self-hosted the persistent home already holds npm's cache.
 name: Commitlint
 description: Lint a pull request's commit messages with a pinned commitlint CLI, without Docker.
 
 inputs:
   config:
-    description: 'Path of the commitlint config in the repo. Missing means config-conventional.'
+    description: 'Path of the commitlint config in the repo. Missing means the org preset.'
     default: '.commitlintrc.json'
   ref:
-    description: 'Commit to read the config at'
-    default: ${{ github.event.pull_request.head.sha }}
+    description: 'Commit to read the config at: the pull request base, so a pull request cannot change its own rules'
+    default: ${{ github.event.pull_request.base.sha }}
   number:
     description: 'Pull request number'
     required: true
@@ -22,6 +25,26 @@ runs:
       with:
         node-version: 24
 
+    # After setup-node, so the key names the node the tree was installed with.
+    # The lockfile alone decides the tree: the preset is a symlink into a copy
+    # lint.sh makes on every run, so a rule edit must not bust the cache.
+    - id: key
+      shell: bash
+      env:
+        ACTION_DIR: ${{ github.action_path }}
+      run: |
+        set -euo pipefail
+        hash=$(shasum -a 256 "$ACTION_DIR/package-lock.json" | cut -c1-16)
+        node_major=$(node -p 'process.versions.node.split(".")[0]')
+        echo "key=commitlint-$RUNNER_OS-$RUNNER_ARCH-node$node_major-$hash" >> "$GITHUB_OUTPUT"
+
+    # Exact key only, no restore-keys, so a changed pin never reuses an old tree.
+    - id: cache
+      uses: actions/cache@v6
+      with:
+        path: ${{ runner.temp }}/commitlint/node_modules
+        key: ${{ steps.key.outputs.key }}
+
     - shell: bash
       env:
         CONFIG:      ${{ inputs.config }}
@@ -31,4 +54,5 @@ runs:
         GH_TOKEN:    ${{ github.token }}
         PREFIX:      ${{ runner.temp }}/commitlint
         ACTION_PATH: ${{ github.action_path }}
+        CACHE_HIT:   ${{ steps.cache.outputs.cache-hit }}
       run: '"$ACTION_PATH/lint.sh"'

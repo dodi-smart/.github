@@ -1,0 +1,80 @@
+# Known-vulnerability check over the lockfiles a pull request changed, reporting
+# only what the pull request introduced.
+# Thin wrapper; the reasoning is in dependency-check.sh, the install in install.sh.
+name: Dependency check
+description: Scan the lockfiles a pull request changed with osv-scanner and report the vulnerabilities it introduced, with an optional blocking threshold.
+
+inputs:
+  lockfiles:
+    description: >-
+      Newline-separated lockfile paths to check, instead of the ones the pull
+      request changed. For tests and callers that already know.
+    default: ''
+  author-kind:
+    description: >-
+      `agent-gate`'s `author-kind`. `dependency` skips the check: deps-verify
+      owns dependency pull requests.
+    default: ''
+  fail-on:
+    description: >-
+      `none` (report only), `low`, `moderate`, `high` or `critical`. The job
+      fails on a NEW finding at or above it, and, when it is not `none`, when the
+      check could not run. A finding with no CVSS score counts as high.
+    default: none
+  number:
+    description: Pull request number.
+    default: ${{ github.event.pull_request.number }}
+  repository:
+    description: 'owner/repo'
+    default: ${{ github.repository }}
+  base-sha:
+    description: The pull request's base commit, where each changed lockfile is read to tell old findings from new ones.
+    default: ${{ github.event.pull_request.base.sha }}
+  token:
+    description: 'Token to list changed files and read the base versions with. Needs pull-requests: read and contents: read.'
+    default: ${{ github.token }}
+
+outputs:
+  result:
+    description: >-
+      `clean` (checked, nothing new), `findings` (new ones, none blocking),
+      `failed` (the job failed: a blocking finding, or the check could not run
+      under a threshold) or `skipped` (nothing to check, a dependency PR, or
+      `fail-on: none` with nothing checkable).
+    value: ${{ steps.check.outputs.result }}
+  new-count:
+    description: Vulnerabilities the pull request introduced.
+    value: ${{ steps.check.outputs.new-count }}
+  existing-count:
+    description: Vulnerabilities in the changed lockfiles that were already there at the base commit.
+    value: ${{ steps.check.outputs.existing-count }}
+  errors:
+    description: Lockfiles that could not be checked, apart from findings.
+    value: ${{ steps.check.outputs.errors }}
+
+runs:
+  using: composite
+  steps:
+    # No patterns: the whole list, and the script keeps the lockfile names
+    # osv-scanner reads. One list of names, in one place.
+    - id: files
+      if: ${{ inputs.lockfiles == '' && inputs.author-kind != 'dependency' }}
+      uses: dodi-smart/.github/actions/changed-files@v1
+      with:
+        number: ${{ inputs.number }}
+        repository: ${{ inputs.repository }}
+        token: ${{ inputs.token }}
+
+    - id: check
+      shell: bash
+      env:
+        LOCKFILES:   ${{ inputs.lockfiles }}
+        AUTHOR_KIND: ${{ inputs.author-kind }}
+        FAIL_ON:     ${{ inputs.fail-on }}
+        NUMBER:      ${{ inputs.number }}
+        REPO:        ${{ inputs.repository }}
+        BASE_SHA:    ${{ inputs.base-sha }}
+        GH_TOKEN:    ${{ inputs.token }}
+        FILES:       ${{ steps.files.outputs.files }}
+        ACTION_PATH: ${{ github.action_path }}
+      run: '"$ACTION_PATH/dependency-check.sh"'

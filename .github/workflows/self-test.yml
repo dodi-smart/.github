@@ -177,6 +177,11 @@ jobs:
       - name: hk-check keeps hk's status and reports through the summary
         run: ./actions/hk-check/test.sh
 
+      # Only a finding the base commit lacks may block, and a scan that could not
+      # run is never read as a clean one. The pin and its Renovate marker too.
+      - name: Dependency check blocks only what the PR introduced
+        run: ./actions/dependency-check/test.sh
+
       # A phase's command reaches the shell unmangled, each phase gets its own
       # subshell, and the first failure stops the rest. pr-checks runs on this.
       - name: run-phases runs each phase alone and stops at the first failure

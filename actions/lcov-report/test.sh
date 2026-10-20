@@ -75,6 +75,19 @@ run x "$WORK/multi.info" "" 80.1 0
 expect "a floor just above the figure fails"  failed "overall coverage 80.0% is below the 80.1% minimum"
 expect_md "the comment says why it failed"    "Below the minimum"
 
+# 1474 / 2500 is 58.96%: the failure message cuts it to 58.9, the outputs round it to 59.0.
+printf 'SF:src/a.ts\nLF:2500\nLH:1474\nend_of_record\n' > "$WORK/near.info"
+run x "$WORK/near.info" "" 59 0
+expect "a figure just under the floor is cut, not rounded up" failed "overall coverage 58.9% is below the 59% minimum"
+expect "the output figure still rounds"           overall 59.0
+run x "$WORK/near.info" "src/a.ts" 0 59
+expect "the changed floor cuts the same way"      failed "changed-file coverage 58.9% is below the 59% minimum"
+expect "the changed output figure still rounds"   changed 59.0
+# 589 / 1000 is exactly 58.9; float error must not turn it into 58.8.
+printf 'SF:src/a.ts\nLF:1000\nLH:589\nend_of_record\n' > "$WORK/exact.info"
+run x "$WORK/exact.info" "" 59 0
+expect "an exact tenth is not cut a tenth lower"  failed "overall coverage 58.9% is below the 59% minimum"
+
 run x "$WORK/multi.info" $'src/a.ts\nsrc/b.ts' 0 75
 expect "the changed floor fails on its own"   failed "changed-file coverage 70.0% is below the 75% minimum"
 

@@ -1,3 +1,9 @@
+## [1.38.1](https://github.com/dodi-smart/.github/compare/v1.38.0...v1.38.1) (2026-10-20)
+
+### ⚡ Performance Improvements
+
+* **pr-checks:** write shared steps once and judge the whole needs context in a tested summary action ([5b40734](https://github.com/dodi-smart/.github/commit/5b4073427e07f7ba1b96210ee8bf227587457cf8)), references [#104](https://github.com/dodi-smart/.github/issues/104)
+
 ## [1.38.0](https://github.com/dodi-smart/.github/compare/v1.37.0...v1.38.0) (2026-10-20)
 
 ### ✨ Features

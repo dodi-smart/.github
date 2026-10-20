@@ -1,35 +1,27 @@
-# Reusable: the deterministic checks a pull request must pass.
+# Reusable: the deterministic checks a pull request must pass. Replaces a
+# hand-written ci.yml per repo. `concurrency:` stays with the CALLER, because it
+# depends on that repo's branches.
 #
-# Replaces a hand-written ci.yml per repo. `concurrency:` stays with the
-# CALLER, because it depends on that repo's branches. Do NOT add `paths-ignore`
-# on the caller for a docs-only skip: this workflow already does that itself
-# (see `docs-only-paths` below), and a caller-side `paths-ignore` produces no
-# status-check context at all, which is worse -- a branch ruleset requiring one
-# then waits on a pull request forever.
+# Do NOT add `paths-ignore` on the caller for a docs-only skip: this workflow
+# does that itself (`docs-only-paths`), and a caller-side `paths-ignore` creates
+# no status-check context at all, so a ruleset requiring one waits forever.
 #
-# Light work (lint, typecheck) goes to the light pool and heavy work (build,
-# tests) to the large one. Any step whose command resolves to empty is skipped,
-# and a `test` or `build` job with no command does not start at all.
-# `single-job: true` collapses the split onto the heavy runner.
-#
-# ONE `pick` job resolves both runners and whether the change is docs-only,
-# reading the changed files through the API with no checkout. `pr-checks` at the
-# bottom always runs and is the one context a ruleset should require.
-#
-# `pick` and `pr-checks` are helper jobs that run no caller code. In a private
-# repo they run on the `control` pool (see AGENTS.md for why); a public repo or a
-# fork PR keeps ubuntu-latest. There is no switch to hosted. The expression is
-# written out in each job because `runs-on` cannot read `env`.
+# Light work (lint, typecheck) goes to the light pool, heavy work (build, tests)
+# to the large one; `single-job: true` collapses the split onto the heavy runner.
+# A step whose command resolves to empty is skipped, and a `test` or `build`
+# job with none does not start. ONE `pick` job resolves both runners and
+# docs-only from the API, with no checkout. `pr-checks` at the bottom always
+# runs and is the one context a ruleset should require. `pick` and `pr-checks`
+# run no caller code and sit on the `control` pool of a private repo (AGENTS.md);
+# their `runs-on` is written out per job because `runs-on` cannot read `env`.
 name: PR Checks
 
-# This workflow runs the caller's own code (install scripts, tests, builds), so
-# no job holds more than it needs. Jobs that need more say so themselves.
+# Runs the caller's own code, so no job holds more than it needs.
 permissions:
   contents: read
 
 env:
-  # What `test` and `all` upload for the coverage job: vitest's two JSON files,
-  # or the one report the caller's test command writes.
+  # What `test` and `all` upload for the coverage job: vitest's two JSON files, or the caller's one report.
   COVERAGE_REPORT: ${{ inputs.coverage == 'vitest' && 'coverage/coverage-*.json' || inputs.coverage-path || 'coverage/lcov.info' }}
 
 on:
@@ -47,42 +39,37 @@ on:
       test:      { type: string, default: "@stack" }
       build:     { type: string, default: "@stack" }
 
-      # Design-system verifier (oxlint + @shadcn/lint). Opt-in: no `@stack`
-      # default, since there is no conventional command for it. Runs on the
-      # light pool right after Lint. Advisory until the caller's command adds
-      # `--max-warnings`.
+      # Design-system verifier (oxlint + @shadcn/lint). Opt-in, no `@stack`
+      # default (there is no conventional command). Runs on the light pool right
+      # after Lint; advisory until the caller's command adds `--max-warnings`.
       design-lint: { type: string, default: "" }
 
-      # Runs `hk check --all` from the caller's own hk.pkl, with the tools its
-      # mise.toml pins, after install and before lint. Sits beside `lint` and
-      # replaces nothing. Findings show in the job log and summary, and the SARIF
-      # is kept as an `hk-sarif-<n>` artifact. Nothing is uploaded to code scanning:
-      # that needs `security-events: write`, which every caller would have to
-      # grant. A repo that wants it uploads the artifact from its own workflow.
+      # Runs `hk check --all` from the caller's hk.pkl, with the tools its
+      # mise.toml pins, after install and before lint. Replaces nothing. Findings
+      # show in the job log and summary, and the SARIF is kept as an `hk-sarif-<n>`
+      # artifact. Nothing goes to code scanning (that needs `security-events:
+      # write`, which every caller would have to grant): a repo that wants it
+      # uploads the artifact from its own workflow.
       hk: { type: boolean, default: false }
 
       light-weight: { type: string, default: "light" }
       heavy-weight: { type: string, default: "heavy" }
 
       # Run every step in ONE job on the heavy runner instead of splitting light
-      # work from heavy.
-      #
-      # The split is right for a repo whose lint is cheap and independent, and
-      # wrong for Gradle: three jobs mean three configuration phases and no
-      # shared daemon. One job gives one checkout and one warm GRADLE_USER_HOME.
-      # The split stays the default.
+      # work from heavy. Right for Gradle, where three jobs mean three
+      # configuration phases and no shared daemon (one job gives one checkout and
+      # one warm GRADLE_USER_HOME); the split stays the default.
       single-job: { type: boolean, default: false }
 
       # Every changed file must match one of these globs (newline-separated,
       # `fnmatch`-style: `*` crosses `/`) for the run to skip `test`, `build`
       # and `all`, and every step of `checks` but commitlint. That step still runs
-      # on the light runner when `commitlint` is on, even with `single-job`,
-      # because the commit message is what it checks, not the files.
+      # on the light runner when `commitlint` is on, even with `single-job`: it
+      # checks the commit messages, not the files.
       #
       # `docs_only` is always `false` on `workflow_dispatch`, and whenever the
       # changed files cannot be listed in full (an API error, or the 3000-file
-      # cap) -- a skip is only ever a positive claim, never the fallback when
-      # something went wrong reading it.
+      # cap): a skip is only ever a positive claim, never the fallback.
       docs-only-paths:
         type: string
         default: |-
@@ -182,20 +169,15 @@ on:
 
 jobs:
   # ONE job resolves both runners and whether the diff is docs-only. It always
-  # runs, unlike the jobs it feeds -- it is the job a docs-only skip and
-  # single-job mode both still need, and its own two picks are what let
-  # `checks`/`test`/`build`/`all` skip cleanly through `needs.pick.outputs`.
-  #
-  # It needs bash, git, gh, jq and python3 (`changed-files` matches globs with
-  # Python's fnmatch). A missing one degrades to "not docs-only, run everything"
-  # and silently skips React Doctor, so the tool check below says so out loud.
+  # runs: a docs-only skip and single-job mode still need it, and its outputs are
+  # how the other jobs skip cleanly. It needs bash, git, gh, jq and python3
+  # (`changed-files` matches globs with fnmatch); a missing one degrades to "not
+  # docs-only, run everything" and skips React Doctor, so the check below says so.
   pick:
     name: Pick runner
     runs-on: ${{ fromJSON((github.event.repository.private && !github.event.pull_request.head.repo.fork) && '["self-hosted","Linux","control"]' || '"ubuntu-latest"') }}
     timeout-minutes: 10
-    permissions:
-      contents: read
-      pull-requests: read      # the changed-files listing
+    permissions: { contents: read, pull-requests: read }   # pull-requests: the changed-files listing
     outputs:
       light:     ${{ steps.light.outputs.runner }}
       heavy:     ${{ steps.heavy.outputs.runner }}
@@ -206,9 +188,9 @@ jobs:
       key:       ${{ steps.key.outputs.key }}
     steps:
       - uses: dodi-smart/.github/actions/runner-report@v1
-      # Artifact names are per workflow run, and a caller may call this workflow
-      # twice (a `checks` job and an `ios` job), so each call's names carry a hash
-      # of its inputs. Not `github.job`: both calls have a job called `test`.
+      # Artifact names are per run and a caller may call this workflow twice, so
+      # each call's names carry a hash of its inputs. Not `github.job`: both calls
+      # have a job called `test`.
       - id: key
         env:
           INPUTS: ${{ toJSON(inputs) }}
@@ -222,8 +204,7 @@ jobs:
           done
 
       # Whether `test` and `build` have a command, so an empty one never starts a
-      # large runner. Bash only, no checkout. An unknown stack fails `pick` here,
-      # earlier than it used to fail inside `checks`.
+      # large runner. Bash only, no checkout; an unknown stack fails here.
       - id: cmds
         uses: dodi-smart/.github/actions/setup-stack/resolve@v1
         with:
@@ -231,10 +212,8 @@ jobs:
           test:  ${{ inputs.test }}
           build: ${{ inputs.build }}
 
-      # `all-matched` is a positive claim, never a fallback: it is `true` only
-      # when the whole list was read and every file matches `docs-only-paths`.
-      # A `workflow_dispatch` (no PR), an API error, an empty list and the
-      # 3000-file cap all come out `false`.
+      # `all-matched` is `true` only when the whole list was read and every file
+      # matches; any doubt (no PR, API error, empty list, the cap) is `false`.
       - id: docs
         uses: dodi-smart/.github/actions/changed-files@v1
         with:
@@ -246,34 +225,19 @@ jobs:
         with:
           patterns: ${{ inputs.react-doctor-paths }}
 
-      # Whether any light job will run, so the picker below skips otherwise.
-      - id: need
-        env:
-          SPLIT:      ${{ !inputs.single-job && steps.docs.outputs.all-matched != 'true' }}
-          COMMITLINT: ${{ inputs.commitlint }}
-          ZAVET:      ${{ inputs.zavet }}
-          RD:         ${{ steps.rd.outputs.matched }}
-          COVERAGE:   ${{ inputs.coverage != 'none' && steps.docs.outputs.all-matched != 'true' }}
-          BUNDLE:     ${{ inputs.bundle-report && steps.docs.outputs.all-matched != 'true' }}
-        run: |
-          set -euo pipefail
-          need=false
-          for v in "$SPLIT" "$COMMITLINT" "$ZAVET" "$RD" "$COVERAGE" "$BUNDLE"; do
-            [ "$v" = "true" ] && need=true
-          done
-          echo "needs_light=$need" >> "$GITHUB_OUTPUT"
-
+      # Only when some light job will run: the split `checks`, commitlint, zavet,
+      # react-doctor, coverage or the bundle report.
       - id: light
-        if: ${{ steps.need.outputs.needs_light == 'true' }}
+        if: ${{ (!inputs.single-job && steps.docs.outputs.all-matched != 'true') || inputs.commitlint || inputs.zavet || steps.rd.outputs.matched == 'true' || (steps.docs.outputs.all-matched != 'true' && (inputs.coverage != 'none' || inputs.bundle-report)) }}
         uses: dodi-smart/.github/actions/pick-runner@v1
         with:
-          weight:        ${{ inputs.light-weight }}
+          weight: ${{ inputs.light-weight }}
 
       - id: heavy
         if: ${{ steps.docs.outputs.all-matched != 'true' }}
         uses: dodi-smart/.github/actions/pick-runner@v1
         with:
-          weight:        ${{ inputs.heavy-weight }}
+          weight: ${{ inputs.heavy-weight }}
 
   # Full history, because guards walk the pull request's commits.
   zavet:
@@ -282,11 +246,10 @@ jobs:
     needs: [pick]
     runs-on: ${{ fromJson(needs.pick.outputs.light) }}
     timeout-minutes: 15
-    permissions:
-      contents: read
-      pull-requests: write     # the failure comment
+    permissions: { contents: read, pull-requests: write }   # pull-requests: the failure comment
     steps:
-      - uses: dodi-smart/.github/actions/runner-report@v1
+      - &report-light
+        uses: dodi-smart/.github/actions/runner-report@v1
         with:
           selector: ${{ needs.pick.outputs.light }}
       - uses: actions/checkout@v7
@@ -310,14 +273,9 @@ jobs:
     needs: [pick]
     runs-on: ${{ fromJson(needs.pick.outputs.light) }}
     timeout-minutes: 15
-    permissions:
-      contents: read
-      pull-requests: write     # the action posts its own sticky comment
-      statuses: write          # and a commit status carrying the score
+    permissions: { contents: read, pull-requests: write, statuses: write }   # the action's sticky comment and score status
     steps:
-      - uses: dodi-smart/.github/actions/runner-report@v1
-        with:
-          selector: ${{ needs.pick.outputs.light }}
+      - *report-light
       - uses: dodi-smart/.github/actions/react-doctor@v1
         with:
           directory: ${{ inputs.react-doctor-directory }}
@@ -327,38 +285,35 @@ jobs:
 
   # ---------------------------------------------------------------------------
   # Split shape: light work on the small pool, heavy work on the large one.
-  #
-  # Every job below runs its commands through `run-phases`, which sources the
-  # env file setup-stack wrote before each one (always written, empty when the
-  # caller passed no `env`), skips a phase whose command is empty, stops at the
-  # first failure, and puts a timing table in the job summary.
+  # Every job runs its commands through `run-phases`, which sources the env file
+  # setup-stack wrote, skips an empty phase, stops at the first failure and puts
+  # a timing table in the job summary. Steps written once are aliased below.
   # ---------------------------------------------------------------------------
 
-  # On a docs-only change this job runs for commitlint alone, even with
-  # `single-job`, so every other step skips on `docs_only`. See AGENTS.md.
+  # On a docs-only change this runs for commitlint alone, even with `single-job`,
+  # so every other step skips on `docs_only`. See AGENTS.md.
   checks:
     if: ${{ (!inputs.single-job && needs.pick.outputs.docs_only != 'true') || (inputs.commitlint && needs.pick.outputs.docs_only == 'true') }}
     needs: [pick]
     runs-on: ${{ fromJson(needs.pick.outputs.light) }}
     timeout-minutes: ${{ inputs.timeout-minutes }}
-    permissions:
-      contents: read
-      pull-requests: read      # commitlint
+    permissions: { contents: read, pull-requests: read }   # pull-requests: commitlint's commit list, dependency-check's changed files
     steps:
-      - uses: dodi-smart/.github/actions/runner-report@v1
-        with:
-          selector: ${{ needs.pick.outputs.light }}
-      - id: checkout
+      - *report-light
+      # Aliased by every job below (the gate is then redundant outside `checks`).
+      # Default depth: no reporter needs history, they list files through the API.
+      - &checkout
+        id: checkout
         if: ${{ needs.pick.outputs.docs_only != 'true' }}
         uses: actions/checkout@v7
         with: { persist-credentials: false }
       # Every job passes every command: setup-stack only resolves them into
-      # outputs, and each job's `run-phases` reads the ones it uses. That keeps
-      # the four calls identical, so this one is written once and aliased.
-      - id: setup
+      # outputs, and each job's `run-phases` reads the ones it uses.
+      - &setup
+        id: setup
         if: ${{ needs.pick.outputs.docs_only != 'true' }}
         uses: dodi-smart/.github/actions/setup-stack@v1
-        with: &setup-stack
+        with:
           stack:           ${{ inputs.stack }}
           isolate:         false
           cache:           auto
@@ -375,18 +330,19 @@ jobs:
           bun-version:     ${{ inputs.bun-version }}
           flutter-version: ${{ inputs.flutter-version }}
           rust-toolchain:  ${{ inputs.rust-toolchain }}
-      # Opt-in `hk`: install first, then hk, then the rest of the phases. With
-      # `hk: false` the single `Run phases` step below runs as it always did.
-      - id: install
+      # Opt-in `hk`: install first, then hk (the whole tree, never `--pr`; its
+      # mise cache follows setup-stack's), then the rest of the phases. With
+      # `hk: false` the single `Run phases` step runs as it always did.
+      - &hk-install
+        id: install
         name: Run phases (install)
         if: ${{ inputs.hk && needs.pick.outputs.docs_only != 'true' }}
         uses: dodi-smart/.github/actions/run-phases@v1
         with:
           env-file: ${{ steps.setup.outputs.env-file }}
           install:  ${{ steps.setup.outputs.install }}
-      # The whole tree, never `--pr`; see actions/hk-check. Its mise cache
-      # follows setup-stack's, so it stays off on a self-hosted Linux runner.
-      - if: ${{ inputs.hk && needs.pick.outputs.docs_only != 'true' }}
+      - &hk-check
+        if: ${{ inputs.hk && needs.pick.outputs.docs_only != 'true' }}
         uses: dodi-smart/.github/actions/hk-check@v1
         with:
           cache:         ${{ steps.setup.outputs.cache-enabled }}
@@ -409,12 +365,10 @@ jobs:
           lint:        ${{ steps.setup.outputs.lint }}
           design-lint: ${{ steps.setup.outputs.design-lint }}
           typecheck:   ${{ steps.setup.outputs.typecheck }}
-      # Opt-in `dependency-check`, a step like commitlint and not a job: a job
-      # would pay a runner start for seconds of work. After the phases on
-      # !cancelled(), so a red lint does not hide it, and on the checkout, so a
-      # docs-only change skips it. The gate is called for `author-kind` alone, as
-      # zavet-check does: it is written before every rule, `proceed` is ignored,
-      # and a missing value scans. See AGENTS.md.
+      # Opt-in `dependency-check`, a step and not a job, on `!cancelled()` and the
+      # checkout so a red lint does not hide it and a docs-only change skips it.
+      # The gate is called for `author-kind` alone (`proceed` is ignored; a missing
+      # value scans). See AGENTS.md.
       - &dependency-author
         id: author
         if: ${{ !cancelled() && inputs.dependency-check && steps.checkout.outcome == 'success' }}
@@ -434,7 +388,8 @@ jobs:
           fail-on:     ${{ inputs.dependency-check-fail-on }}
       # Last, on !cancelled(): a red phase still gets its messages checked. A CLI,
       # not a Docker action: see actions/commitlint.
-      - name: commitlint
+      - &commitlint
+        name: commitlint
         if: ${{ !cancelled() && inputs.commitlint }}
         uses: dodi-smart/.github/actions/commitlint@v1
         with:
@@ -449,27 +404,23 @@ jobs:
     outputs:
       workspace: ${{ github.workspace }}    # the coverage job maps report paths with it
     steps:
-      - uses: dodi-smart/.github/actions/runner-report@v1
+      - &report-heavy
+        uses: dodi-smart/.github/actions/runner-report@v1
         with:
           selector: ${{ needs.pick.outputs.heavy }}
-      # Default depth: no reporter needs history; they list changed files
-      # through the API.
-      - uses: actions/checkout@v7
-        with: { persist-credentials: false }
-      - id: setup
-        uses: dodi-smart/.github/actions/setup-stack@v1
-        with: *setup-stack
+      - *checkout
+      - *setup
       - name: Run phases
         uses: dodi-smart/.github/actions/run-phases@v1
         with:
           env-file: ${{ steps.setup.outputs.env-file }}
           install:  ${{ steps.setup.outputs.install }}
           test:     ${{ steps.setup.outputs.test }}
-
-      # The `coverage` job posts the comment and holds the write token. This
-      # job runs the caller's code, so it only hands the report over. A red run
+      # The `coverage` job posts the comment and holds the write token; this job
+      # runs the caller's code, so it only hands the report over. A red run
       # uploads nothing.
-      - if: ${{ inputs.coverage != 'none' }}
+      - &coverage-upload
+        if: ${{ inputs.coverage != 'none' }}
         uses: actions/upload-artifact@v7
         with:
           name: pr-checks-coverage-${{ needs.pick.outputs.key }}
@@ -478,27 +429,18 @@ jobs:
           retention-days: 1
 
   # `build` needs only `pick`, so it starts beside `checks` and `test`: a push
-  # waits for the slowest of the three, not for two in a row.
-  #
-  # `build-env` holds placeholders a build needs present but not real, supplied
-  # by the caller in plain sight. Never secrets: a value that must stay secret
-  # has no business in a PR build log. `run-phases` sources them for the build
-  # phase only, into that phase's own shell and not $GITHUB_ENV, which refuses
-  # NODE_OPTIONS outright, and NODE_OPTIONS is what a Next.js build needs here.
+  # waits for the slowest of the three, not for two in a row. `build-env` holds
+  # placeholders (never secrets); `run-phases` sources it for the build phase
+  # only, in that phase's shell, since $GITHUB_ENV refuses NODE_OPTIONS.
   build:
     if: ${{ !inputs.single-job && needs.pick.outputs.docs_only != 'true' && needs.pick.outputs.has_build == 'true' }}
     needs: [pick]
     runs-on: ${{ fromJson(needs.pick.outputs.heavy) }}
     timeout-minutes: ${{ inputs.timeout-minutes }}
     steps:
-      - uses: dodi-smart/.github/actions/runner-report@v1
-        with:
-          selector: ${{ needs.pick.outputs.heavy }}
-      - uses: actions/checkout@v7
-        with: { persist-credentials: false }
-      - id: setup
-        uses: dodi-smart/.github/actions/setup-stack@v1
-        with: *setup-stack
+      - *report-heavy
+      - *checkout
+      - *setup
       - name: Run phases
         uses: dodi-smart/.github/actions/run-phases@v1
         with:
@@ -506,11 +448,10 @@ jobs:
           build-env-file: ${{ steps.setup.outputs.build-env-file }}
           install:        ${{ steps.setup.outputs.install }}
           build:          ${{ steps.setup.outputs.build }}
-      # The `bundle-report` job posts the comment and holds the write token. This
-      # job runs the caller's code, so it only hands over what the report reads
-      # of the build directory. A red build uploads nothing. The directory starts
-      # with a dot, so hidden files have to be included, and the patterns keep
-      # the rest of the build out. The layout under the directory is kept.
+      # The `bundle-report` job posts and holds the write token; this one hands
+      # over what the report reads of the build directory. The directory starts
+      # with a dot, so hidden files are included and the patterns keep the rest of
+      # the build out. A red build uploads nothing.
       - &bundle-upload
         if: ${{ inputs.bundle-report }}
         uses: actions/upload-artifact@v7
@@ -525,7 +466,7 @@ jobs:
           retention-days: 1
 
   # ---------------------------------------------------------------------------
-  # Single-job shape: the same phases, in the same order, with the same
+  # Single-job shape: the same phases in the same order, with the same
   # skip-on-empty rule. Only the runner and the job boundaries differ.
   # ---------------------------------------------------------------------------
 
@@ -534,37 +475,15 @@ jobs:
     needs: [pick]
     runs-on: ${{ fromJson(needs.pick.outputs.heavy) }}
     timeout-minutes: ${{ inputs.timeout-minutes }}
-    permissions:
-      contents: read
-      pull-requests: read      # commitlint
+    permissions: { contents: read, pull-requests: read }   # pull-requests: commitlint's commit list, dependency-check's changed files
     outputs:
       workspace: ${{ github.workspace }}    # the coverage job maps report paths with it
     steps:
-      - uses: dodi-smart/.github/actions/runner-report@v1
-        with:
-          selector: ${{ needs.pick.outputs.heavy }}
-      - id: checkout
-        uses: actions/checkout@v7
-        with: { persist-credentials: false }
-      - id: setup
-        uses: dodi-smart/.github/actions/setup-stack@v1
-        with: *setup-stack
-      # Opt-in `hk`: install first, then hk, then the rest of the phases. With
-      # `hk: false` the single `Run phases` step below runs as it always did.
-      - id: install
-        name: Run phases (install)
-        if: ${{ inputs.hk }}
-        uses: dodi-smart/.github/actions/run-phases@v1
-        with:
-          env-file: ${{ steps.setup.outputs.env-file }}
-          install:  ${{ steps.setup.outputs.install }}
-      # The whole tree, never `--pr`; see actions/hk-check. Its mise cache
-      # follows setup-stack's, so it stays off on a self-hosted Linux runner.
-      - if: ${{ inputs.hk }}
-        uses: dodi-smart/.github/actions/hk-check@v1
-        with:
-          cache:         ${{ steps.setup.outputs.cache-enabled }}
-          artifact-name: hk-sarif-${{ needs.pick.outputs.key }}
+      - *report-heavy
+      - *checkout
+      - *setup
+      - *hk-install
+      - *hk-check
       - name: Run phases
         if: ${{ !inputs.hk }}
         uses: dodi-smart/.github/actions/run-phases@v1
@@ -577,7 +496,6 @@ jobs:
           typecheck:      ${{ steps.setup.outputs.typecheck }}
           test:           ${{ steps.setup.outputs.test }}
           build:          ${{ steps.setup.outputs.build }}
-      # A red hk does not hide the rest: they run unless the install failed.
       - name: Run phases (after hk)
         if: ${{ !cancelled() && inputs.hk && steps.install.outcome == 'success' }}
         uses: dodi-smart/.github/actions/run-phases@v1
@@ -589,38 +507,16 @@ jobs:
           typecheck:      ${{ steps.setup.outputs.typecheck }}
           test:           ${{ steps.setup.outputs.test }}
           build:          ${{ steps.setup.outputs.build }}
-
-      # The `coverage` job posts the comment and holds the write token. This
-      # job runs the caller's code, so it only hands the report over. A red run
-      # uploads nothing.
-      - if: ${{ inputs.coverage != 'none' }}
-        uses: actions/upload-artifact@v7
-        with:
-          name: pr-checks-coverage-${{ needs.pick.outputs.key }}
-          path: ${{ env.COVERAGE_REPORT }}
-          if-no-files-found: error
-          retention-days: 1
-      # Same upload as `build`, see there.
+      - *coverage-upload
       - *bundle-upload
       - *dependency-author
       - *dependency-check
-      # Last, on !cancelled(): a red phase still gets its messages checked. A CLI,
-      # not a Docker action: see actions/commitlint.
-      - name: commitlint
-        if: ${{ !cancelled() && inputs.commitlint }}
-        uses: dodi-smart/.github/actions/commitlint@v1
-        with:
-          config: ${{ inputs.commitlint-config }}
-          number: ${{ github.event.pull_request.number }}
+      - *commitlint
 
   # ---------------------------------------------------------------------------
-  # The coverage comment. Posting needs `pull-requests: write`, and `test` and
-  # `all` run the caller's whole test suite, so the write token lives here
-  # instead: this job downloads what they uploaded and runs no repo code. The
-  # checkout below only gives the vitest reporter the source tree; it does not
-  # install or run anything, and drops credentials.
-  #
-  # It runs on the light pool, since it runs none of the caller's code.
+  # The coverage comment. Why a separate light job that runs none of the caller's
+  # code: AGENTS.md, "The coverage comment comes from a separate `coverage` job".
+  # The checkout below only gives the vitest reporter the source tree.
   # ---------------------------------------------------------------------------
 
   coverage:
@@ -629,16 +525,12 @@ jobs:
     needs: [pick, test, all]
     runs-on: ${{ fromJson(needs.pick.outputs.light) }}
     timeout-minutes: 10
-    permissions:
-      contents: read
-      pull-requests: write     # coverage comment
+    permissions: { contents: read, pull-requests: write }   # pull-requests: the coverage comment
     env:
       # `test` or `all`, whichever ran: the workspace the report was written in.
       WRITER_WORKSPACE: ${{ needs.test.outputs.workspace || needs.all.outputs.workspace }}
     steps:
-      - uses: dodi-smart/.github/actions/runner-report@v1
-        with:
-          selector: ${{ needs.pick.outputs.light }}
+      - *report-light
       # The artifact holds one file, or vitest's two, named by basename, so the
       # reporters read `coverage/*` whatever `coverage-path` was.
       - if: inputs.coverage == 'vitest'
@@ -669,39 +561,19 @@ jobs:
           update-comment: true
           min-coverage-overall: ${{ inputs.coverage-min-overall }}
           min-coverage-changed-files: ${{ inputs.coverage-min-changed }}
-      # kover-report only marks a breached minimum in its comment and never
-      # fails, so a report at 0% passed with a floor of 40. The overall floor
-      # is enforced here from its output, as actions/lcov-report does itself.
-      # The changed-files floor stays comment-only: kover-report reports 0,
-      # not empty, when no changed file is in the report, so enforcing it
-      # would fail every pull request that touches no covered source.
+      # kover-report only comments on a breached minimum, so the overall floor is
+      # enforced here; the changed-files floor stays comment-only (AGENTS.md,
+      # "With `coverage: kover`").
       - if: inputs.coverage == 'kover'
-        name: Enforce the overall coverage floor
-        env:
-          OVERALL:     ${{ steps.kover.outputs.coverage-overall }}
-          MIN_OVERALL: ${{ inputs.coverage-min-overall }}
-        run: |
-          set -euo pipefail
-          if [ -z "$OVERALL" ]; then
-            echo "::error::coverage: kover-report produced no overall figure"
-            exit 1
-          fi
-          if awk -v v="$OVERALL" -v m="$MIN_OVERALL" 'BEGIN { exit !(m > 0 && v + 0 < m + 0) }'; then
-            echo "::error::coverage: overall ${OVERALL}% is below the ${MIN_OVERALL}% floor"
-            exit 1
-          fi
-          echo "coverage: overall ${OVERALL}% (floor ${MIN_OVERALL}%)"
+        uses: dodi-smart/.github/actions/kover-floor@v1
+        with:
+          overall:     ${{ steps.kover.outputs.coverage-overall }}
+          min-overall: ${{ inputs.coverage-min-overall }}
 
   # ---------------------------------------------------------------------------
-  # The bundle report. Like `coverage`, it posts from a light job that runs none
-  # of the caller's code (no checkout, no setup-stack), reading what `build` or
-  # `all` uploaded. The base is an `actions/cache` entry, not an artifact: a job
-  # asking for `actions: read` would fail every caller at startup, since the
-  # caller template grants only contents, pull-requests and statuses. The entry
-  # is keyed on the PR's base sha, EXACT, with no restore-keys: a near match
-  # would compare with a commit the PR is not based on and print a wrong delta.
-  # No entry means sizes without deltas. Entries are saved on a push to the
-  # default branch, so the caller has to run this workflow there too.
+  # The bundle report: like `coverage`, a light job that runs none of the
+  # caller's code (no checkout, no setup-stack). Its base is an exact-key cache
+  # entry, not an artifact, and needs no `actions: read`. AGENTS.md, "`bundle-report`".
   # ---------------------------------------------------------------------------
 
   bundle-report:
@@ -710,13 +582,9 @@ jobs:
     needs: [pick, build, all]
     runs-on: ${{ fromJson(needs.pick.outputs.light) }}
     timeout-minutes: 10
-    permissions:
-      contents: read
-      pull-requests: write     # the sticky comment
+    permissions: { contents: read, pull-requests: write }   # pull-requests: the sticky comment
     steps:
-      - uses: dodi-smart/.github/actions/runner-report@v1
-        with:
-          selector: ${{ needs.pick.outputs.light }}
+      - *report-light
       # An upload that found no files leaves no artifact: say so and carry on, as
       # the action does for a missing build directory.
       - id: artifact
@@ -758,32 +626,16 @@ jobs:
           key: pr-checks-bundle-base-${{ github.sha }}
 
   # ---------------------------------------------------------------------------
-  # One stable context, on every push, in both modes.
+  # One stable context, on every push, in both modes. This is the job a branch
+  # ruleset should require, never `checks` or `all` (AGENTS.md, "The `pr-checks`
+  # job always runs"). Its name is the required status context, so it never
+  # changes. It runs no caller code: the control pool of a private repo, like
+  # `pick`.
+  #
+  # `zavet` and `react-doctor` are always in `needs` (it cannot vary with an
+  # input) but are ignored unless their `*-blocking` input is on.
   # ---------------------------------------------------------------------------
 
-  # This is the job a branch ruleset should require, never `checks` or `all`.
-  # `<caller job id> / pr-checks` exists on every PR push whether single-job or
-  # split, and whether or not the change is docs-only, which is exactly what
-  # `checks / checks` and `checks / all` cannot promise: one of them is always
-  # skipped depending on `single-job`, and on a docs-only change `all` is
-  # skipped and `checks` runs only when commitlint is on. A required context
-  # that a docs-only push never creates is a ruleset that waits forever, which is
-  # what a caller's `paths-ignore` used to cause.
-  #
-  # It needs `checks` and `all`, so a red lint or a bad commit message fails the
-  # required context even though `build` runs beside them.
-  #
-  # `zavet` and `react-doctor` are always in `needs`, but the loop below counts
-  # them only when `zavet-blocking` / `react-doctor-blocking` is on, so an
-  # advisory result can never fail this context. `needs` cannot vary with an
-  # input, so the summary waits for both even when they are advisory. They run
-  # on `light` beside `checks`, usually finish before `test` and `build`, and
-  # are skipped when off.
-  #
-  # Its name is the required status context (`<caller job> / PR Checks`), so it
-  # never changes. It runs no caller code, so it runs on the control pool of a
-  # private repo, and on ubuntu-latest for a public repo or a fork PR, like
-  # `pick`.
   pr-checks:
     name: PR Checks
     needs: [pick, checks, test, build, all, coverage, zavet, react-doctor, bundle-report]
@@ -792,42 +644,14 @@ jobs:
     timeout-minutes: 2
     steps:
       - uses: dodi-smart/.github/actions/runner-report@v1
-      # The "Where it ran" table for every job of this run attempt. Before
-      # Summarize, which exits non-zero on a red run. `actions: read` is not
-      # granted here, so queue times read "n/a" and the runner names still show.
+      # The "Where it ran" table for every job of this run attempt, before the
+      # summary, which exits non-zero on a red run.
       - uses: dodi-smart/.github/actions/runner-report@v1
         with:
           mode: run
       - name: Summarize
-        env:
-          PICK:          ${{ needs.pick.result }}
-          CHECKS:        ${{ needs.checks.result }}
-          TEST:          ${{ needs.test.result }}
-          BUILD:         ${{ needs.build.result }}
-          ALL:           ${{ needs.all.result }}
-          COVERAGE:      ${{ needs.coverage.result }}
-          ZAVET:         ${{ inputs.zavet-blocking && needs.zavet.result || 'skipped' }}
-          REACT_DOCTOR:  ${{ inputs.react-doctor-blocking && needs.react-doctor.result || 'skipped' }}
-          BUNDLE:        ${{ needs.bundle-report.result }}
-          DOCS_ONLY:     ${{ needs.pick.outputs.docs_only }}
-        run: |
-          set -euo pipefail
-          failed=""
-          for pair in "pick:$PICK" "checks:$CHECKS" "test:$TEST" "build:$BUILD" "all:$ALL" "coverage:$COVERAGE" "zavet:$ZAVET" "react-doctor:$REACT_DOCTOR" "bundle-report:$BUNDLE"; do
-            name="${pair%%:*}"
-            result="${pair#*:}"
-            case "$result" in
-              failure|cancelled) failed="$failed $name($result)" ;;
-            esac
-          done
-
-          if [ -n "$failed" ]; then
-            echo "::error::pr-checks: failed jobs:$failed"
-            exit 1
-          fi
-
-          if [ "$DOCS_ONLY" = "true" ]; then
-            echo "pr-checks: docs-only change, checks skipped"
-          else
-            echo "pr-checks: all required jobs passed"
-          fi
+        uses: dodi-smart/.github/actions/pr-checks-summary@v1
+        with:
+          needs:     ${{ toJSON(needs) }}
+          ignore:    ${{ !inputs.zavet-blocking && 'zavet' || '' }} ${{ !inputs.react-doctor-blocking && 'react-doctor' || '' }}
+          docs-only: ${{ needs.pick.outputs.docs_only }}

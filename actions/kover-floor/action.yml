@@ -1,0 +1,23 @@
+# The overall-coverage floor for `mi-kas/kover-report`, which only marks a
+# breached minimum in its comment and never fails. Thin wrapper; the rule and
+# the reasoning are in floor.sh.
+name: Kover floor
+description: Fail when kover-report's overall coverage is below a minimum, or missing.
+
+inputs:
+  overall:
+    description: kover-report's `coverage-overall` output, in percent. Empty fails, whatever the floor.
+    default: ''
+  min-overall:
+    description: Minimum overall coverage, in percent. 0 means no floor.
+    default: '0'
+
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      env:
+        OVERALL:     ${{ inputs.overall }}
+        MIN_OVERALL: ${{ inputs.min-overall }}
+        ACTION_PATH: ${{ github.action_path }}
+      run: '"$ACTION_PATH/floor.sh"'

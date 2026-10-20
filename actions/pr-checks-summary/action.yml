@@ -1,0 +1,30 @@
+# The verdict of `pr-checks.yml`'s closing `PR Checks` job. Thin wrapper; the
+# rule and the reasoning are in summarize.sh.
+name: PR Checks summary
+description: Fail when a job the caller needs failed or was cancelled, leaving out named advisory jobs, and print the verdict.
+
+inputs:
+  needs:
+    description: >-
+      The calling job's `needs` context as JSON (`toJSON(needs)`). Every job in
+      it is judged, so a job added to `needs` is counted without another edit.
+    required: true
+  ignore:
+    description: >-
+      Space-separated job ids whose result is advisory. They are read as
+      skipped, so a failure there never fails the verdict.
+    default: ''
+  docs-only:
+    description: "'true' for a docs-only change. It only changes the closing message."
+    default: 'false'
+
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      env:
+        NEEDS:       ${{ inputs.needs }}
+        IGNORE:      ${{ inputs.ignore }}
+        DOCS_ONLY:   ${{ inputs.docs-only }}
+        ACTION_PATH: ${{ github.action_path }}
+      run: '"$ACTION_PATH/summarize.sh"'

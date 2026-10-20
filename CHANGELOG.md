@@ -1,3 +1,9 @@
+## [1.34.2](https://github.com/dodi-smart/.github/compare/v1.34.1...v1.34.2) (2026-10-20)
+
+### ⚡ Performance Improvements
+
+* **pr-checks:** skip the test and build jobs when their command is empty ([3a498c6](https://github.com/dodi-smart/.github/commit/3a498c699697a454f0d208e99811d24f438b23bf)), references [#102](https://github.com/dodi-smart/.github/issues/102)
+
 ## [1.34.1](https://github.com/dodi-smart/.github/compare/v1.34.0...v1.34.1) (2026-10-20)
 
 ### ⚡ Performance Improvements

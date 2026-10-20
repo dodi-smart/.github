@@ -172,6 +172,11 @@ jobs:
       - name: Bundle report sizes chunks once and enforces the limit
         run: ./actions/bundle-report/test.sh
 
+      # hk's status, the summary and the SARIF warning are what `hk: true` shows
+      # a caller. Run against a stub hk.
+      - name: hk-check keeps hk's status and reports through the summary
+        run: ./actions/hk-check/test.sh
+
       # A phase's command reaches the shell unmangled, each phase gets its own
       # subshell, and the first failure stops the rest. pr-checks runs on this.
       - name: run-phases runs each phase alone and stops at the first failure
@@ -581,10 +586,12 @@ jobs:
           print('pr-checks holds contents: read at workflow level, pick and the gate clone nothing')
           "
 
-      # The opt-in `hk` input runs the caller's own hk.pkl over the whole tree.
-      # No job holds security-events: a code scanning upload would force that
-      # grant on every caller, so the SARIF stays an artifact.
-      - name: pr-checks hk is opt-in, checks the whole tree and and holds no new permission
+      # The opt-in `hk` input runs the caller's own hk.pkl over the whole tree,
+      # through actions/hk-check. No job holds security-events: a code scanning
+      # upload would force that grant on every caller, so the SARIF stays an
+      # artifact. A red hk must not hide lint, so the phases after it run unless
+      # the install failed.
+      - name: pr-checks hk is opt-in, checks the whole tree and holds no new permission
         run: |
           set -euo pipefail
           python3 -c "
@@ -598,28 +605,71 @@ jobs:
           if not inp or inp.get('type') != 'boolean' or inp.get('default') is not False:
               errors.append('the hk input must be a boolean that defaults to false, so a caller that never sets it behaves as before.')
           jobs = doc['jobs']
+          phases = lambda st: 'actions/run-phases@' in str(st.get('uses', ''))
           for name in ('checks', 'all'):
               job = jobs[name]
               if 'security-events' in (job.get('permissions') or {}):
                   errors.append(name + ' runs the caller code and must not hold security-events: write.')
               steps = job['steps']
-              runs = [st.get('run', '') for st in steps]
-              hk = [i for i, r in enumerate(runs) if 'hk check' in r]
-              if len(hk) != 1 or 'hk check --all --sarif hk.sarif' not in runs[hk[0]] or '--pr' in runs[hk[0]]:
-                  errors.append(name + ' must run hk check --all --sarif hk.sarif exactly once, never --pr.')
+              if any('hk check' in str(st.get('run', '')) for st in steps):
+                  errors.append(name + ' must run hk through actions/hk-check, not an inline step.')
+              hk = [i for i, st in enumerate(steps) if 'actions/hk-check@' in str(st.get('uses', ''))]
+              if len(hk) != 1:
+                  errors.append(name + ' must use actions/hk-check exactly once.')
                   continue
-              uses = [str(st.get('uses', '')) for st in steps]
-              if not any(u.startswith('jdx/mise-action@') for u in uses[:hk[0]]):
-                  errors.append(name + ' must run jdx/mise-action before hk check.')
-              if not any(st.get('if') == ON for st in steps[:hk[0]] if 'run-phases' in str(st.get('uses', ''))):
-                  errors.append(name + ' must run install (hk only) before hk check.')
-              if not any(str(st.get('if', '')).startswith(OFF) for st in steps if 'run-phases' in str(st.get('uses', ''))):
+              step = steps[hk[0]]
+              if step.get('if') != ON:
+                  errors.append(name + ': the hk-check step must run only when hk is on.')
+              given = step.get('with') or {}
+              if 'steps.setup.outputs.cache-enabled' not in str(given.get('cache', '')):
+                  errors.append(name + ': hk-check must take its cache from setup-stack cache-enabled, or mise caches on a self-hosted Linux runner whose volume is the cache.')
+              if 'needs.pick.outputs.key' not in str(given.get('artifact-name', '')):
+                  errors.append(name + ': the hk-check artifact name must carry needs.pick.outputs.key, or two calls of pr-checks collide.')
+              inst = [i for i, st in enumerate(steps) if st.get('id') == 'install' and phases(st) and st.get('if') == ON]
+              if not inst or inst[0] > hk[0]:
+                  errors.append(name + ' must run install (id: install, hk only) before hk-check.')
+              after = [st for st in steps[hk[0] + 1:] if phases(st) and 'inputs.hk' in str(st.get('if', '')) and '!inputs.hk' not in str(st.get('if', ''))]
+              cond = str(after[0].get('if', '')) if after else ''
+              if len(after) != 1 or '!cancelled()' not in cond or 'steps.install.outcome == \'success\'' not in cond:
+                  errors.append(name + ' must run the phases after hk with !cancelled() and the install outcome, so a red hk does not hide lint and a failed install stops everything.')
+              if not any(str(st.get('if', '')).startswith(OFF) for st in steps if phases(st)):
                   errors.append(name + ' must skip its ordinary Run phases step when hk is on, or lint runs twice.')
           if any('security-events' in (j.get('permissions') or {}) for j in jobs.values()):
               errors.append('no pr-checks job may hold security-events: a code scanning upload would force that permission on every caller.')
+          act = yaml.safe_load(open('actions/hk-check/action.yml'))['runs']['steps']
+          mise = [st for st in act if str(st.get('uses', '')).startswith('jdx/mise-action@')]
+          given = (mise[0].get('with') or {}) if mise else {}
+          if not mise or 'inputs.cache' not in str(given.get('cache', '')):
+              errors.append('hk-check must run jdx/mise-action with cache read from its cache input; a bare default turns the GitHub cache on for self-hosted Linux.')
+          if mise and 'default_branch' not in str(given.get('cache_save', '')):
+              errors.append('hk-check must save the mise cache from the default branch only.')
           if errors:
               sys.exit('::error::' + ' '.join(errors))
-          print('hk defaults off, runs hk check --all in checks and all, and no job holds security-events')
+          print('hk defaults off, runs through hk-check over the whole tree, a red hk hides nothing, and no job holds security-events')
+          "
+
+      # A caller may call pr-checks twice in one workflow, and artifact names are
+      # per run, so every name carries the call's key (a hash of its inputs, from
+      # `pick`). A bare name makes the second upload fail and lets a coverage job
+      # read the other call's report.
+      - name: pr-checks names its artifacts per call
+        run: |
+          set -euo pipefail
+          python3 -c "
+          import sys, yaml
+          jobs = yaml.safe_load(open('.github/workflows/pr-checks.yml'))['jobs']
+          errors = []
+          if 'steps.key.outputs.key' not in str(jobs['pick'].get('outputs', {}).get('key', '')):
+              errors.append('pick must output key, computed by its key step.')
+          for jname, job in jobs.items():
+              for st in job.get('steps') or []:
+                  if 'actions/upload-artifact@' in str(st.get('uses', '')) or 'actions/download-artifact@' in str(st.get('uses', '')):
+                      name = str((st.get('with') or {}).get('name', ''))
+                      if 'needs.pick.outputs.key' not in name or 'pick' not in job.get('needs', []):
+                          errors.append(jname + ' names an artifact ' + repr(name) + ' without needs.pick.outputs.key.')
+          if errors:
+              sys.exit('::error::' + ' '.join(errors))
+          print('every pr-checks artifact name carries the per-call key')
           "
 
       # `test` and `all` run the caller's whole test suite, so the comment token

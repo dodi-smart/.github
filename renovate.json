@@ -52,6 +52,17 @@
       "matchStrings": [
         "default:\\s*['\"](?<currentValue>\\d+\\.\\d+\\.\\d+)['\"][^#\\n]*# renovate: datasource=(?<datasource>\\S+) depName=(?<depName>\\S+)"
       ]
+    },
+    {
+      "description": "The osv-scanner version actions/dependency-check installs: a renovate marker comment, then the pinned version on the next line",
+      "customType": "regex",
+      "managerFilePatterns": [
+        "/^actions/dependency-check/install\\.sh$/"
+      ],
+      "matchStrings": [
+        "# renovate: datasource=(?<datasource>[a-z-]+) depName=(?<depName>\\S+)\\nOSV_SCANNER_VERSION=(?<currentValue>\\d+\\.\\d+\\.\\d+)\\n"
+      ],
+      "extractVersionTemplate": "^v?(?<version>.+)$"
     }
   ],
   "packageRules": [
@@ -103,6 +114,14 @@
       "description": "A react-doctor bump changes what every caller's scan runs, so it must release, unlike the lint tools above. Later rules win, so this overrides ci(self-test) with the chore(deps) this repo releases on",
       "matchDepNames": [
         "react-doctor"
+      ],
+      "semanticCommitType": "chore",
+      "semanticCommitScope": "deps"
+    },
+    {
+      "description": "Unlike the lint tools above, osv-scanner is what actions/dependency-check runs for callers, so a bump releases like any chore(deps). Keep after the custom.regex rule: the later rule wins",
+      "matchPackageNames": [
+        "google/osv-scanner"
       ],
       "semanticCommitType": "chore",
       "semanticCommitScope": "deps"

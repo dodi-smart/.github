@@ -1327,6 +1327,17 @@ jobs:
           print('only the .next/cache steps use restore-keys')
           "
 
+      # The per-stack command table has one copy, defaults.sh: a second one
+      # (in action.yml, or pasted into a workflow for pick) would drift.
+      - name: The per-stack command table lives in one place
+        run: |
+          # Built in two parts, so this step does not match itself.
+          pat='install="bun'; pat="$pat install"
+          copies="$(grep -rlF "$pat" actions .github/workflows)"
+          if [ "$copies" != actions/setup-stack/defaults.sh ]; then
+            echo "::error::the per-stack command table must live in actions/setup-stack/defaults.sh alone; found in: ${copies//$'\n'/ }"; exit 1
+          fi
+
       # A branch ref moves under every caller, and Renovate never proposes a change.
       - name: No action is pinned to a branch
         run: |

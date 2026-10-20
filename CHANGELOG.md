@@ -1,3 +1,9 @@
+## [1.30.5](https://github.com/dodi-smart/.github/compare/v1.30.4...v1.30.5) (2026-10-20)
+
+### 🐛 Bug Fixes
+
+* **setup-stack:** skip setup-bun's own cache on self-hosted runners ([fd4304a](https://github.com/dodi-smart/.github/commit/fd4304a84594b5e15fb8f90dbb258407191e7054))
+
 ## [1.30.4](https://github.com/dodi-smart/.github/compare/v1.30.3...v1.30.4) (2026-10-20)
 
 ### ⬆️ Dependencies

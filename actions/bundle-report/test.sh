@@ -170,6 +170,7 @@ expect "report-file names the report" report-file "$REP"
 expect "no base, no delta" delta-bytes ""
 expect "no base, no failure" failed ""
 expect_md "the comment says there is no base" "no base report"
+expect_md "and says what a base needs" "push to the default branch"
 expect_md "the comment states the total" "Total first-load JS: $(kb "$(sumgz "$P" rt fw app leg)")"
 expect_md "the comment says how first load is counted" "1 kB is 1000 bytes"
 

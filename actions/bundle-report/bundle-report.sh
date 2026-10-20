@@ -194,7 +194,7 @@ fi
     printf '**Total first-load JS: %s**, %s (%s) against %s on the base.\n\n' \
       "$(fmt k "$total")" "$(fmt s "$delta")" "$(pct "$delta" "$base_total")" "$(fmt k "$base_total")"
   else
-    printf '**Total first-load JS: %s.** There is no base report to compare with, so no deltas.\n\n' "$(fmt k "$total")"
+    printf '**Total first-load JS: %s.** There is no base report to compare with, so no deltas. Deltas need a run on a push to the default branch to have saved one.\n\n' "$(fmt k "$total")"
   fi
   if [ ! -s "$ROWS" ]; then
     printf 'No route changed.\n'

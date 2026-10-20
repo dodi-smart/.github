@@ -997,7 +997,8 @@ jobs:
           errors = []
           writers = [n for n, j in jobs.items() if (j.get('permissions') or {}).get('pull-requests') == 'write']
           # zavet and react-doctor post their own comments, as their standalone workflows do.
-          if set(writers) - {'coverage', 'zavet', 'react-doctor'} or 'coverage' not in writers:
+          # bundle-report posts from its own job, like coverage (the next step asserts it).
+          if set(writers) - {'coverage', 'bundle-report', 'zavet', 'react-doctor'} or 'coverage' not in writers:
               errors.append('test/all/build must hold no pull-requests: write, and coverage must: found ' + repr(writers))
           uses = [str(st.get('uses', '')) for st in jobs['coverage']['steps']]
           if 'coverage' not in jobs['pr-checks']['needs']:
@@ -1011,6 +1012,76 @@ jobs:
               sys.exit('::error::' + ' '.join(errors))
           print('only coverage holds pull-requests: write, and the summary needs it')
           "
+
+      # `build` and `all` run the caller's build, so the bundle report's comment
+      # token lives in a job that runs none of it and reads what they upload. Its
+      # base is an exact-key actions/cache entry: `actions: read` would fail every
+      # caller at startup, and a near-match key prints a delta against a commit the
+      # PR is not based on.
+      - name: pr-checks posts the bundle report from a job that runs no repo code
+        run: |
+          set -euo pipefail
+          python3 - <<'BR'
+          import sys, yaml
+          doc = yaml.safe_load(open('.github/workflows/pr-checks.yml'))
+          jobs = doc['jobs']
+          job = jobs['bundle-report']
+          steps = job['steps']
+          uses = lambda st: str(st.get('uses', ''))
+          # Built in pieces: a run script never holds an expression of its own.
+          X = lambda e: '$' + '{{ ' + e + ' }}'
+          errors = []
+          inp = doc[True]['workflow_call']['inputs']
+          for name, typ, default in (('bundle-report', 'boolean', False), ('bundle-max-increase-kb', 'number', 0), ('bundle-next-dir', 'string', '.next')):
+              if inp.get(name, {}).get('type') != typ or inp[name].get('default') != default:
+                  errors.append('input ' + name + ' must be a ' + typ + ' defaulting to ' + repr(default) + ', so a caller that never sets it behaves as before.')
+          if 'bundle-report' not in jobs['pr-checks']['needs'] or 'bundle-report:' not in ' '.join(str(s.get('run', '')) for s in jobs['pr-checks']['steps']):
+              errors.append('the pr-checks summary must need bundle-report and loop over it, or a breached bundle-max-increase-kb stops failing the required context.')
+          if 'inputs.bundle-report' not in str(next(s for s in jobs['pick']['steps'] if s.get('id') == 'need').get('env', {}).get('BUNDLE', '')):
+              errors.append('pick must count inputs.bundle-report in its need step, or a bundle-report-only call picks no light runner.')
+          # No caller code in the job holding the write token, and no actions: read.
+          if any(uses(st).startswith('actions/checkout@') or 'actions/setup-stack' in uses(st) or 'actions/run-phases' in uses(st) for st in steps):
+              errors.append('the bundle-report job must run no caller code: no checkout, setup-stack or run-phases.')
+          perms = job.get('permissions') or {}
+          if 'actions' in perms or perms.get('pull-requests') != 'write':
+              errors.append('the bundle-report job must hold pull-requests: write and no actions permission, which would fail every caller that does not grant it.')
+          if 'bundle-report' in str(jobs['build'].get('permissions')) or any((jobs[j].get('permissions') or {}).get('pull-requests') == 'write' for j in ('build', 'all')):
+              errors.append('build and all run the caller code and must hold no pull-requests: write.')
+          if not any('actions/bundle-report@' in uses(st) for st in steps):
+              errors.append('the bundle-report job must use actions/bundle-report.')
+          if any((st.get('with') or {}).get('base-artifact') for st in steps):
+              errors.append('the bundle-report job must not use base-artifact: it reads artifacts through actions: read.')
+          # build and all upload, only when the input is on, under the per-call key.
+          for name in ('build', 'all'):
+              ups = [st for st in jobs[name]['steps'] if 'pr-checks-bundle-' in str((st.get('with') or {}).get('name', ''))]
+              if len(ups) != 1 or not uses(ups[0]).startswith('actions/upload-artifact@') or str(ups[0].get('if', '')).strip() != X('inputs.bundle-report') or 'needs.pick.outputs.key' not in ups[0]['with']['name']:
+                  errors.append(name + ' must upload pr-checks-bundle-<key> once, with if: inputs.bundle-report and no status function (a red build uploads nothing).')
+          dl = [st for st in steps if uses(st).startswith('actions/download-artifact@')]
+          if len(dl) != 1 or dl[0]['with']['name'] != 'pr-checks-bundle-' + X('needs.pick.outputs.key'):
+              errors.append('bundle-report must download pr-checks-bundle-<key>, the artifact its writers upload.')
+          # The base: an exact-key cache entry per base sha, saved only on a push to the default branch.
+          for st in steps:
+              w = st.get('with') or {}
+              if uses(st).startswith('actions/cache') and w.get('restore-keys'):
+                  errors.append('the bundle base cache takes an exact key: restore-keys would compare with a commit the PR is not based on.')
+          rest = [st for st in steps if uses(st).startswith('actions/cache/restore@')]
+          if len(rest) != 1 or rest[0]['with'].get('key') != 'pr-checks-bundle-base-' + X('github.event.pull_request.base.sha'):
+              errors.append('bundle-report must restore pr-checks-bundle-base-<pull request base sha>, once.')
+          elif str(rest[0]['with'].get('fail-on-cache-miss', 'false')).lower() == 'true':
+              errors.append('the bundle base restore must not set fail-on-cache-miss: true: a miss is sizes without deltas, never a failed job.')
+          save = [st for st in steps if uses(st).startswith('actions/cache/save@')]
+          if len(save) != 1 or save[0]['with'].get('key') != 'pr-checks-bundle-base-' + X('github.sha'):
+              errors.append('bundle-report must save pr-checks-bundle-base-<sha>, once.')
+          else:
+              # The save is gated by the step that stages the file, which is the one that names the branch.
+              stage = next((st for st in steps if st.get('id') == 'stage'), {})
+              cond = str(stage.get('if', ''))
+              if "github.event_name == 'push'" not in cond or 'github.event.repository.default_branch' not in cond or 'steps.stage.outcome' not in str(save[0].get('if', '')):
+                  errors.append('the bundle base must be saved only on a push to the default branch.')
+          if errors:
+              sys.exit('::error::' + ' '.join(errors))
+          print('bundle-report posts from a job with no caller code, reads an exact-key base and saves it from the default branch only')
+          BR
 
       # Each agent workflow used to run the picker as its own hosted job, needed
       # by the agent job. That billed two hosted starts before a proceeding run

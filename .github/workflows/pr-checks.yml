@@ -141,6 +141,18 @@ on:
       coverage-min-overall: { type: number, default: 0 }
       coverage-min-changed: { type: number, default: 0 }
 
+      # Next.js only. A sticky comment with the gzip first-load JS per route and in
+      # total, from the manifests of the build. Deltas need a base report: it is
+      # saved from a run on a PUSH to the default branch, so the caller must also
+      # run this workflow on `push` there; the shipped caller template triggers on
+      # pull_request only, and without a push run the comment lists sizes alone.
+      # `bundle-max-increase-kb` fails the run when the total grew by more than
+      # that many kB against the base (0 = report only). `bundle-next-dir` is the
+      # build directory, e.g. `apps/web/.next` in a monorepo.
+      bundle-report:          { type: boolean, default: false }
+      bundle-max-increase-kb: { type: number,  default: 0 }
+      bundle-next-dir:        { type: string,  default: ".next" }
+
       # Applied to EVERY command step, via setup-stack's env-file. This is where
       # build tuning goes: GRADLE_OPTS, JAVA_OPTS, a worker count. Placeholders
       # and tuning only, never secrets. A value that must stay secret has no
@@ -242,10 +254,11 @@ jobs:
           ZAVET:      ${{ inputs.zavet }}
           RD:         ${{ steps.rd.outputs.matched }}
           COVERAGE:   ${{ inputs.coverage != 'none' && steps.docs.outputs.all-matched != 'true' }}
+          BUNDLE:     ${{ inputs.bundle-report && steps.docs.outputs.all-matched != 'true' }}
         run: |
           set -euo pipefail
           need=false
-          for v in "$SPLIT" "$COMMITLINT" "$ZAVET" "$RD" "$COVERAGE"; do
+          for v in "$SPLIT" "$COMMITLINT" "$ZAVET" "$RD" "$COVERAGE" "$BUNDLE"; do
             [ "$v" = "true" ] && need=true
           done
           echo "needs_light=$need" >> "$GITHUB_OUTPUT"
@@ -493,6 +506,23 @@ jobs:
           build-env-file: ${{ steps.setup.outputs.build-env-file }}
           install:        ${{ steps.setup.outputs.install }}
           build:          ${{ steps.setup.outputs.build }}
+      # The `bundle-report` job posts the comment and holds the write token. This
+      # job runs the caller's code, so it only hands over what the report reads
+      # of the build directory. A red build uploads nothing. The directory starts
+      # with a dot, so hidden files have to be included, and the patterns keep
+      # the rest of the build out. The layout under the directory is kept.
+      - &bundle-upload
+        if: ${{ inputs.bundle-report }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: pr-checks-bundle-${{ needs.pick.outputs.key }}
+          path: |
+            ${{ inputs.bundle-next-dir }}/*-manifest.json
+            ${{ inputs.bundle-next-dir }}/server/app/**/page_client-reference-manifest.js
+            ${{ inputs.bundle-next-dir }}/static/**/*.js
+          include-hidden-files: true
+          if-no-files-found: warn
+          retention-days: 1
 
   # ---------------------------------------------------------------------------
   # Single-job shape: the same phases, in the same order, with the same
@@ -570,6 +600,8 @@ jobs:
           path: ${{ env.COVERAGE_REPORT }}
           if-no-files-found: error
           retention-days: 1
+      # Same upload as `build`, see there.
+      - *bundle-upload
       - *dependency-author
       - *dependency-check
       # Last, on !cancelled(): a red phase still gets its messages checked. A CLI,
@@ -661,6 +693,71 @@ jobs:
           echo "coverage: overall ${OVERALL}% (floor ${MIN_OVERALL}%)"
 
   # ---------------------------------------------------------------------------
+  # The bundle report. Like `coverage`, it posts from a light job that runs none
+  # of the caller's code (no checkout, no setup-stack), reading what `build` or
+  # `all` uploaded. The base is an `actions/cache` entry, not an artifact: a job
+  # asking for `actions: read` would fail every caller at startup, since the
+  # caller template grants only contents, pull-requests and statuses. The entry
+  # is keyed on the PR's base sha, EXACT, with no restore-keys: a near match
+  # would compare with a commit the PR is not based on and print a wrong delta.
+  # No entry means sizes without deltas. Entries are saved on a push to the
+  # default branch, so the caller has to run this workflow there too.
+  # ---------------------------------------------------------------------------
+
+  bundle-report:
+    name: Bundle report
+    if: ${{ !cancelled() && inputs.bundle-report && (needs.build.result == 'success' || needs.all.result == 'success') }}
+    needs: [pick, build, all]
+    runs-on: ${{ fromJson(needs.pick.outputs.light) }}
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pull-requests: write     # the sticky comment
+    steps:
+      - uses: dodi-smart/.github/actions/runner-report@v1
+        with:
+          selector: ${{ needs.pick.outputs.light }}
+      # An upload that found no files leaves no artifact: say so and carry on, as
+      # the action does for a missing build directory.
+      - id: artifact
+        continue-on-error: true
+        uses: actions/download-artifact@v8
+        with:
+          name: pr-checks-bundle-${{ needs.pick.outputs.key }}
+          path: ${{ runner.temp }}/bundle-next
+      - if: ${{ steps.artifact.outcome != 'success' }}
+        run: echo "::warning title=No bundle report::the build uploaded no files from bundle-next-dir, so there is nothing to measure."
+      # The path is relative to the workspace, so save and restore agree on the
+      # cache version whatever the runner's work directory is.
+      - id: base
+        if: ${{ github.event.pull_request.base.sha != '' }}
+        uses: actions/cache/restore@v6
+        with:
+          path: bundle-base/report.json
+          key: pr-checks-bundle-base-${{ github.event.pull_request.base.sha }}
+          fail-on-cache-miss: false
+      - id: report
+        if: ${{ steps.artifact.outcome == 'success' }}
+        uses: dodi-smart/.github/actions/bundle-report@v1
+        with:
+          next-dir:        ${{ runner.temp }}/bundle-next
+          base-file:       ${{ steps.base.outputs.cache-hit == 'true' && format('{0}/bundle-base/report.json', github.workspace) || '' }}
+          max-increase-kb: ${{ inputs.bundle-max-increase-kb }}
+      - id: stage
+        if: ${{ github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && steps.report.outputs.report-file != '' }}
+        env:
+          REPORT: ${{ steps.report.outputs.report-file }}
+        run: |
+          set -euo pipefail
+          mkdir -p bundle-base
+          cp "$REPORT" bundle-base/report.json
+      - if: ${{ steps.stage.outcome == 'success' }}
+        uses: actions/cache/save@v6
+        with:
+          path: bundle-base/report.json
+          key: pr-checks-bundle-base-${{ github.sha }}
+
+  # ---------------------------------------------------------------------------
   # One stable context, on every push, in both modes.
   # ---------------------------------------------------------------------------
 
@@ -689,7 +786,7 @@ jobs:
   # `pick`.
   pr-checks:
     name: PR Checks
-    needs: [pick, checks, test, build, all, coverage, zavet, react-doctor]
+    needs: [pick, checks, test, build, all, coverage, zavet, react-doctor, bundle-report]
     if: always()
     runs-on: ${{ fromJSON((github.event.repository.private && !github.event.pull_request.head.repo.fork) && '["self-hosted","Linux","control"]' || '"ubuntu-latest"') }}
     timeout-minutes: 2
@@ -711,11 +808,12 @@ jobs:
           COVERAGE:      ${{ needs.coverage.result }}
           ZAVET:         ${{ inputs.zavet-blocking && needs.zavet.result || 'skipped' }}
           REACT_DOCTOR:  ${{ inputs.react-doctor-blocking && needs.react-doctor.result || 'skipped' }}
+          BUNDLE:        ${{ needs.bundle-report.result }}
           DOCS_ONLY:     ${{ needs.pick.outputs.docs_only }}
         run: |
           set -euo pipefail
           failed=""
-          for pair in "pick:$PICK" "checks:$CHECKS" "test:$TEST" "build:$BUILD" "all:$ALL" "coverage:$COVERAGE" "zavet:$ZAVET" "react-doctor:$REACT_DOCTOR"; do
+          for pair in "pick:$PICK" "checks:$CHECKS" "test:$TEST" "build:$BUILD" "all:$ALL" "coverage:$COVERAGE" "zavet:$ZAVET" "react-doctor:$REACT_DOCTOR" "bundle-report:$BUNDLE"; do
             name="${pair%%:*}"
             result="${pair#*:}"
             case "$result" in

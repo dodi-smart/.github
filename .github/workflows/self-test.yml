@@ -1302,12 +1302,30 @@ jobs:
       # of its steps. Who saves (cache_save, default branch only) is test.sh's.
       - name: The Kotlin/Native cache uses an exact key
         run: |
-          if [ "$(grep -c 'path: ~/.konan' actions/setup-stack/action.yml)" -lt 2 ]; then
-            echo "::error::expected a restore-only and a saving ~/.konan step"; exit 1
-          fi
-          if grep -A4 'path: ~/.konan' actions/setup-stack/action.yml | grep -q restore-keys; then
-            echo "::error::the ~/.konan cache uses restore-keys. Exact key only."; exit 1
-          fi
+          python3 - <<'PY'
+          import sys, yaml
+          steps = yaml.safe_load(open('actions/setup-stack/action.yml'))['runs']['steps']
+          konan = [s['with'] for s in steps if '.konan' in str((s.get('with') or {}).get('path', ''))]
+          if len(konan) < 2:
+              sys.exit('::error::expected a restore-only and a saving ~/.konan step')
+          if any(w.get('restore-keys') for w in konan):
+              sys.exit('::error::the ~/.konan cache uses restore-keys. Exact key only.')
+          PY
+
+      # .next/cache is the one cache in setup-stack that may take restore-keys:
+      # Next keys its own entries by content. Any other cache step with one is a
+      # package store or a toolchain, and a near match there reimports a poisoned entry.
+      - name: Only the Next.js cache uses restore-keys
+        run: |
+          python3 -c "
+          import sys, yaml
+          steps = yaml.safe_load(open('actions/setup-stack/action.yml'))['runs']['steps']
+          for s in steps:
+              w = s.get('with') or {}
+              if 'actions/cache' in str(s.get('uses', '')) and w.get('restore-keys') and 'steps.next.outputs.paths' not in str(w.get('path')):
+                  sys.exit('::error::setup-stack caches ' + str(w.get('path')) + ' with restore-keys. Only .next/cache may; every other cache takes an exact key.')
+          print('only the .next/cache steps use restore-keys')
+          "
 
       # A branch ref moves under every caller, and Renovate never proposes a change.
       - name: No action is pinned to a branch

@@ -714,6 +714,7 @@ Inputs beyond `stack` and the command overrides:
 | `build-env` | empty | The same format and the same parser, for the build command only. Written to the `build-env-file` output. |
 | `bun-version` | `auto` | See below. |
 | `rust-toolchain` | `stable` | Passed to the pinned rust toolchain action: `stable`, `nightly`, `1.89.0`, or any rustup specifier. |
+| `next-cache` | `auto` | Keep Next.js's `.next/cache` between jobs: `auto`, `true` or `false`. See Caches. |
 
 Outputs: `env-file` and `build-env-file` (both always written, empty when
 nothing was given, so source them unconditionally), plus the resolved `install`,
@@ -776,6 +777,14 @@ branch (it publishes no version tags), and Renovate can still move that pin.
 - **setup-bun's cache of the bun executable follows the same mode**, so it is
   off on self-hosted Linux, where a moved work dir made it restore bun to the
   wrong path.
+- **`.next/cache` is kept for Next.js apps** (`next-cache`, default `auto`):
+  every directory with a `next.config.*` within three levels, for stack `bun`
+  or `node` (`true` takes any stack, and the root when none is found). Where a
+  directory outlives the job (`RUNNER_PERSISTENT_CACHE`, else `~/.cache` on
+  self-hosted Linux), `.next/cache` becomes a link into
+  `<dir>/next/<owner>-<repo>[/<app dir>]`, out of reach of checkout's clean.
+  Elsewhere, when the Actions cache is on, `actions/cache` keeps it, keyed on
+  the lockfiles and then the commit's tree. Always off when isolated.
 - **Gradle repos with a cache on** get `setup-gradle`, including `stack: xcode`
   when the repo has a root `gradlew`. A repo whose `gradle/libs.versions.toml`
   names the multiplatform plugin and a `kotlin` version also caches `~/.konan`,
@@ -808,6 +817,11 @@ misses on every commit by construction, then falls through `restore-keys` to
 whatever another branch left behind. It surfaces as a compile error in a file the
 pull request never touched. Reuse of compiled output is the build tool's job, by
 content hash, and `setup-stack` already wires it up.
+
+`.next/cache` is the exception, and the only cache that takes `restore-keys`:
+Next addresses its own entries by content, so an entry from another commit is
+reused where it fits. `build/` and `.gradle` hold absolute paths; Next's cache
+does not. The rest of `.next` is never cached.
 
 ## Supabase checks
 

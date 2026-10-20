@@ -36,6 +36,9 @@
 #   flutter-action). Never a package store, and never restore-keys on one, which
 #   is how a poisoned entry reimports. The one extra cache, ~/.konan, is a
 #   toolchain download (Kotlin/Native's LLVM), not a store: exact key, no restore-keys.
+#
+#   .next/cache (next-cache) is the one cache that takes restore-keys, because
+#   Next addresses its entries by content. See the `next` step.
 name: Setup stack
 description: Install the toolchain for a stack and resolve its package-cache mode.
 
@@ -88,6 +91,18 @@ inputs:
       cache). Applies to setup-gradle / rust-cache / flutter-action, the
       Kotlin/Native toolchain cache and setup-bun's cache of the bun executable,
       never bun's install cache.
+    default: 'auto'
+  next-cache:
+    description: >-
+      auto | true | false. Keep Next.js's build cache (`.next/cache`) between
+      jobs, for every directory holding a next.config.{js,mjs,cjs,ts,mts} within
+      three levels (node_modules and .git skipped). auto is on for stack bun or
+      node when one is found; true falls back to the repo root. Where a
+      directory outlives the job (RUNNER_PERSISTENT_CACHE, or ~/.cache/next on
+      self-hosted Linux) `.next/cache` becomes a link into it, one subdirectory
+      per repository; elsewhere the Actions cache is used when the cache mode
+      allows it. Always off when isolated, true included: a verification job
+      must not see yesterday's build. Needs the repo checked out first.
     default: 'auto'
 
   env:
@@ -218,6 +233,7 @@ runs:
         STACK: ${{ inputs.stack }}
         ISOLATE: ${{ inputs.isolate }}
         CACHE: ${{ inputs.cache }}
+        NEXT_CACHE: ${{ inputs.next-cache }}
         RUNNER_ENVIRONMENT: ${{ runner.environment }}
         RUNNER_ARCH: ${{ runner.arch }}
         RUNNER_OS: ${{ runner.os }}
@@ -237,6 +253,10 @@ runs:
         case "$CACHE" in
           auto|true|false) : ;;
           *) echo "::error::cache must be auto, true, or false (got '$CACHE')"; exit 1 ;;
+        esac
+        case "$NEXT_CACHE" in
+          auto|true|false) : ;;
+          *) echo "::error::next-cache must be auto, true, or false (got '$NEXT_CACHE')"; exit 1 ;;
         esac
 
         # isolate=true, or self-hosted Linux ARM64. Deliberately not plain
@@ -283,6 +303,15 @@ runs:
           fi
         fi
 
+        # The one directory that outlives the job, for caches that are a plain
+        # directory (Next's): the runner's declaration, else the home the named
+        # volume backs on self-hosted Linux. Empty everywhere else.
+        cache_dir="$persistent"
+        if [ -z "$cache_dir" ] && [ "$do_isolate" != "true" ] && [ -n "${HOME:-}" ] \
+          && [ "${RUNNER_ENVIRONMENT:-}" = "self-hosted" ] && [ "${RUNNER_OS:-}" = "Linux" ]; then
+          cache_dir="$HOME/.cache"
+        fi
+
         # No volume backs ~/.pub-cache and the image's LRU cap does not reach
         # it, so it is job-scoped in every mode. See the header.
         echo "PUB_CACHE=${RUNNER_TEMP}/pub-cache" >> "$GITHUB_ENV"
@@ -320,8 +349,85 @@ runs:
           echo "cache_enabled=$cache_enabled"
           echo "cache_save=$cache_save"
           echo "persistent=$persistent"
+          echo "cache_dir=$cache_dir"
         } >> "$GITHUB_OUTPUT"
         echo "stack: $STACK, isolate=$do_isolate, cache=$cache_enabled, save=$cache_save, persistent=${persistent:-none} (input cache=$CACHE, env=${RUNNER_ENVIRONMENT:-unknown}/${RUNNER_OS:-unknown}/${RUNNER_ARCH:-unknown})"
+
+    # Next's build cache. `link` points .next/cache into resolve's cache_dir,
+    # where checkout's clean cannot reach it; `actions` hands the two cache steps
+    # below the paths and the key. Off when isolated, next-cache=true included:
+    # a verification job must not see yesterday's build state.
+    - id: next
+      shell: bash
+      env:
+        STACK: ${{ inputs.stack }}
+        NEXT_CACHE: ${{ inputs.next-cache }}
+        ISOLATED: ${{ steps.resolve.outputs.isolated }}
+        CACHE_ENABLED: ${{ steps.resolve.outputs.cache_enabled }}
+        CACHE_DIR: ${{ steps.resolve.outputs.cache_dir }}
+        RUNNER_OS: ${{ runner.os }}
+        RUNNER_ARCH: ${{ runner.arch }}
+        ACTION_PATH: ${{ github.action_path }}
+      # GITHUB_REPOSITORY comes from the runner. Paths are quoted: a cache_dir can
+      # contain spaces. No mapfile, so it runs on a macOS runner's bash 3.2.
+      run: |
+        set -euo pipefail
+        mode=off; paths=""; key=""; restore=""; apps=""
+        # isolated -> off; false -> off; true -> on; auto -> on for bun and node
+        # only, so no other stack walks its tree.
+        on=false
+        case "$NEXT_CACHE:$ISOLATED:$STACK" in
+          *:true:*|false:*) : ;;
+          true:*) on=true ;;
+          auto:*:bun|auto:*:node) on=auto ;;
+        esac
+        if [ "$on" != false ]; then
+          apps="$(find . -maxdepth 3 \( -name node_modules -o -name .git \) -prune -o -type f \
+              \( -name 'next.config.js' -o -name 'next.config.mjs' -o -name 'next.config.cjs' \
+                 -o -name 'next.config.ts' -o -name 'next.config.mts' \) -print 2>/dev/null \
+            | sed -e 's|/[^/]*$||' -e 's|^\./||' | LC_ALL=C sort -u)" || true
+          if [ -z "$apps" ]; then
+            if [ "$on" = true ]; then apps="."; else on=false; fi
+          fi
+        fi
+
+        # One target per app, under one directory per repository. A real
+        # .next/cache left by an earlier job would make ln link inside it.
+        link_apps() {
+          local app target
+          while IFS= read -r app; do
+            target="$CACHE_DIR/next/${GITHUB_REPOSITORY//\//-}"
+            [ "$app" = "." ] || target="$target/$app"
+            mkdir -p "$target" "$app/.next" || return 1
+            if [ -d "$app/.next/cache" ] && [ ! -L "$app/.next/cache" ]; then rm -rf "$app/.next/cache" || return 1; fi
+            ln -sfn "$target" "$app/.next/cache" || return 1
+          done <<< "$apps"
+        }
+
+        if [ "$on" != false ] && [ -n "$CACHE_DIR" ]; then
+          # A build cache is a nicety: failing to place it never fails the job.
+          if link_apps; then mode="link"
+          else echo "::warning::could not link .next/cache into $CACHE_DIR/next; building without a kept Next.js cache"; fi
+        elif [ "$on" != false ] && [ "$CACHE_ENABLED" = "true" ]; then
+          mode=actions
+          paths="$(printf '%s\n' "$apps" | sed -e 's|$|/.next/cache|' -e 's|^\./||')"
+          # Lockfiles by their index hashes (the one list, lockfiles.re), then
+          # the commit's tree: content-addressed, and no workspace walk.
+          # awk reads the ERE from ENVIRON, which applies no escape processing.
+          lock="$( { git ls-files -s 2>/dev/null || true; } \
+            | RE="$(cat "$ACTION_PATH/lockfiles.re")" awk -F '\t' '$2 ~ ENVIRON["RE"]' | git hash-object --stdin)"
+          tree="$(git rev-parse 'HEAD^{tree}' 2>/dev/null || echo none)"
+          restore="next-$RUNNER_OS-$RUNNER_ARCH-$lock-"
+          key="$restore$tree"
+        fi
+
+        {
+          echo "mode=$mode"
+          echo "key=$key"
+          echo "restore=$restore"
+          printf 'paths<<__SETUP_STACK_EOF__\n%s\n__SETUP_STACK_EOF__\n' "$paths"
+        } >> "$GITHUB_OUTPUT"
+        echo "next: mode=$mode (input next-cache=$NEXT_CACHE), apps=$(printf '%s' "$apps" | tr '\n' ' ')"
 
     # Resolved here rather than by setup-bun's bun-version-file, which reads one
     # file only. setup-bun takes an exact version or a range, never a leading v.
@@ -404,6 +510,24 @@ runs:
       with:
         path: ~/.konan
         key: konan-${{ runner.os }}-${{ runner.arch }}-${{ steps.gradle.outputs.kotlin }}
+
+    # The one cache here with restore-keys: Next addresses its own entries by
+    # content, so an entry from another commit is reused where it fits. Every
+    # other cache is a store or a toolchain and takes an exact key. The same
+    # two-step cache_save split as ~/.konan.
+    - if: steps.next.outputs.mode == 'actions' && steps.resolve.outputs.cache_save != 'true'
+      uses: actions/cache/restore@v6
+      with:
+        path: ${{ steps.next.outputs.paths }}
+        key: ${{ steps.next.outputs.key }}
+        restore-keys: ${{ steps.next.outputs.restore }}
+
+    - if: steps.next.outputs.mode == 'actions' && steps.resolve.outputs.cache_save == 'true'
+      uses: actions/cache@v6
+      with:
+        path: ${{ steps.next.outputs.paths }}
+        key: ${{ steps.next.outputs.key }}
+        restore-keys: ${{ steps.next.outputs.restore }}
 
     - if: inputs.stack == 'android'
       uses: android-actions/setup-android@v4

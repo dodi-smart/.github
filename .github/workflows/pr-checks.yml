@@ -73,9 +73,10 @@ on:
       single-job: { type: boolean, default: false }
 
       # Every changed file must match one of these globs (newline-separated,
-      # `fnmatch`-style: `*` crosses `/`) for the run to skip `checks`, `test`,
-      # `build` and `all`. `commitlint` still runs, because the commit message
-      # is what it checks, and is unaffected by which files changed.
+      # `fnmatch`-style: `*` crosses `/`) for the run to skip `test`, `build`
+      # and `all`, and every step of `checks` but commitlint. That step still runs
+      # on the light runner when `commitlint` is on, even with `single-job`,
+      # because the commit message is what it checks, not the files.
       #
       # `docs_only` is always `false` on `workflow_dispatch`, and whenever the
       # changed files cannot be listed in full (an API error, or the 3000-file
@@ -231,24 +232,6 @@ jobs:
         with:
           weight:        ${{ inputs.heavy-weight }}
 
-  # A CLI, not a Docker action: see actions/commitlint.
-  commitlint:
-    if: inputs.commitlint
-    needs: [pick]
-    runs-on: ${{ fromJson(needs.pick.outputs.light) }}
-    timeout-minutes: 10
-    permissions:
-      contents: read
-      pull-requests: read
-    steps:
-      - uses: dodi-smart/.github/actions/runner-report@v1
-        with:
-          selector: ${{ needs.pick.outputs.light }}
-      - uses: dodi-smart/.github/actions/commitlint@v1
-        with:
-          config: ${{ inputs.commitlint-config }}
-          number: ${{ github.event.pull_request.number }}
-
   # Full history, because guards walk the pull request's commits.
   zavet:
     name: Zavet Check
@@ -305,21 +288,28 @@ jobs:
   # first failure, and puts a timing table in the job summary.
   # ---------------------------------------------------------------------------
 
+  # On a docs-only change this job runs for commitlint alone, even with
+  # `single-job`, so every other step skips on `docs_only`. See AGENTS.md.
   checks:
-    if: ${{ !inputs.single-job && needs.pick.outputs.docs_only != 'true' }}
+    if: ${{ (!inputs.single-job && needs.pick.outputs.docs_only != 'true') || (inputs.commitlint && needs.pick.outputs.docs_only == 'true') }}
     needs: [pick]
     runs-on: ${{ fromJson(needs.pick.outputs.light) }}
     timeout-minutes: ${{ inputs.timeout-minutes }}
+    permissions:
+      contents: read
+      pull-requests: read      # commitlint
     steps:
       - uses: dodi-smart/.github/actions/runner-report@v1
         with:
           selector: ${{ needs.pick.outputs.light }}
-      - uses: actions/checkout@v7
+      - if: ${{ needs.pick.outputs.docs_only != 'true' }}
+        uses: actions/checkout@v7
         with: { persist-credentials: false }
       # Every job passes every command: setup-stack only resolves them into
       # outputs, and each job's `run-phases` reads the ones it uses. That keeps
       # the four calls identical, so this one is written once and aliased.
       - id: setup
+        if: ${{ needs.pick.outputs.docs_only != 'true' }}
         uses: dodi-smart/.github/actions/setup-stack@v1
         with: &setup-stack
           stack:           ${{ inputs.stack }}
@@ -342,20 +332,20 @@ jobs:
       # `hk: false` the single `Run phases` step below runs as it always did.
       - id: install
         name: Run phases (install)
-        if: ${{ inputs.hk }}
+        if: ${{ inputs.hk && needs.pick.outputs.docs_only != 'true' }}
         uses: dodi-smart/.github/actions/run-phases@v1
         with:
           env-file: ${{ steps.setup.outputs.env-file }}
           install:  ${{ steps.setup.outputs.install }}
       # The whole tree, never `--pr`; see actions/hk-check. Its mise cache
       # follows setup-stack's, so it stays off on a self-hosted Linux runner.
-      - if: ${{ inputs.hk }}
+      - if: ${{ inputs.hk && needs.pick.outputs.docs_only != 'true' }}
         uses: dodi-smart/.github/actions/hk-check@v1
         with:
           cache:         ${{ steps.setup.outputs.cache-enabled }}
           artifact-name: hk-sarif-${{ needs.pick.outputs.key }}
       - name: Run phases
-        if: ${{ !inputs.hk }}
+        if: ${{ !inputs.hk && needs.pick.outputs.docs_only != 'true' }}
         uses: dodi-smart/.github/actions/run-phases@v1
         with:
           env-file:    ${{ steps.setup.outputs.env-file }}
@@ -372,6 +362,14 @@ jobs:
           lint:        ${{ steps.setup.outputs.lint }}
           design-lint: ${{ steps.setup.outputs.design-lint }}
           typecheck:   ${{ steps.setup.outputs.typecheck }}
+      # Last, on !cancelled(): a red phase still gets its messages checked. A CLI,
+      # not a Docker action: see actions/commitlint.
+      - name: commitlint
+        if: ${{ !cancelled() && inputs.commitlint }}
+        uses: dodi-smart/.github/actions/commitlint@v1
+        with:
+          config: ${{ inputs.commitlint-config }}
+          number: ${{ github.event.pull_request.number }}
 
   test:
     if: ${{ !inputs.single-job && needs.pick.outputs.docs_only != 'true' }}
@@ -449,6 +447,9 @@ jobs:
     needs: [pick]
     runs-on: ${{ fromJson(needs.pick.outputs.heavy) }}
     timeout-minutes: ${{ inputs.timeout-minutes }}
+    permissions:
+      contents: read
+      pull-requests: read      # commitlint
     outputs:
       workspace: ${{ github.workspace }}    # the coverage job maps report paths with it
     steps:
@@ -511,6 +512,14 @@ jobs:
           path: ${{ env.COVERAGE_REPORT }}
           if-no-files-found: error
           retention-days: 1
+      # Last, on !cancelled(): a red phase still gets its messages checked. A CLI,
+      # not a Docker action: see actions/commitlint.
+      - name: commitlint
+        if: ${{ !cancelled() && inputs.commitlint }}
+        uses: dodi-smart/.github/actions/commitlint@v1
+        with:
+          config: ${{ inputs.commitlint-config }}
+          number: ${{ github.event.pull_request.number }}
 
   # ---------------------------------------------------------------------------
   # The coverage comment. Posting needs `pull-requests: write`, and `test` and
@@ -599,12 +608,13 @@ jobs:
   # `<caller job id> / pr-checks` exists on every PR push whether single-job or
   # split, and whether or not the change is docs-only, which is exactly what
   # `checks / checks` and `checks / all` cannot promise: one of them is always
-  # skipped depending on `single-job`, and both are skipped on a docs-only
-  # change. A required context that a docs-only push never creates is a ruleset
-  # that waits forever, which is what a caller's `paths-ignore` used to cause.
+  # skipped depending on `single-job`, and on a docs-only change `all` is
+  # skipped and `checks` runs only when commitlint is on. A required context
+  # that a docs-only push never creates is a ruleset that waits forever, which is
+  # what a caller's `paths-ignore` used to cause.
   #
-  # It needs `checks`, so a red lint fails the required context even though
-  # `build` runs beside it.
+  # It needs `checks` and `all`, so a red lint or a bad commit message fails the
+  # required context even though `build` runs beside them.
   #
   # `zavet` and `react-doctor` stay out of `needs` and the loop below on purpose.
   #
@@ -614,7 +624,7 @@ jobs:
   # `pick`.
   pr-checks:
     name: PR Checks
-    needs: [pick, commitlint, checks, test, build, all, coverage]
+    needs: [pick, checks, test, build, all, coverage]
     if: always()
     runs-on: ${{ fromJSON((github.event.repository.private && !github.event.pull_request.head.repo.fork) && '["self-hosted","Linux","control"]' || '"ubuntu-latest"') }}
     timeout-minutes: 2
@@ -629,7 +639,6 @@ jobs:
       - name: Summarize
         env:
           PICK:          ${{ needs.pick.result }}
-          COMMITLINT:    ${{ needs.commitlint.result }}
           CHECKS:        ${{ needs.checks.result }}
           TEST:          ${{ needs.test.result }}
           BUILD:         ${{ needs.build.result }}
@@ -639,7 +648,7 @@ jobs:
         run: |
           set -euo pipefail
           failed=""
-          for pair in "pick:$PICK" "commitlint:$COMMITLINT" "checks:$CHECKS" "test:$TEST" "build:$BUILD" "all:$ALL" "coverage:$COVERAGE"; do
+          for pair in "pick:$PICK" "checks:$CHECKS" "test:$TEST" "build:$BUILD" "all:$ALL" "coverage:$COVERAGE"; do
             name="${pair%%:*}"
             result="${pair#*:}"
             case "$result" in

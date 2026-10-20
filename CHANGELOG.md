@@ -1,3 +1,9 @@
+## [1.30.4](https://github.com/dodi-smart/.github/compare/v1.30.3...v1.30.4) (2026-10-20)
+
+### ⬆️ Dependencies
+
+* **deps:** update dtolnay/rust-toolchain digest to 683b588 ([fd5e21e](https://github.com/dodi-smart/.github/commit/fd5e21e682bd17ec61db46e44a9c4cae8bd04fc2))
+
 ## [1.30.3](https://github.com/dodi-smart/.github/compare/v1.30.2...v1.30.3) (2026-10-16)
 
 ### 🐛 Bug Fixes

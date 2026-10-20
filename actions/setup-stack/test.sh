@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Tests for envfile.sh and bun-version.sh.
+# Tests for envfile.sh, bun-version.sh and the resolve and defaults steps.
 #
 # Run: actions/setup-stack/test.sh
 set -uo pipefail
@@ -76,12 +76,17 @@ check "mise latest passes through" "latest mise.toml" "$(resolve "$d" auto)"
 d="$(fx)"; printf '[settings]\nbun = "7.7.7"\n' > "$d/mise.toml"
 check "no bun under [tools] -> latest" "latest none" "$(resolve "$d" auto)"
 
-# --- the defaults step: lock command, version files and the lockfile list.
-python3 - "$HERE/action.yml" "$TMP/defaults.sh" <<'EOF'
+# --- action.yml, read once: the defaults and resolve scripts, and setup-bun's no-cache.
+python3 - "$HERE/action.yml" "$TMP" <<'EOF'
 import sys, yaml
 steps = yaml.safe_load(open(sys.argv[1]))['runs']['steps']
-open(sys.argv[2], 'w').write([s for s in steps if s.get('id') == 'defaults'][0]['run'])
+for id in ('defaults', 'resolve'):
+    open(f'{sys.argv[2]}/{id}.sh', 'w').write([s for s in steps if s.get('id') == id][0]['run'])
+bun = [s for s in steps if str(s.get('uses', '')).startswith('oven-sh/setup-bun@')][0]
+open(f'{sys.argv[2]}/bun-no-cache', 'w').write(str(bun['with'].get('no-cache', '')))
 EOF
+
+# --- the defaults step: lock command, version files and the lockfile list.
 defaults() { # stack output [VAR=VALUE...] -> that output's value
   local stack="$1" key="$2"; shift 2
   : > "$TMP/defaults.out"
@@ -110,6 +115,22 @@ for f in bun.lock bun.lockb package-lock.json pnpm-lock.yaml yarn.lock pubspec.l
   check "lockfiles covers $f" yes "$(locked "$f")"
 done
 check "lockfiles does not cover a manifest"    no  "$(locked package.json)"
+
+# --- the resolve step: which runners get GitHub cache, setup-bun's included.
+cached() { # environment os arch [isolate] [cache] -> cache_enabled
+  : > "$TMP/resolve.out"
+  env -i PATH="$PATH" STACK=bun ISOLATE="${4:-false}" CACHE="${5:-auto}" RUNNER_ENVIRONMENT="$1" RUNNER_OS="$2" \
+    RUNNER_ARCH="$3" RUNNER_TEMP="$TMP" GITHUB_ENV=/dev/null GITHUB_OUTPUT="$TMP/resolve.out" \
+    bash "$TMP/resolve.sh" >/dev/null 2>&1
+  sed -n 's/^cache_enabled=//p' "$TMP/resolve.out"
+}
+check "hosted caches"                          true  "$(cached github-hosted Linux X64)"
+check "self-hosted Linux does not cache"       false "$(cached self-hosted Linux X64)"
+check "self-hosted macOS caches"               true  "$(cached self-hosted macOS ARM64)"
+check "isolate turns cache off on hosted"      false "$(cached github-hosted Linux X64 true)"
+check "cache: false turns it off on hosted"    false "$(cached github-hosted Linux X64 false false)"
+# shellcheck disable=SC2016  # the expression is matched literally
+check "setup-bun's cache follows the mode"     '${{ steps.resolve.outputs.cache_enabled != '\''true'\'' }}' "$(< "$TMP/bun-no-cache")"
 
 echo "setup-stack: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

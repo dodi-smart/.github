@@ -73,7 +73,8 @@ inputs:
       auto | true | false. auto becomes true on github-hosted and on self-hosted
       macOS (ephemeral VMs), and is ignored when isolated or on self-hosted
       Linux (persistent volumes are the cache there). Applies to setup-gradle /
-      rust-cache / flutter-action and the Kotlin/Native toolchain cache, never bun.
+      rust-cache / flutter-action, the Kotlin/Native toolchain cache and
+      setup-bun's cache of the bun executable, never bun's install cache.
     default: 'auto'
 
   env:
@@ -287,7 +288,12 @@ runs:
       with:
         bun-version: ${{ steps.bun.outputs.version }}
         # The bun install cache is never uploaded to GitHub on any runner.
-        # setup-bun's cache of the bun executable stays on: exact key, not a store.
+        # setup-bun's cache of the bun executable follows the resolved mode, so
+        # it is off on self-hosted Linux, whose persistent home already has bun.
+        # actions/cache stores a path outside the workspace relative to it: once
+        # a runner's work dir moved, a hit restored bun to the wrong place, and
+        # a hit never re-saves the entry to repair it.
+        no-cache: ${{ steps.resolve.outputs.cache_enabled != 'true' }}
 
     - if: inputs.stack == 'node'
       uses: actions/setup-node@v7

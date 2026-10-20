@@ -1742,6 +1742,16 @@ jobs:
       # from hk.pkl, the same definition the local git hooks use. mise.toml
       # pins every tool, and Renovate bumps the pins. .github/jactionlint.yaml
       # holds the linter's policy, with the reason for each exception.
-      - uses: jdx/mise-action@v5
+      # Through actions/hk-check, the step pr-checks' `hk: true` runs, so every
+      # pull request here runs it for real: mise, `hk check --all --sarif`, the
+      # summary and the artifact.
       - name: Lint (hk check --all)
-        run: hk check --all
+        uses: ./actions/hk-check
+        with:
+          cache: 'true'    # hosted, so the GitHub cache is the only cache
+          artifact-name: self-test-hk-sarif
+      # hk-check only warns on a bad SARIF file; here it fails, so an hk bump that
+      # renames the flag or breaks the format shows up before a caller uploads it.
+      - name: hk wrote valid SARIF
+        if: ${{ !cancelled() }}
+        run: jq -e '.version and (.runs | type == "array")' hk.sarif > /dev/null

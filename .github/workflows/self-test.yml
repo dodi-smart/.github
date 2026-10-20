@@ -248,6 +248,68 @@ jobs:
           print('the agent jobs cannot push, and pr-iterate lands through merge-gate')
           PY
 
+      # A conflicted agent PR is brought up to date by a merge round and nothing
+      # else: a rebase or force-push rewrites what the loop counted and a
+      # reviewer read, and the update job holds no token that pushes by itself.
+      # Also: the sweep can reach the gate (it takes `schedule`), and merge-gate
+      # squashes a factory PR, pinned to the head it read.
+      - name: A conflicted agent PR is merged into, never rebased or forced
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import glob, re, sys, yaml
+          bad = []
+          wf = yaml.safe_load(open('.github/workflows/pr-iterate.yml'))
+          upd = wf['jobs'].get('update')
+          if not upd:
+              bad.append('pr-iterate has no update job')
+          else:
+              if (upd.get('permissions') or {}).get('contents') == 'write':
+                  bad.append('pr-iterate update holds contents write; its push goes through push-round')
+              if upd.get('needs') != ['gate'] or "action == 'update'" not in str(upd.get('if', '')):
+                  bad.append('pr-iterate update must need the gate and run only on the update action')
+              steps = upd.get('steps') or []
+              co = [x for x in steps if 'actions/checkout@' in str(x.get('uses', ''))]
+              if not co or (co[0].get('with') or {}).get('persist-credentials') is not False:
+                  bad.append('pr-iterate update checks out with persisted credentials')
+              push = [x for x in steps if 'actions/push-round@' in str(x.get('uses', ''))]
+              if len(push) != 1 or str((push[0].get('with') or {}).get('merge')) != 'true':
+                  bad.append('pr-iterate update must push only through push-round with merge: true')
+              if any(re.search(r'\bgit\s+push\b', str(x.get('run', ''))) for x in steps):
+                  bad.append('pr-iterate update pushes outside push-round')
+          gate = wf['jobs']['gate']
+          agate = [x for x in gate['steps'] if 'agent-gate@' in str(x.get('uses', ''))][0]
+          events = str((agate.get('with') or {}).get('events', '')).split()
+          if 'schedule' not in events:
+              bad.append('pr-iterate agent-gate events omit schedule, so the sweep never proceeds')
+          sweep = [x for x in gate['steps'] if x.get('id') == 'sweep']
+          if not sweep or (sweep[0].get('with') or {}).get('command') != 'sweep':
+              bad.append('pr-iterate gate has no sweep step')
+          # No rebase or force-push in the files the update job runs (tests aside).
+          pats = [r'\bgit\s+rebase\b', r'\bpush\b[^\n]*\s(-[a-zA-Z]*f[a-zA-Z]*|--force\S*)(\s|$)', r'\+HEAD:']
+          files = ['.github/workflows/pr-iterate.yml'] + [f for f in glob.glob('actions/push-round/*') + glob.glob('actions/factory/*')
+                                                          if not f.endswith('test.sh')]
+          for f in files:
+              text = open(f).read()
+              for pat in pats:
+                  if re.search(pat, text):
+                      bad.append(f + ' rebases or force-pushes (' + pat + ')')
+          # merge-gate: a factory PR is squashed, pinned to the head it read.
+          mg = yaml.safe_load(open('actions/merge-gate/action.yml'))['runs']['steps']
+          run = [x for x in mg if x.get('id') == 'merge'][0]['run']
+          factory, _, deps = run.partition('else')
+          if '--squash' not in factory or 'factory' not in factory:
+              bad.append('merge-gate must squash a factory PR')
+          if '--rebase' not in deps or '--squash' in deps:
+              bad.append('merge-gate must keep rebasing a dependency PR')
+          merges = [l for l in run.splitlines() if 'gh pr merge' in l]
+          if not merges or any('--match-head-commit' not in l for l in merges):
+              bad.append('merge-gate must pin every merge with --match-head-commit')
+          if bad:
+              sys.exit('::error::' + '; '.join(bad))
+          print('a conflicted agent PR is merged into through push-round, and a factory PR lands by squash')
+          PY
+
       # Only a bot's `chore(release): … [skip ci]` skips the guard wall (either
       # half alone is still checked), only a decision or spec declaring `checks:`
       # needs an install, and only a same-repo PR from the integration branch is a

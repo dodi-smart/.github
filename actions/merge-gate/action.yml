@@ -86,17 +86,21 @@ runs:
 
     # Pinned to the commit the decision read: a push since then fails the
     # merge instead of merging what nobody verified. The App is the merge actor
-    # the org rulesets accept.
+    # the org rulesets accept. A dependency PR is rebased; an agent PR is squashed
+    # under the PR's title with its trailers (gate.sh squash-body).
     - id: merge
       if: steps.decide.outputs.merge == 'true'
       shell: bash
       env:
         APP_TOKEN: ${{ steps.token.outputs.token }}
+        POLICY:    ${{ inputs.policy }}
         REPO:      ${{ github.repository }}
         PR:        ${{ steps.pr.outputs.number }}
         SHA:       ${{ steps.pr.outputs.head-sha }}
+        TITLE:     ${{ steps.pr.outputs.title }}
         KIND:      ${{ steps.decide.outputs.kind }}
         REASON:    ${{ steps.decide.outputs.reason }}
+        ACTION_PATH: ${{ github.action_path }}
       run: |
         set -euo pipefail
         echo "merged=false" >> "$GITHUB_OUTPUT"
@@ -104,7 +108,13 @@ runs:
           echo "::warning title=Not merged::GH_APP_CLIENT_ID is not set, and only the org App may merge."
           exit 0
         fi
-        GH_TOKEN="$APP_TOKEN" gh pr merge "$PR" --repo "$REPO" --rebase --match-head-commit "$SHA"
+        if [ "$POLICY" = factory ]; then
+          body=$(GH_TOKEN="$APP_TOKEN" gh api --paginate "/repos/$REPO/pulls/$PR/commits?per_page=100" --jq '.[].commit.message | @base64' \
+                   | "$ACTION_PATH/gate.sh" squash-body)
+          GH_TOKEN="$APP_TOKEN" gh pr merge "$PR" --repo "$REPO" --squash --subject "$TITLE (#$PR)" --body "$body" --match-head-commit "$SHA"
+        else
+          GH_TOKEN="$APP_TOKEN" gh pr merge "$PR" --repo "$REPO" --rebase --match-head-commit "$SHA"
+        fi
         echo "merged=true" >> "$GITHUB_OUTPUT"
         echo "::notice title=Merged::#$PR ($KIND): $REASON"
 

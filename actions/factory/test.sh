@@ -181,6 +181,13 @@ expect "legacy: with no round 0 of its own only the old list is guarded" grep -q
 legacy_repo 12; commit "$AGENT" test/a.test.ts 'fix: relax'
 expect "legacy: issue 12 does guard its own entry"            grep -q 'test/a.test.ts' <<<"$(round 12)"
 
+# A merge round may not hand-resolve a lockfile either.
+holdout_repo
+mrp=$(cd "$WORK/r" && BASE_SHA="$BASE" ISSUE=1 GITHUB_OUTPUT=/dev/null bash "$F" holdout | sed -n 's/^merge-refuse-paths=//p')
+expect "merge-refuse-paths holds the holdout test"    grep -qE "$mrp" <<<"test/a.test.ts"
+expect "and a lockfile, in any directory"             bash -c 'grep -qE "$1" <<<"package-lock.json" && grep -qE "$1" <<<"app/bun.lock"' _ "$mrp"
+expect "but not ordinary source"                      bash -c '! grep -qE "$1" <<<"src/a.ts"' _ "$mrp"
+
 # A PR a person labelled has no issue and no list to find.
 holdout_repo; commit "$AGENT" test/a.test.ts 'fix: relax'
 expect "with no issue the list's tests are not guarded"       test -z "$(round '')"
@@ -207,12 +214,22 @@ done
 [ "$path" = graphql ] && path=graphql-issue
 key=$(printf '%s' "${path%%\?*}" | tr '/' '_')
 f="$STUB_API/$key"
+# A path with numbered answers (file.1, file.2, ...) answers them in order and
+# then repeats the last: GitHub's mergeable state changes between two reads.
+if [ -f "$f.1" ]; then
+  n=$(( $(cat "$f.n" 2>/dev/null || echo 0) + 1 )); echo "$n" > "$f.n"
+  while [ ! -f "$f.$n" ]; do n=$((n - 1)); done
+  f="$f.$n"
+fi
 [ -f "$f" ] || exit 1
 jq -r "$jqx" "$f"
 EOF
 chmod +x "$WORK/bin/gh"
+# `sleep` only records, so a test can count the waits.
+printf '#!/usr/bin/env bash\necho "$*" >> "${WORK_SLEEPS:-/dev/null}"\n' > "$WORK/bin/sleep"
+chmod +x "$WORK/bin/sleep"
 
-# scenario TIER-FIELDS CHECKS VERDICT [DRAFT] [LABELS] [ROUNDS]
+# scenario TIER-FIELDS CHECKS VERDICT [DRAFT] [LABELS] [ROUNDS]; MSTATE sets mergeable_state
 api() { mkdir -p "$WORK/api"; printf '%s' "$2" > "$WORK/api/$(printf '%s' "$1" | tr '/' '_')"; }
 scenario() {
   rm -rf "$WORK/api"
@@ -220,7 +237,7 @@ scenario() {
   api /repos/o/r/pulls/5 "{\"state\":\"open\",\"draft\":$draft,\"labels\":$(jq -c '[.[]|{name:.}]' <<<"$labels"),
     \"head\":{\"sha\":\"abc\",\"ref\":\"feat/1-x\",\"repo\":{\"full_name\":\"o/r\"}},
     \"base\":{\"ref\":\"main\",\"repo\":{\"full_name\":\"o/r\"}},\"body\":\"text\n\nCloses #1\",
-    \"user\":{\"login\":\"${AUTHOR:-dodi-smart-github-assistant[bot]}\"}}"
+    \"mergeable_state\":\"${MSTATE:-clean}\",\"user\":{\"login\":\"${AUTHOR:-dodi-smart-github-assistant[bot]}\"}}"
   api /repos/o/r/issues/1/labels '[]'
   local m r e; read -r m r e <<<"$mode"
   api graphql-issue "{\"data\":{\"repository\":{\"issue\":{\"issueFieldValues\":{\"nodes\":[
@@ -244,7 +261,7 @@ scenario() {
 decide() {  # decide [EVENT_SHA] -> action
   : > "$WORK/out"
   env -i PATH="$WORK/bin:$PATH" HOME="$WORK" STUB_API="$WORK/api" REPO=o/r PR=5 EVENT_SHA="${1:-}" \
-    MAX_ROUNDS=3 GITHUB_OUTPUT="$WORK/out" bash "$F" decide > "$WORK/log" 2>&1
+    MAX_ROUNDS=3 MERGEABLE_WAIT=0 GITHUB_OUTPUT="$WORK/out" bash "$F" decide > "$WORK/log" 2>&1
   val action
 }
 
@@ -321,6 +338,65 @@ scenario 'Autonomous Low Low' 'completed success' 'success'
 rm "$WORK/api/graphql-issue"
 expect "unreadable fields are draft, never land" test "$(decide)" = handoff
 
+# A conflicted PR is judged before its checks. Only `dirty` is a conflict;
+# everything else merges and is left alone.
+MSTATE=dirty scenario 'Autonomous Low Low' '' ''
+expect "a conflicted PR is updated, though no checks ran" test "$(decide)" = update
+expect "and the state is out"                 test "$(val mergeable-state)" = dirty
+# Checks, draft and tier change nothing: the conflict is judged before them.
+for c in 'red checks|Autonomous Low Low|completed failure|false' 'a draft|Autonomous Low Low||true' 'a supervised tier|Supervised Low Low||false'; do
+  IFS='|' read -r name tier checks draft <<<"$c"
+  MSTATE=dirty scenario "$tier" "$checks" '' "$draft"
+  expect "a conflicted PR is updated first: $name" test "$(decide)" = update
+done
+MSTATE=dirty scenario 'Autonomous Low Low' '' '' false '["agent:iterate"]' 2
+expect "a merge round counts: two rounds of three still update" test "$(decide)" = update
+MSTATE=dirty scenario 'Autonomous Low Low' '' '' false '["agent:iterate"]' 3
+expect "a conflict at the round cap gives up" test "$(decide)" = give-up
+expect "and says why"                         grep -q 'conflicts with its base after 3 fix rounds' "$WORK/out"
+MSTATE=dirty scenario 'Autonomous Low Low' '' '' false '["agent:iterate","agent:no-touch"]'
+expect "agent:no-touch on a conflicted PR still stops" test "$(decide)" = stop
+MSTATE=dirty scenario 'Autonomous Low Low' '' '' false '[]'
+expect "a conflicted PR without agent:iterate is not touched" test "$(decide)" = stop
+MSTATE=dirty scenario 'Autonomous Low Low' '' ''
+api /repos/o/r/issues/1/labels '[{"name":"agent:no-touch"}]'
+expect "agent:no-touch on the issue of a conflicted PR still stops" test "$(decide)" = stop
+MSTATE=dirty AUTHOR='renovate[bot]' scenario 'Autonomous Low Low' '' ''
+expect "a conflicted dependency-bot PR is not the loop's" test "$(decide)" = stop
+MSTATE=dirty scenario 'Autonomous Low Low' '' ''
+expect "an event for an older commit on a conflicted PR stops" test "$(decide old)" = stop
+for st in clean behind unstable blocked; do
+  MSTATE=$st scenario 'Autonomous Low Low' 'completed failure' ''
+  expect "mergeable_state $st is no conflict: red checks still start a fix" test "$(decide)" = fix-ci
+done
+# A draft reads `draft` whether or not it conflicts; `mergeable` says which.
+MSTATE=draft scenario 'Autonomous Low Low' '' '' true
+jq '.mergeable = false' "$WORK/api/_repos_o_r_pulls_5" > "$WORK/api/x" && mv "$WORK/api/x" "$WORK/api/_repos_o_r_pulls_5"
+expect "a draft GitHub cannot merge is a conflict, and is updated" test "$(decide)" = update
+MSTATE=draft scenario 'Supervised Low Low' 'completed failure' '' true
+jq '.mergeable = true' "$WORK/api/_repos_o_r_pulls_5" > "$WORK/api/x" && mv "$WORK/api/x" "$WORK/api/_repos_o_r_pulls_5"
+expect "a draft that merges is no conflict"   test "$(decide)" = fix-ci
+# GitHub answers `unknown` until it has computed the state: one re-read.
+pr_seq() {  # pr_seq N STATE: the Nth answer to a read of the PR
+  jq --arg s "$2" '.mergeable_state = $s' "$WORK/api/_repos_o_r_pulls_5" > "$WORK/api/_repos_o_r_pulls_5.$1"
+}
+MSTATE=unknown scenario 'Autonomous Low Low' 'completed failure' ''
+pr_seq 1 unknown; pr_seq 2 dirty
+expect "unknown, then dirty on the re-read, is updated" test "$(decide)" = update
+MSTATE=unknown scenario 'Autonomous Low Low' 'completed failure' ''
+pr_seq 1 unknown; pr_seq 2 unknown
+expect "unknown twice is no conflict: the normal rules decide" test "$(decide)" = fix-ci
+expect "and the state stays unknown"          test "$(val mergeable-state)" = unknown
+MSTATE=unknown scenario 'Autonomous Low Low' 'completed failure' ''
+pr_seq 1 unknown; pr_seq 2 clean
+expect "unknown, then clean, is no conflict"  test "$(decide)" = fix-ci
+MSTATE=dirty scenario 'Autonomous Low Low' 'completed success' 'success'
+pr_seq 1 dirty; pr_seq 2 clean
+expect "a settled state is read once: dirty is not re-read into clean" test "$(decide)" = update
+scenario 'Autonomous Low Low' 'completed success' 'success'
+jq 'del(.mergeable_state)' "$WORK/api/_repos_o_r_pulls_5" > "$WORK/api/x" && mv "$WORK/api/x" "$WORK/api/_repos_o_r_pulls_5"
+expect "a PR with no mergeable_state at all is no conflict: green and approved lands" test "$(decide)" = land
+
 # 5. fields: a failed read says so, so implement fails instead of refusing.
 fields() {
   : > "$WORK/out"
@@ -334,6 +410,43 @@ expect "and the priority" grep -qx "priority=Medium" "$WORK/out"
 rm "$WORK/api/graphql-issue"
 fields
 expect "an unreadable issue says read=false and tier draft" bash -c 'grep -qx "read=false" "$1" && grep -qx "tier=draft" "$1"' _ "$WORK/out"
+
+# 6. sweep: the open agent PRs that conflict. It lists; it edits nothing.
+sweep_pr() {  # sweep_pr NUM STATE [LABEL...]: an open PR as the issues list and the PR read show it
+  local n="$1" st="$2" l; shift 2
+  l=$(printf '%s\n' "$@" | jq -R . | jq -sc 'map({name: .})')
+  jq -c --argjson n "$n" --argjson l "$l" '. + [{number: $n, pull_request: {}, labels: $l}]' "$WORK/api/_repos_o_r_issues" > "$WORK/api/x" \
+    && mv "$WORK/api/x" "$WORK/api/_repos_o_r_issues"
+  api "/repos/o/r/pulls/$n" "{\"state\":\"open\",\"mergeable_state\":\"$st\",\"head\":{\"repo\":{\"full_name\":\"${FORK:-o/r}\"}},\"base\":{\"repo\":{\"full_name\":\"o/r\"}},\"user\":{\"login\":\"${AUTHOR:-claude[bot]}\"}}"
+}
+sweep() {
+  : > "$WORK/out"; : > "$WORK/sleeps"; rm -f "$WORK"/api/*.n
+  env -i PATH="$WORK/bin:$PATH" HOME="$WORK" STUB_API="$WORK/api" WORK_SLEEPS="$WORK/sleeps" REPO=o/r MERGEABLE_WAIT=0 \
+    GITHUB_OUTPUT="$WORK/out" bash "$F" sweep > "$WORK/log" 2>&1
+  val dirty
+}
+rm -rf "$WORK/api"; mkdir -p "$WORK/api"; echo '[]' > "$WORK/api/_repos_o_r_issues"
+expect "no agent PRs: nothing dirty"          test -z "$(sweep)"
+sweep_pr 11 dirty agent:iterate
+sweep_pr 12 clean agent:iterate
+sweep_pr 13 behind agent:iterate
+sweep_pr 14 dirty agent:iterate agent:no-touch
+FORK=someone/r sweep_pr 15 dirty agent:iterate
+AUTHOR='renovate[bot]' sweep_pr 16 dirty agent:iterate
+sweep_pr 17 dirty agent:iterate
+jq -c '. + [{number: 19, labels: [{name: "agent:iterate"}]}]' "$WORK/api/_repos_o_r_issues" > "$WORK/api/x" \
+  && mv "$WORK/api/x" "$WORK/api/_repos_o_r_issues"
+api /repos/o/r/pulls/19 '{"state":"open","mergeable_state":"dirty","head":{"repo":{"full_name":"o/r"}},"base":{"repo":{"full_name":"o/r"}},"user":{"login":"claude[bot]"}}'
+expect "sweep lists the open, same-repo, conflicted agent PRs: not no-touch, a fork, a dependency bot or a plain issue" \
+  test "$(sweep)" = '11 17'
+# Two PRs GitHub had not judged: the first read starts it, one wait, then both are read again.
+sweep_pr 18 unknown agent:iterate
+sweep_pr 20 unknown agent:iterate
+for n in 18 20; do jq '.mergeable_state = "unknown"' "$WORK/api/_repos_o_r_pulls_$n" > "$WORK/api/_repos_o_r_pulls_$n.1"; done
+jq '.mergeable_state = "dirty"' "$WORK/api/_repos_o_r_pulls_18" > "$WORK/api/_repos_o_r_pulls_18.2"
+jq '.mergeable_state = "clean"' "$WORK/api/_repos_o_r_pulls_20" > "$WORK/api/_repos_o_r_pulls_20.2"
+expect "a PR GitHub had not judged yet is read again" test "$(sweep)" = '11 17 18'
+expect "and all of them are waited for once" test "$(wc -l < "$WORK/sleeps" | tr -d ' ')" = 1
 
 printf '\n%s passed, %s failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

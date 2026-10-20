@@ -3,7 +3,7 @@
 # between the check (which runs lock tooling) and the push, so nothing the lock
 # command starts can read it.
 name: Push round
-description: Check an agent's commits, regenerate lockfiles, and push them as one trailered commit, or refuse with a reason.
+description: Check an agent's commits, regenerate lockfiles, and push them as one trailered commit (or one merge of the base), or refuse with a reason.
 
 inputs:
   base-sha:      { description: 'The head before the agent ran', required: true }
@@ -24,6 +24,7 @@ inputs:
   lock:          { description: 'Command that regenerates a lockfile, run in its directory when a record path changed', default: '' }
   lockfiles:     { description: 'ERE of lockfiles; the only paths the lock command may change', default: '' }
   env-file:      { description: 'Sourced before the lock command (setup-stack env-file)', default: '' }
+  merge:         { description: "'true' for the update job's round: exactly one merge of the base into the branch, checked by what its resolution changed and pushed as the same merge with the round trailer, never squashed", default: 'false' }
   client-id:     { description: 'secrets.GH_APP_CLIENT_ID', default: '' }
   private-key:   { description: 'secrets.GH_APP_PRIVATE_KEY', default: '' }
 
@@ -52,6 +53,7 @@ runs:
         LOCK: ${{ inputs.lock }}
         LOCKFILES: ${{ inputs.lockfiles }}
         ENV_FILE: ${{ inputs.env-file }}
+        MERGE: ${{ inputs.merge }}
         ACTION_PATH: ${{ github.action_path }}
       run: '"$ACTION_PATH/round.sh" check'
 
@@ -78,5 +80,6 @@ runs:
         HEAD_REF: ${{ inputs.head-ref }}
         REPO: ${{ github.repository }}
         APP_TOKEN: ${{ steps.token.outputs.token }}
+        MERGE: ${{ inputs.merge }}
         ACTION_PATH: ${{ github.action_path }}
       run: '"$ACTION_PATH/round.sh" push'

@@ -5,11 +5,11 @@
 # place. See factory.sh for what each command reads and writes. Agents never
 # call this: they write files and local commits, and these steps act on them.
 name: Factory step
-description: Compute the autonomy tier or branch name, push a guarded round, or decide the fix loop's next step.
+description: Compute the autonomy tier or branch name, push a guarded round, decide the fix loop's next step, or list the agent PRs that conflict with their base.
 
 inputs:
   command:
-    description: 'tier | branch | fields | push | holdout | decide'
+    description: 'tier | branch | fields | push | holdout | decide | sweep'
     required: true
   args:
     description: 'Positional arguments for tier (mode risk effort) and branch (type number title), newline-separated'
@@ -59,7 +59,8 @@ outputs:
   refused:   { description: 'Why a round was not pushed', value: '${{ steps.run.outputs.refused }}' }
   sha:       { description: 'The round commit', value: '${{ steps.run.outputs.sha }}' }
   refuse-paths: { description: 'ERE of the holdout files of the given issue and their list, for push-round (holdout)', value: '${{ steps.run.outputs.refuse-paths }}' }
-  action:    { description: 'stop | fix-ci | fix-review | ready | review | land | handoff | give-up', value: '${{ steps.run.outputs.action }}' }
+  merge-refuse-paths: { description: 'refuse-paths plus the lockfiles, for the push-round of a merge round (holdout)', value: '${{ steps.run.outputs.merge-refuse-paths }}' }
+  action:    { description: 'stop | update | fix-ci | fix-review | ready | review | land | handoff | give-up (update: the PR conflicts with its base; decide)', value: '${{ steps.run.outputs.action }}' }
   reason:    { description: 'Why', value: '${{ steps.run.outputs.reason }}' }
   number:    { description: 'Pull request number', value: '${{ steps.run.outputs.number }}' }
   issue:     { description: 'The issue the PR closes', value: '${{ steps.run.outputs.issue }}' }
@@ -68,6 +69,7 @@ outputs:
   base-ref:  { description: 'PR base branch', value: '${{ steps.run.outputs.base-ref }}' }
   rounds:    { description: 'Fix rounds already on the PR', value: '${{ steps.run.outputs.rounds }}' }
   run-id:    { description: 'The PR Checks run on the head', value: '${{ steps.run.outputs.run-id }}' }
+  dirty:     { description: 'Space-separated numbers of the open agent PRs that conflict with their base (sweep)', value: '${{ steps.run.outputs.dirty }}' }
 
 runs:
   using: composite

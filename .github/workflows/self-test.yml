@@ -184,9 +184,11 @@ jobs:
           print('the agent jobs cannot push, and pr-iterate lands through merge-gate')
           PY
 
-      # Only a bot's `chore(release): … [skip ci]` skips the guard wall; either
-      # half alone is still checked.
-      - name: zavet-check skips only release bots' version bumps
+      # Only a bot's `chore(release): … [skip ci]` skips the guard wall (either
+      # half alone is still checked), only a decision or spec declaring `checks:`
+      # needs an install, and only a same-repo PR from the integration branch is a
+      # promotion.
+      - name: zavet-check release skip, lazy install and promotion rules
         run: ./actions/zavet-check/test.sh
 
       # The wait must never pass on the job's own Deployment, and must count the
@@ -330,6 +332,15 @@ jobs:
               bad.append('zavet-check no longer reads the author from agent-gate')
           if any(s.get('id') == 'mode' for s in zsteps):
               bad.append('zavet-check has its own mode step again')
+          # The install is gated on need.outputs.install and the guards step asks
+          # promotion.sh, or those two costs come back on every PR.
+          for sid in ('setup', 'install'):
+              cond = str(([s for s in zsteps if s.get('id') == sid] or [{}])[0].get('if', ''))
+              if 'steps.need.outputs.install' not in cond:
+                  bad.append('zavet-check %s step no longer depends on steps.need.outputs.install' % sid)
+          guard = [s for s in zsteps if s.get('id') == 'guards']
+          if not guard or 'promotion.sh' not in str(guard[0].get('run', '')):
+              bad.append('zavet-check guards step no longer consults promotion.sh')
           triage = [s for s in wf('issue-triage.yml')['gate']['steps'] if s.get('id') == 'gate'][0]
           events = str((triage.get('with') or {}).get('events', '')).split()
           if not events or any(e.startswith('pull_request') for e in events):

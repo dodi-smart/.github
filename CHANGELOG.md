@@ -1,3 +1,9 @@
+## [1.35.0](https://github.com/dodi-smart/.github/compare/v1.34.2...v1.35.0) (2026-10-20)
+
+### ✨ Features
+
+* **pr-checks:** let zavet and react-doctor join the required context with zavet-blocking and react-doctor-blocking ([173f9c3](https://github.com/dodi-smart/.github/commit/173f9c3e505e466554b6c8bef96d383f280e0583)), references [#103](https://github.com/dodi-smart/.github/issues/103)
+
 ## [1.34.2](https://github.com/dodi-smart/.github/compare/v1.34.1...v1.34.2) (2026-10-20)
 
 ### ⚡ Performance Improvements

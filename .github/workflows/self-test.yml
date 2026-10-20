@@ -158,6 +158,11 @@ jobs:
       - name: Changed files count every doubt as a match
         run: ./actions/changed-files/test.sh
 
+      # Findings fail the job only when asked to, a lint that could not run
+      # always does, and only the files a pull request changed reach squawk.
+      - name: Migration lint picks the changed files and fails only as asked
+        run: ./actions/migration-lint/test.sh
+
       # A wrong percentage, or a floor that never trips, reads as a healthy repo.
       - name: LCOV report does the arithmetic and enforces the floors
         run: ./actions/lcov-report/test.sh
@@ -1369,6 +1374,51 @@ jobs:
               sys.exit('::error::' + '; '.join(bad))
           print('gate and release select their runner by expression, report it first, and keep their contracts')
           "
+
+      # migration-lint starts no database, so it alone leaves ubuntu-latest. The
+      # expression is read from pick-runner.yml, the one reference copy.
+      - name: migration-lint runs light, opt-in, and pins what it pulls in
+        run: |
+          set -euo pipefail
+          python3 - <<'MIGLINT'
+          import re, sys, yaml
+          # No literal dollar-brace in this script: Actions would evaluate it before bash runs.
+          D = chr(36) + '{' + '{'
+          EXPR = yaml.safe_load(open('.github/workflows/pick-runner.yml'))['jobs']['pick']['runs-on']
+          bad = []
+          path = '.github/workflows/supabase-checks.yml'
+          doc = yaml.safe_load(open(path))
+          jobs = doc['jobs']
+          job = jobs.get('migration-lint')
+          if job is None:
+              sys.exit('::error::supabase-checks.yml has no migration-lint job')
+          if job.get('runs-on') != EXPR:
+              bad.append('migration-lint runs-on is not the shared light-or-hosted expression, character for character')
+          if str(job.get('if')) != D + ' inputs.migration-lint }}':
+              bad.append('the migration-lint if: must read inputs.migration-lint and nothing else, so an off job reports skipped')
+          if (job.get('steps') or [{}])[0].get('uses') != 'dodi-smart/.github/actions/runner-report@v1':
+              bad.append('the first step of migration-lint is not runner-report')
+          if 'permissions' in job:
+              bad.append('migration-lint asks for a permission of its own; it relies on the ones its siblings do')
+          for jid, j in jobs.items():
+              if jid != 'migration-lint' and j.get('runs-on') != 'ubuntu-latest':
+                  bad.append('job %s starts Postgres or Deno and must stay on ubuntu-latest, got %r' % (jid, j.get('runs-on')))
+          inputs = doc[True]['workflow_call']['inputs']
+          for name, want in (('migration-lint', False), ('migration-lint-blocking', False),
+                             ('migrations-path', 'supabase/migrations'), ('migration-lint-excluded-rules', '')):
+              if name not in inputs or inputs[name].get('default') != want:
+                  bad.append('input %s must exist with default %r: off, advisory and the standard path unless a caller opts in' % (name, want))
+          action = yaml.safe_load(open('actions/migration-lint/action.yml'))
+          for step in action['runs']['steps']:
+              uses = step.get('uses', '')
+              if not uses or uses.startswith(('actions/', 'dodi-smart/', './')):
+                  continue
+              if not re.search(r'@[0-9a-f]{40}$', uses):
+                  bad.append('actions/migration-lint uses %s, which is not pinned to a full commit SHA' % uses)
+          if bad:
+              sys.exit('::error::' + '; '.join(bad))
+          print('migration-lint is light, opt-in and pinned; every other supabase-checks job is hosted')
+          MIGLINT
 
       # shellcheck, jactionlint, typos and the whitespace checks all run
       # from hk.pkl, the same definition the local git hooks use. mise.toml

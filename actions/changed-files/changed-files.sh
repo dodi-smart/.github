@@ -12,8 +12,12 @@
 # inside the paths (a docs-only change). It is `true` only when the list was read
 # in full, is not empty, and every file matches, so every doubt is `false` there.
 #
-# Reads its inputs from the environment and writes files/matched/all-matched to
-# $GITHUB_OUTPUT. action.yml is a thin wrapper; test.sh runs `--names`, `--match`
+# `complete` is the claim a caller needs when it works from `files` itself rather
+# than from `matched`: `true` only when the whole list was read, so `files` is
+# every changed path. It is `false` on the same doubts, whatever the patterns.
+#
+# Reads its inputs from the environment and writes files/matched/all-matched/
+# complete to $GITHUB_OUTPUT. action.yml is a thin wrapper; test.sh runs `--names`, `--match`
 # and `--all` directly.
 set -euo pipefail
 
@@ -69,15 +73,16 @@ esac
 : "${REPO:?}"
 out="${GITHUB_OUTPUT:-/dev/stdout}"
 
-finish() { # matched, files, all-matched (false unless given)
+finish() { # matched, files, all-matched (false unless given), complete (false unless given)
   {
     echo "matched=$1"
     echo "all-matched=${3:-false}"
+    echo "complete=${4:-false}"
     echo "files<<CHANGED_FILES_EOF"
     [ -z "$2" ] || printf '%s\n' "$2"
     echo "CHANGED_FILES_EOF"
   } >> "$out"
-  echo "matched=$1 all-matched=${3:-false}"
+  echo "matched=$1 all-matched=${3:-false} complete=${4:-false}"
   exit 0
 }
 
@@ -106,7 +111,7 @@ if [ "$count" -ge "$CAP" ]; then
   finish true "$files"
 fi
 if [ -z "$(printf '%s' "${PATTERNS:-}" | tr -d '[:space:]')" ]; then
-  finish true "$files"
+  finish true "$files" false true
 fi
 finish "$(printf '%s\n' "$files" | matches "$PATTERNS" any)" "$files" \
-       "$(printf '%s\n' "$files" | matches "$PATTERNS" all)"
+       "$(printf '%s\n' "$files" | matches "$PATTERNS" all)" true

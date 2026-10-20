@@ -10,18 +10,22 @@
 # all three depend on that repo's branches and layout. A caller that also runs
 # `pr-checks.yml` should gate both jobs with the same `if:`.
 #
-# Hosted only, deliberately, and with no runner picker: the self-hosted fleet
-# runs jobs INSIDE containers on a shared daemon, so `supabase db start`
-# publishes postgres's ports on the HOST's localhost while the CLI polls the
-# CONTAINER's own 127.0.0.1, where nothing listens. `ubuntu-latest` is the only
-# runner class here where the CLI's own localhost is the one postgres bound.
-# `runtime: native` runs no containers at all, which removes that reason; moving
-# native jobs onto the fleet is a separate change, once a native run is proven.
+# Every job that starts Postgres stays on `ubuntu-latest`, with no runner
+# picker: the self-hosted fleet runs jobs INSIDE containers on a shared daemon,
+# so `supabase db start` publishes postgres's ports on the HOST's localhost
+# while the CLI polls the CONTAINER's own 127.0.0.1, where nothing listens.
+# `ubuntu-latest` is the only runner class here where the CLI's own localhost is
+# the one postgres bound. `runtime: native` runs no containers at all, which
+# removes that reason; moving native jobs onto the fleet is a separate change,
+# once a native run is proven.
+#
+# `migration-lint` is the exception: it starts no database and only reads files,
+# so it runs on the light pool of a private repo and on hosted otherwise.
 #
 # Each job's `if:` is written so a disabled feature reports `skipped`, never
-# `failure`. A caller can require `types` / `deno` / `pgtap` as status checks
-# on every repo that uses this workflow without breaking the ones that leave a
-# job off.
+# `failure`. A caller can require `types` / `deno` / `pgtap` / `migration-lint`
+# as status checks on every repo that uses this workflow without breaking the
+# ones that leave a job off.
 name: Supabase Checks
 
 on:
@@ -83,6 +87,36 @@ on:
           the CLI to reach 2.119 can change the committed types file.
         type: string
         default: docker
+      migration-lint:
+        description: >-
+          Lint the SQL migrations a pull request adds or changes with squawk, in
+          its own job that starts no database. Off reports the job as skipped.
+        type: boolean
+        default: false
+      migrations-path:
+        description: >-
+          Directory the `migration-lint` job lints. Singular, and not the same
+          input as `migrations-paths`: that one is a list of paths whose change
+          starts the `types` and `pgtap` jobs, and this one is the single
+          directory of migrations squawk reads. Only `*.sql` files the pull
+          request added, modified or renamed under it are linted.
+        type: string
+        default: supabase/migrations
+      migration-lint-excluded-rules:
+        description: >-
+          squawk rule names `migration-lint` skips, separated by commas or
+          whitespace. Passed as `--exclude`, which replaces `excluded_rules` in
+          the repo's `.squawk.toml`; the rest of that file still applies.
+        type: string
+        default: ""
+      migration-lint-blocking:
+        description: >-
+          `false` (the default) reports findings as warnings and the job stays
+          green, so the baseline is visible before anything can fail. `true`
+          fails the job on any finding. squawk failing to install or run fails
+          it either way.
+        type: boolean
+        default: false
       deno-version:
         type: string
         default: "v2.x"
@@ -238,3 +272,26 @@ jobs:
       - name: Run pgTAP suite
         if: steps.changes.outputs.matched == 'true'
         run: supabase test db --debug
+
+  # No database, so no reason to be on a hosted runner: this runs on the light
+  # pool of a private repo, through the same expression as the other light jobs.
+  # `runner-report` is first and needs no permission. The job asks for none of
+  # its own: it reads the file list with the `pull-requests: read` the `types`
+  # and `pgtap` jobs already rely on.
+  migration-lint:
+    name: Migration Lint
+    if: ${{ inputs.migration-lint }}
+    runs-on: ${{ fromJSON((github.event.repository.private && !github.event.pull_request.head.repo.fork) && '["self-hosted","Linux","light"]' || '"ubuntu-latest"') }}
+    timeout-minutes: ${{ inputs.timeout-minutes }}
+    steps:
+      - uses: dodi-smart/.github/actions/runner-report@v1
+
+      - uses: actions/checkout@v7
+        with: { persist-credentials: false }
+
+      - name: Lint changed migrations
+        uses: dodi-smart/.github/actions/migration-lint@v1
+        with:
+          migrations-path: ${{ inputs.migrations-path }}
+          excluded-rules: ${{ inputs.migration-lint-excluded-rules }}
+          blocking: ${{ inputs.migration-lint-blocking }}

@@ -57,7 +57,8 @@ printf 'a/b/CHANGELOG.md\n'         | allmatch "a star crosses a slash"        "
 printf 'README.md.bak\n'            | allmatch "the extension must be the end" "$D" false
 
 # $1 name, $2 want matched, $3 fixture file, extra env in $4.. as VAR=val.
-# WANT_ALL, when set in the caller, is the all-matched value to assert too.
+# WANT_ALL, when set in the caller, is the all-matched value to assert too, and
+# WANT_COMPLETE the complete value.
 run() {
   local name="$1" want="$2" fixture="$3" out; shift 3
   out="$WORK/out"; : > "$out"
@@ -65,9 +66,12 @@ run() {
     "$SCRIPT" > "$WORK/log" 2>&1
   local got; got="$(sed -n 's/^matched=//p' "$out")"
   local gotall; gotall="$(sed -n 's/^all-matched=//p' "$out")"
+  local gotcomplete; gotcomplete="$(sed -n 's/^complete=//p' "$out")"
   if [ "$got" != "$want" ]; then bad "$name" "got ${got:-<none>}, wanted $want"
   elif [ -n "${WANT_ALL:-}" ] && [ "$gotall" != "$WANT_ALL" ]; then
     bad "$name (all-matched)" "got ${gotall:-<none>}, wanted $WANT_ALL"
+  elif [ -n "${WANT_COMPLETE:-}" ] && [ "$gotcomplete" != "$WANT_COMPLETE" ]; then
+    bad "$name (complete)" "got ${gotcomplete:-<none>}, wanted $WANT_COMPLETE"
   else ok "$name"; fi
 }
 
@@ -92,6 +96,18 @@ WANT_ALL=false run "all-matched: an unreadable diff"        true  "$WORK/docs-on
 WANT_ALL=false run "all-matched: the cap, even if every file matches" true "$WORK/docs-at-cap" NUMBER=1 PATTERNS="$D"
 printf 'docs/a.md\tsrc/a.ts\n' > "$WORK/renamed-out-of-docs"
 WANT_ALL=false run "all-matched: a file renamed out of docs" true "$WORK/renamed-out-of-docs" NUMBER=1 PATTERNS="$D"
+
+# `complete` says the list is the whole diff, whatever the patterns: only a read,
+# non-empty list below the cap qualifies, and a caller that lints from `files`
+# alone relies on that.
+WANT_COMPLETE=true  run "complete: a read list"                true  "$WORK/relevant"   NUMBER=1 PATTERNS="$P"
+WANT_COMPLETE=true  run "complete: a read list, no patterns"   true  "$WORK/relevant"   NUMBER=1 PATTERNS=
+WANT_COMPLETE=true  run "complete: one under the cap"          false "$WORK/just-under" NUMBER=1 PATTERNS="$P"
+WANT_COMPLETE=false run "complete: no pull request number"     true  "$WORK/relevant"   NUMBER= PATTERNS="$P"
+WANT_COMPLETE=false run "complete: an empty diff"              true  "$WORK/empty"      NUMBER=1 PATTERNS="$P"
+WANT_COMPLETE=false run "complete: an unreadable diff"         true  "$WORK/relevant"   NUMBER=1 PATTERNS="$P" FAKE_GH_FAIL=1
+WANT_COMPLETE=false run "complete: the cap"                    true  "$WORK/at-cap"     NUMBER=1 PATTERNS="$P"
+WANT_COMPLETE=false run "complete: the cap, no patterns"       true  "$WORK/at-cap"     NUMBER=1 PATTERNS=
 
 run "irrelevant files skip"            false "$WORK/irrelevant" NUMBER=1 PATTERNS="$P"
 run "a relevant file runs"             true  "$WORK/relevant"   NUMBER=1 PATTERNS="$P"

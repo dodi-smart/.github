@@ -44,6 +44,13 @@ outputs:
       or empty diff, or a diff at the API's 3000-file cap. Skip work on `true`
       alone.
     value: ${{ steps.list.outputs.all-matched }}
+  complete:
+    description: >-
+      `true` only when the whole list was read: a pull request, no API error, not
+      empty, and below the API's 3000-file cap. For a caller that works from
+      `files` itself and must not mistake a cut-off or missing list for the whole
+      diff. `false` on every doubt, whatever `patterns` is.
+    value: ${{ steps.list.outputs.complete }}
 
 runs:
   using: composite

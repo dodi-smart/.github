@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Tests for envfile.sh, bun-version.sh and the resolve, next and defaults steps.
+# Tests for envfile.sh, bun-version.sh, defaults.sh and the resolve and next steps.
 #
 # Run: actions/setup-stack/test.sh
 set -uo pipefail
@@ -76,11 +76,11 @@ check "mise latest passes through" "latest mise.toml" "$(resolve "$d" auto)"
 d="$(fx)"; printf '[settings]\nbun = "7.7.7"\n' > "$d/mise.toml"
 check "no bun under [tools] -> latest" "latest none" "$(resolve "$d" auto)"
 
-# --- action.yml, read once: the defaults and resolve scripts, setup-bun's no-cache, and who saves.
+# --- action.yml, read once: the resolve and next scripts, setup-bun's no-cache, who saves, and the wiring.
 python3 - "$HERE/action.yml" "$TMP" <<'EOF'
 import sys, yaml
 steps = yaml.safe_load(open(sys.argv[1]))['runs']['steps']
-for id in ('defaults', 'resolve', 'next'):
+for id in ('resolve', 'next'):
     open(f'{sys.argv[2]}/{id}.sh', 'w').write([s for s in steps if s.get('id') == id][0]['run'])
 bun = [s for s in steps if str(s.get('uses', '')).startswith('oven-sh/setup-bun@')][0]
 open(f'{sys.argv[2]}/bun-no-cache', 'w').write(str(bun['with'].get('no-cache', '')))
@@ -110,16 +110,34 @@ bad = [m for m, broken in (
     ('rust-cache save-if ignores cache_save', 'cache_save' not in str(rust.get('save-if'))),
 ) if broken]
 open(f'{sys.argv[2]}/saves', 'w').write('; '.join(bad) or 'ok')
+# The wiring: cache-enabled is resolve's cache_enabled, and the per-stack table
+# lives in defaults.sh, not in the step that runs it.
+doc = yaml.safe_load(open(sys.argv[1]))
+dstep = [s for s in steps if s.get('id') == 'defaults'][0]
+bad = [m for m, broken in (
+    ('cache-enabled is not exposed', 'cache-enabled' not in doc['outputs']),
+    ('cache-enabled is not steps.resolve.outputs.cache_enabled', doc['outputs'].get('cache-enabled', {}).get('value') != '${{ steps.resolve.outputs.cache_enabled }}'),
+    ('the defaults step does not run defaults.sh', dstep['run'].strip() != '"$ACTION_PATH/defaults.sh"'),
+    ('the defaults step still carries a case table', 'case ' in dstep['run']),
+) if broken]
+open(f'{sys.argv[2]}/wiring', 'w').write('; '.join(bad) or 'ok')
 EOF
 
-# --- the defaults step: lock command, version files and the lockfile list.
-defaults() { # stack output [VAR=VALUE...] -> that output's value
+# --- defaults.sh: lock command, version files and the lockfile list.
+dval() { # output -> that output's value, from the last run
+  awk -v k="$1" '$0 == k "<<__SETUP_STACK_EOF__" { on = 1; next } $0 == "__SETUP_STACK_EOF__" { on = 0 } on' "$TMP/defaults.out"
+}
+defaults() { # stack output [VAR=VALUE...] -> that output's value, every override @stack unless a pair says otherwise
   local stack="$1" key="$2"; shift 2
   : > "$TMP/defaults.out"
   env -i PATH="$PATH" STACK="$stack" O_INSTALL=@stack O_LINT=@stack O_TYPECHECK=@stack O_TEST=@stack O_BUILD=@stack \
-    O_DESIGN_LINT=@stack O_LOCK=@stack O_VERSION_FILES=@stack ACTION_PATH="$HERE" GITHUB_OUTPUT="$TMP/defaults.out" "$@" \
-    bash "$TMP/defaults.sh" >/dev/null 2>&1
-  awk -v k="$key" '$0 == k "<<__SETUP_STACK_EOF__" { on = 1; next } $0 == "__SETUP_STACK_EOF__" { on = 0 } on' "$TMP/defaults.out"
+    O_DESIGN_LINT=@stack O_LOCK=@stack O_VERSION_FILES=@stack GITHUB_OUTPUT="$TMP/defaults.out" "$@" \
+    "$HERE/defaults.sh" >/dev/null 2>&1
+  dval "$key"
+}
+bare() { # [VAR=VALUE...] -> exit code of defaults.sh with only those variables set, plus a PATH and GITHUB_OUTPUT
+  : > "$TMP/defaults.out"
+  env -i PATH="$PATH" GITHUB_OUTPUT="$TMP/defaults.out" "$@" "$HERE/defaults.sh" >"$TMP/defaults.log" 2>&1
 }
 listed() { printf '%s' "$2" | grep -qE "$(defaults "$1" version-files)" && echo yes || echo no; }
 locked() { printf '%s' "$1" | grep -qE "$(defaults none lockfiles)" && echo yes || echo no; }
@@ -141,6 +159,38 @@ for f in bun.lock bun.lockb package-lock.json pnpm-lock.yaml yarn.lock pubspec.l
   check "lockfiles covers $f" yes "$(locked "$f")"
 done
 check "lockfiles does not cover a manifest"    no  "$(locked package.json)"
+
+# Unset overrides are @stack, so a caller that only knows the stack (pr-checks' pick) can run it.
+bare STACK=bun; rc=$?
+check "defaults: STACK alone succeeds"                   0 "$rc"
+check "defaults: unset install is the stack's"           'bun install --frozen-lockfile' "$(dval install)"
+check "defaults: unset build is the stack's"             'bun run build' "$(dval build)"
+check "defaults: unset lock is the stack's"              'bun install --lockfile-only' "$(dval lock)"
+check "defaults: unset design-lint has none"             '' "$(dval design-lint)"
+check "defaults: unset version-files is the stack's"     "$(defaults bun version-files)" "$(dval version-files)"
+check "defaults: unset overrides equal @stack"           "$(defaults rust build)" "$(bare STACK=rust; dval build)"
+check "defaults: an explicit empty build is empty"       '' "$(defaults bun build O_BUILD=)"
+check "defaults: ...and leaves the other steps alone"    'bun run test:run' "$(defaults bun test O_BUILD=)"
+check "defaults: an empty override beats unset"          '' "$(bare STACK=bun O_TEST=; dval test)"
+check "defaults: a set override beats the stack"         'make t' "$(bare STACK=bun O_TEST='make t'; dval test)"
+ml=$'bun run a\nbun run b "x y"\n  keeps $HOME `id` and = signs'
+check "defaults: a multi-line override round-trips"      "$ml" "$(defaults bun test "O_TEST=$ml")"
+check "defaults: ...and does not leak into the next output" 'bun run build' "$(defaults bun build "O_TEST=$ml")"
+check "defaults: ...and every output is still named"     'install lint typecheck test build design-lint lock version-files lockfiles' \
+  "$(sed -n 's/<<__SETUP_STACK_EOF__$//p' "$TMP/defaults.out" | paste -sd' ' -)"
+bare STACK=nonesuch; rc=$?
+check "defaults: an unknown stack exits non-zero"        1 "$rc"
+check "defaults: ...with resolve's error wording"        1 "$(grep -c "::error::unknown stack 'nonesuch' (expected bun|node|gradle|android|flutter|rust|xcode|none)" "$TMP/defaults.log")"
+check "defaults: ...and writes no output"                0 "$(wc -c < "$TMP/defaults.out" | tr -d ' ')"
+bare; rc=$?
+check "defaults: no stack at all is an unknown stack"    1 "$rc"
+mkdir -p "$TMP/elsewhere"
+check "defaults: runs from another cwd"                  "$(defaults bun lockfiles)" "$(cd "$TMP/elsewhere" && bare STACK=bun && dval lockfiles)"
+check "defaults: ...and through a relative path"         "$(defaults bun lockfiles)" "$(cd "$HERE/.." && : > "$TMP/defaults.out" && env -i PATH="$PATH" STACK=bun GITHUB_OUTPUT="$TMP/defaults.out" bash setup-stack/defaults.sh >/dev/null 2>&1; dval lockfiles)"
+check "defaults: lockfiles.re is read from beside it"    "$(cat "$HERE/lockfiles.re")" "$(defaults bun lockfiles)"
+
+# The wiring in action.yml: the new output, and the table out of the step.
+check "action.yml: cache-enabled and the defaults step"  ok "$(< "$TMP/wiring")"
 
 # --- the resolve step: which runners get GitHub cache, setup-bun's included.
 cached() { # environment os arch [isolate] [cache] -> cache_enabled
@@ -312,6 +362,13 @@ check "next: ...without nesting a link inside the target"    no "$([ -e "$home/a
 d="$(nfx)"; touch "$d/next.config.ts"; mkdir -p "$TMP/home"; : > "$cdir"
 nrun "$d"; rc=$?
 check "next: a target that cannot be made warns, is off, passes" "0 off 1" "$rc $(nout mode) $(grep -c '::warning::could not link' "$TMP/n.log")"
+
+# --- defaults.sh <output>: one value on stdout, for a caller such as pick.
+get() { local key="$1"; shift; env -i PATH="$PATH" "$@" "$HERE/defaults.sh" "$key" 2>/dev/null; }
+check "an argument prints that one value"        'bun run build' "$(get build STACK=bun)"
+check "...with an override applied"             'vitest run'    "$(get test STACK=bun O_TEST='vitest run')"
+check "...empty when the repo has no such step"  ''              "$(get build STACK=bun O_BUILD=)"
+check "...needs no GITHUB_OUTPUT"                0               "$(get install STACK=gradle >/dev/null; echo "$?")"
 
 echo "setup-stack: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

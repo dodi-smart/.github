@@ -721,7 +721,10 @@ Inputs beyond `stack` and the command overrides:
 
 Outputs: `env-file` and `build-env-file` (both always written, empty when
 nothing was given, so source them unconditionally), plus the resolved `install`,
-`lint`, `typecheck`, `test`, `build` and `design-lint` commands.
+`lint`, `typecheck`, `test`, `build` and `design-lint` commands. `cache-enabled`
+is `true` when the job uses the GitHub Actions cache (hosted, or self-hosted
+macOS without `RUNNER_PERSISTENT_CACHE`) and `false` when isolated, on
+self-hosted Linux, or with a runner cache directory.
 
 ```sh
 . "$ENV_FILE"          # every command step

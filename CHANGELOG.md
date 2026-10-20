@@ -1,3 +1,9 @@
+## [1.39.0](https://github.com/dodi-smart/.github/compare/v1.38.1...v1.39.0) (2026-10-20)
+
+### ✨ Features
+
+* **setup-stack:** expose cache-save so hk-check stops restating the default-branch save rule ([de10f5a](https://github.com/dodi-smart/.github/commit/de10f5af4c2fca61d20c7b267b7dd87d84cbcdd4))
+
 ## [1.38.1](https://github.com/dodi-smart/.github/compare/v1.38.0...v1.38.1) (2026-10-20)
 
 ### ⚡ Performance Improvements

@@ -59,7 +59,7 @@ jobs:
   # picker costs nothing for a pull request that will not be scanned.
   pick:
     permissions: {}   # the picker reads no GITHUB_TOKEN
-    uses: dodi-smart/.github/.github/workflows/pick-runner.yml@v1
+    uses: dodi-smart/.github/.github/workflows/pick-runner.yml@pinned/v1.30.4
     with:
       weight: ${{ inputs.runner-weight }}
       labels: ${{ inputs.runner-labels }}
@@ -77,11 +77,11 @@ jobs:
       pull-requests: write   # the action posts its own sticky comment
       statuses: write        # and a commit status carrying the score
     steps:
-      - uses: dodi-smart/.github/actions/runner-report@v1
+      - uses: dodi-smart/.github/actions/runner-report@pinned/v1.30.4
         with:
           selector: ${{ needs.pick.outputs.selector }}
       # Checkout and scan live in the action, shared with pr-checks.yml.
-      - uses: dodi-smart/.github/actions/react-doctor@v1
+      - uses: dodi-smart/.github/actions/react-doctor@pinned/v1.30.4
         with:
           directory: ${{ inputs.directory }}
           scope: ${{ inputs.scope }}

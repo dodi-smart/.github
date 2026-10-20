@@ -58,7 +58,7 @@ count_rounds() {
 
 # The intent hash the last deps-verify comment recorded, from that comment's body.
 previous_hash() {
-  sed -n 's/.*<!-- deps-intent: \([0-9a-f]\{64\}\) -->.*/\1/p' | head -n 1
+  sed -n 's/.*<!-- deps-intent: \([0-9a-f]\{64\}\) -->.*/\1/p' | sed -n 1p
 }
 
 # The update kind: major | minor | patch | lockfile | unknown, from the shared
@@ -76,7 +76,7 @@ kind() {
   elif has deps:patch; then echo patch
   else
     read -r from to < <(printf '%s' "${TITLE:-}" \
-      | sed -nE 's/.* from v?([0-9]+(\.[0-9]+){0,2})[^ ]* to v?([0-9]+(\.[0-9]+){0,2}).*/\1 \3/p' | head -n 1) || true
+      | sed -nE 's/.* from v?([0-9]+(\.[0-9]+){0,2})[^ ]* to v?([0-9]+(\.[0-9]+){0,2}).*/\1 \3/p' | sed -n 1p) || true
     if [ -z "${from:-}" ] || [ -z "${to:-}" ]; then echo unknown; return; fi
     IFS=. read -r a1 b1 _ <<<"$from"; IFS=. read -r a2 b2 _ <<<"$to"
     if [ "$a1" != "$a2" ]; then echo major

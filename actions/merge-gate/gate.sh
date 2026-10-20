@@ -111,7 +111,7 @@ CHECK='' REVIEW='' FOREIGN='' TIER='' ISSUE_NO_TOUCH='' AGE='' MERGEABLE="${MERG
 # writes `Closes #n` itself, so this reads our own output. No issue is draft.
 if [ "$POLICY" = factory ] && has agent:iterate; then
   ISSUE=$(gh api "/repos/$REPO/pulls/$PR" --jq '.body // ""' 2>/dev/null \
-            | grep -oiE '(closes|fixes|resolves) #[0-9]+' | head -n 1 | grep -oE '[0-9]+' || true)
+            | grep -oiE '(closes|fixes|resolves) #[0-9]+' | sed -n 1p | grep -oE '[0-9]+' || true)
   if [ -n "$ISSUE" ]; then
     if gh api "/repos/$REPO/issues/$ISSUE/labels?per_page=100" --jq '[.[].name]' 2>/dev/null | grep -q '"agent:no-touch"'; then
       ISSUE_NO_TOUCH=true

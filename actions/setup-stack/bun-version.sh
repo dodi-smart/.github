@@ -25,7 +25,7 @@ first_version() { # first word, without a leading v
 
 from_package_json() {
   [ -f package.json ] || return 0
-  sed -n 's/.*"packageManager"[[:space:]]*:[[:space:]]*"bun@\([^"+]*\).*/\1/p' package.json | head -n 1
+  sed -n 's/.*"packageManager"[[:space:]]*:[[:space:]]*"bun@\([^"+]*\).*/\1/p' package.json | sed -n 1p
 }
 from_bun_version() {
   [ -f .bun-version ] || return 0
@@ -34,7 +34,7 @@ from_bun_version() {
 from_tool_versions() {
   [ -f .tool-versions ] || return 0
   # `bun 1.2.3 [fallback ...] # comment`: the first version listed wins.
-  first_version "$(sed -n 's/^[[:space:]]*bun[[:space:]][[:space:]]*\([^#]*\).*/\1/p' .tool-versions | head -n 1)"
+  first_version "$(sed -n 's/^[[:space:]]*bun[[:space:]][[:space:]]*\([^#]*\).*/\1/p' .tool-versions | sed -n 1p)"
 }
 from_mise() { # only `bun = "x"` under [tools]
   [ -f "$1" ] || return 0

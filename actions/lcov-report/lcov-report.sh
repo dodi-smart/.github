@@ -21,7 +21,7 @@ out="${GITHUB_OUTPUT:-/dev/stdout}"
 
 # The path may be a glob: the coverage job points it at the download directory,
 # which holds the one report under whatever name the test command gave it.
-match="$(compgen -G "$LCOV_FILE" | head -n 1 || true)"
+match="$(compgen -G "$LCOV_FILE" | sed -n 1p || true)"
 [ -z "$match" ] || LCOV_FILE="$match"
 if [ ! -f "$LCOV_FILE" ]; then
   echo "::error::lcov-report: $LCOV_FILE does not exist. Check that the test command writes it and that coverage-path points at it."

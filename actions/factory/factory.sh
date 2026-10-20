@@ -79,7 +79,7 @@ read_fields() {
   else
     values='[]'; F_READ=false
   fi
-  get() { jq -r --arg f "$1" '.[]|select(.field.name==$f)|.name' <<<"$values" | head -1; }
+  get() { jq -r --arg f "$1" '.[]|select(.field.name==$f)|.name' <<<"$values" | sed -n 1p; }
   F_STATE=$(get "Triage state"); F_MODE=$(get "Agent mode"); F_RISK=$(get "Risk"); F_EFFORT=$(get "Effort")
   F_PRIORITY=$(get "Priority")
 }
@@ -120,7 +120,7 @@ push_round() {
   others=$(git log --format='%ae' "$BASE_SHA..HEAD" | grep -vxF -f <(printf '%s\n%s\n' "$FACTORY_EMAIL" "${AGENT_EMAILS:-}" | sed '/^$/d') || true)
   [ -n "$others" ] && refuse "a commit carries another author: $(printf '%s' "$others" | paste -sd ' ' -)"
 
-  first=$(git log --reverse --format='%s' "$BASE_SHA..HEAD" | head -n 1)
+  first=$(git log --reverse --format='%s' "$BASE_SHA..HEAD" | sed -n 1p)
   subject="${SUBJECT:-}"
   printf '%s' "$subject" | grep -qE '^(feat|fix|chore|docs|refactor|test|perf|ci|build|style)(\([a-z0-9._/-]+\))?!?: [^ ].{0,100}$' \
     || subject="$first"
@@ -241,7 +241,7 @@ decide() {
 
   # The issue the PR closes. Implement writes `Closes #n` itself, so this is a
   # read of our own output, not a guess at a person's wording.
-  issue=$(printf '%s' "$body" | grep -oiE '(closes|fixes|resolves) #[0-9]+' | head -n 1 | grep -oE '[0-9]+' || true)
+  issue=$(printf '%s' "$body" | grep -oiE '(closes|fixes|resolves) #[0-9]+' | sed -n 1p | grep -oE '[0-9]+' || true)
   out issue "${issue:-}"
   F_STATE=''; F_MODE=''; F_RISK=''; F_EFFORT=''; F_PRIORITY=''
   if [ -n "$issue" ]; then

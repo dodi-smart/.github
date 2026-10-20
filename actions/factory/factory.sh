@@ -8,7 +8,7 @@
 #   factory.sh branch   TYPE NUM TITLE          -> branch=<feat|fix|chore>/<n>-<slug>
 #   factory.sh fields   (REPO, ISSUE)           -> state, mode, risk, effort, priority, tier
 #   factory.sh push     (env, see push())       -> pushed, refused, sha (round 0)
-#   factory.sh holdout  (BASE_SHA)              -> refuse-paths for a fix round
+#   factory.sh holdout  (BASE_SHA, ISSUE)       -> refuse-paths for a fix round
 #   factory.sh decide   (env, see decide())     -> action and the facts behind it
 #
 # Outputs go to $GITHUB_OUTPUT as key=value lines, and are echoed for the log.
@@ -19,7 +19,8 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # by default, and the push step writes each round as it whatever the agent used.
 FACTORY_NAME='claude[bot]'
 FACTORY_EMAIL='41898282+claude[bot]@users.noreply.github.com'
-HOLDOUT='.factory/holdout'
+HOLDOUT_DIR='.factory/holdout.d'   # one list per issue
+HOLDOUT='.factory/holdout'         # the old shared list, read only
 # The commit status pr-review writes its verdict to: success approve, failure changes.
 REVIEW_CONTEXT='review / verdict'
 
@@ -143,12 +144,23 @@ $kept"
 
 # ---------------------------------------------------------------------------
 # holdout: the paths a fix round may not touch, as an ERE for push-round's
-# refuse-paths: every file .factory/holdout listed at BASE_SHA, and the list.
+# refuse-paths. Only the PR's own issue counts: every file .factory/holdout.d/
+# $ISSUE lists at BASE_SHA, and the list. A PR opened before the lists moved
+# has none, so it gets the lines its round-0 commit added to the old shared
+# list, and that file; drop this once no such PR is open. No ISSUE: the old file.
 # ---------------------------------------------------------------------------
 holdout_paths() {
-  local list
-  list=$( { git show "$BASE_SHA:$HOLDOUT" 2>/dev/null || true; } | sed -e 's/#.*//' -e 's/[[:space:]]*$//' -e '/^$/d'; echo "$HOLDOUT")
-  printf '^(%s)$' "$(printf '%s\n' "$list" | sed -e 's/[][\.^$*+?(){}|]/\\&/g' | paste -sd '|' -)"
+  local issue="${ISSUE:-}" list="$HOLDOUT" body='' c
+  if [ -n "$issue" ] && body=$(git show "$BASE_SHA:$HOLDOUT_DIR/$issue" 2>/dev/null); then
+    list="$HOLDOUT_DIR/$issue"
+  elif [ -n "$issue" ]; then
+    # Round 0 is one commit with both trailers; the anchors keep 1 from matching 12.
+    c=$(git log -1 --format=%H --all-match --grep='^Factory-Round: 0$' --grep="^Factory-Issue: $issue\$" "$BASE_SHA" 2>/dev/null || true)
+    [ -z "$c" ] || body=$(git diff --no-renames --unified=0 "$c^" "$c" -- "$HOLDOUT" 2>/dev/null \
+                          | awk '/^@@/ { h = 1; next } h && /^\+/ { print substr($0, 2) }' || true)
+  fi
+  printf '^(%s)$' "$(printf '%s\n' "$body" "$list" \
+    | sed -e 's/#.*//' -e 's/[[:space:]]*$//' -e '/^$/d' -e 's/[][\.^$*+?(){}|]/\\&/g' | paste -sd '|' -)"
 }
 
 # ---------------------------------------------------------------------------

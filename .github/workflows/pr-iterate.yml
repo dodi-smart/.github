@@ -305,7 +305,8 @@ jobs:
             ${{ needs.gate.outputs.action == 'fix-ci' && format('The failed PR Checks jobs'' logs are in `{0}/factory/ci.log`. Read them first.', runner.temp) || format('The review asked for changes. The PR conversation and inline comments are in `{0}/factory/review.md`. Fix what the latest review found; ignore findings an earlier round already fixed.', runner.temp) }}
             This is fix round ${{ steps.facts.outputs.round }} of ${{ inputs.max-rounds }}.
 
-            Holdout tests: the files listed in `.factory/holdout` are the
+            Holdout tests: the files listed in
+            `.factory/holdout.d/${{ needs.gate.outputs.issue }}` are the
             acceptance tests written before the code. You may read and run
             them. You may NOT change, rename or delete them, or the list. A
             push step refuses any round that does, and the round is lost. If a
@@ -329,6 +330,7 @@ jobs:
         with:
           command:  holdout
           base-sha: ${{ steps.facts.outputs.base-sha }}
+          issue:    ${{ needs.gate.outputs.issue }}
 
       # Only this step pushes: one commit with a Factory-Round trailer, refused
       # on a holdout edit, a stranger's commit, the cap, or a moved branch. It

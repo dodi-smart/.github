@@ -15,7 +15,7 @@ inputs:
     description: 'Positional arguments for tier (mode risk effort) and branch (type number title), newline-separated'
     default: ''
   issue:
-    description: 'Issue number (fields, push)'
+    description: 'Issue number (fields, push, holdout)'
     default: ''
   pr:
     description: 'Pull request number (decide), when the event names one'
@@ -58,7 +58,7 @@ outputs:
   pushed:    { description: '"true" when a round was pushed', value: '${{ steps.run.outputs.pushed }}' }
   refused:   { description: 'Why a round was not pushed', value: '${{ steps.run.outputs.refused }}' }
   sha:       { description: 'The round commit', value: '${{ steps.run.outputs.sha }}' }
-  refuse-paths: { description: 'ERE of the holdout files and their list, for push-round (holdout)', value: '${{ steps.run.outputs.refuse-paths }}' }
+  refuse-paths: { description: 'ERE of the holdout files of the given issue and their list, for push-round (holdout)', value: '${{ steps.run.outputs.refuse-paths }}' }
   action:    { description: 'stop | fix-ci | fix-review | ready | review | land | handoff | give-up', value: '${{ steps.run.outputs.action }}' }
   reason:    { description: 'Why', value: '${{ steps.run.outputs.reason }}' }
   number:    { description: 'Pull request number', value: '${{ steps.run.outputs.number }}' }

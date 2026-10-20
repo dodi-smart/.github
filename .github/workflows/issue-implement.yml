@@ -288,11 +288,12 @@ jobs:
             2. Holdout tests first. If the plan has an `Acceptance criteria`
                list, write one test per criterion BEFORE the code, where the
                repo keeps its tests and in its own test runner. List every such
-               file, one repo-relative path per line, in `.factory/holdout`.
+               file, one repo-relative path per line, in
+               `.factory/holdout.d/${{ github.event.issue.number }}`.
                Later fix rounds may not change or delete these files or that
                list; a push step refuses them. So test the behaviour the
                criterion states, not the code you are about to write. With no
-               criteria, write no `.factory/holdout`.
+               criteria, write no list.
             3. Implement. Write or update other tests as usual. A change with no
                test is not finished unless the repo has no test setup, in which
                case say so in the PR body.

@@ -1,3 +1,9 @@
+## [1.34.1](https://github.com/dodi-smart/.github/compare/v1.34.0...v1.34.1) (2026-10-20)
+
+### ⚡ Performance Improvements
+
+* **pr-checks:** lint commit messages in a step of checks and all instead of a job of their own ([0d2cf8b](https://github.com/dodi-smart/.github/commit/0d2cf8b039c7bf528ab3b9e3ed9beadfb59a5cec)), closes [#109](https://github.com/dodi-smart/.github/issues/109)
+
 ## [1.34.0](https://github.com/dodi-smart/.github/compare/v1.33.1...v1.34.0) (2026-10-20)
 
 ### ✨ Features

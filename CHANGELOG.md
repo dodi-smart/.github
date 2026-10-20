@@ -1,3 +1,9 @@
+## [1.39.1](https://github.com/dodi-smart/.github/compare/v1.39.0...v1.39.1) (2026-10-20)
+
+### 🐛 Bug Fixes
+
+* **pr-checks:** remove the opt-in bundle report ([b92e3fc](https://github.com/dodi-smart/.github/commit/b92e3fc60a6bc9550bc09434f85e58f52479af70)), references [#64](https://github.com/dodi-smart/.github/issues/64)
+
 ## [1.39.0](https://github.com/dodi-smart/.github/compare/v1.38.1...v1.39.0) (2026-10-20)
 
 ### ✨ Features

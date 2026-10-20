@@ -244,7 +244,7 @@ The log shows the deployment id and commit before the routes are probed.
 | `actions/lcov-report` | Overall and changed-file line coverage from an LCOV file, posted as a sticky comment, with optional floors. What `pr-checks.yml`'s `coverage: lcov` calls |
 | `actions/changed-files` | A pull request's changed files through the API, with no checkout, and whether any, or every one, match a set of globs. Pure bash: it needs `gh` and nothing else |
 | `actions/runner-report` | Writes which runner a job got (name, pool, labels, OS, image, queue time) to the job summary and a notice, or with `mode: run` a "Where it ran" table for every job of the run. Needs `actions: read` for queue time; without it the runner is still named. Never fails the job |
-| `actions/run-phases` | Runs a job's install, lint, design-lint, typecheck, test, build and smoke commands as timed phases, each in its own subshell, and writes a timing table to the job summary. `log-dir` also writes each phase's output to a file; `keep-going: true` runs every phase and the `failed` output lists the ones that failed. What `pr-checks.yml` and `deps-verify.yml` run their commands with |
+| `actions/run-phases` | Runs a job's install, lint, design-lint, typecheck, test, build and smoke commands as timed phases, each in its own shell, and writes a timing and peak-memory table to the job summary. `log-dir` also writes each phase's output to a file; `keep-going: true` runs every phase and the `failed` output lists the ones that failed. The `peak-rss` output is the largest per-phase peak memory in MiB. What `pr-checks.yml` and `deps-verify.yml` run their commands with |
 | `actions/wait-for-deployment` | Waits for the frontend host's successful GitHub Deployment of the checked-out commit, or for a route to report its sha. What `supabase-deploy.yml`'s health check calls |
 | `actions/supabase-start` | Starts the local Supabase database with the stack's Docker images restored from the cache, saved on a miss. What both jobs of `supabase-checks.yml` call |
 | `actions/zavet-check` | Verifies a repo's `.zavet/` knowledge layer: decision checks, guard trailers, an optional audit, and a comment only on failure. What `zavet-check.yml` and `pr-checks.yml`'s `zavet` job run. The caller checks out with full history first. |
@@ -556,17 +556,42 @@ fails the required context all the same. `single-job` is unaffected.
 `checks`, `test`, `build` and `all` run their commands through
 `actions/run-phases`. Each job's summary lists every phase that has a command,
 in order (`install`, `lint`, `design-lint`, `typecheck`, `test`, `build`, `smoke`), with
-its result and its seconds:
+its result, its seconds and its peak memory:
 
-| phase | result | seconds |
-|---|---|---|
-| install | passed | 14 |
-| lint | passed | 9 |
-| typecheck | failed (exit 2) | 21 |
-| test | not run | - |
+| phase | result | seconds | peak memory |
+|---|---|---|---|
+| install | passed | 14 | 410 MiB |
+| lint | passed | 9 | 530 MiB |
+| typecheck | failed (exit 2) | 21 | 1.8 GiB |
+| test | not run | - | - |
 
 Each phase is a collapsed log group. The first failure stops the run, and the
 phases after it are listed as `not run`. A phase with no command is left out.
+
+The peak memory is what tells you whether a test or build really needs a heavy
+runner, or only asks for one. `run-phases` also returns the largest of the
+phases as the `peak-rss` output, in whole MiB: the largest plain figure, so an
+upper bound (below) never counts. For each phase it takes the first of these
+that applies:
+
+1. **The job's cgroup v2 `memory.peak`, when it rose during the phase.** The new
+   value is that phase's peak. It counts every process in the cgroup, page cache
+   included.
+2. **`/usr/bin/time`** (GNU `-f %M`, or BSD/macOS `-l` on a self-hosted Mac),
+   when the peak did not rise or there is no cgroup. That is the peak resident
+   set of the largest single process, **not the sum** of a phase's processes, so
+   a build that forks many workers reads low.
+3. **An upper bound** when there is a cgroup but no `time`: `<= 530 MiB`, the
+   cgroup's peak from before the phase. The phase used at most that much.
+4. **`-`** without either, and `peak-rss` is empty. Nothing fails.
+
+`memory.peak` cannot be reset per phase before Linux 6.12, so in a long-lived
+runner container it is an old maximum and many phases do not raise it. We do not
+reset it even where we could, because the write changes what other readers of
+that cgroup see. A footnote under the table says where the figures come from.
+
+Measuring never changes a phase's exit code, and nothing it reports reaches the
+phase's output or `log-dir` file.
 
 ### Docs-only changes, and the one context to require
 

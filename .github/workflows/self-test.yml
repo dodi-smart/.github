@@ -444,6 +444,40 @@ jobs:
           print('zavet and react-doctor stay out of the summary and share their actions')
           "
 
+      # Both react-doctor `version` defaults stay one exact version that Renovate
+      # bumps. The manager has to read each, or the pin silently goes stale.
+      - name: react-doctor version is pinned and bumped by Renovate
+        run: |
+          set -euo pipefail
+          python3 - <<'PIN'
+          import json, re, sys
+          files = ('actions/react-doctor/action.yml', '.github/workflows/react-doctor.yml')
+          ren = json.load(open('renovate.json'))
+          managers = [m for m in ren.get('customManagers', []) if m.get('customType') == 'regex']
+          bad, found = [], {}
+          if not any('react-doctor' in r.get('matchDepNames', []) and r.get('semanticCommitType') == 'chore' and r.get('semanticCommitScope') == 'deps' for r in ren.get('packageRules', [])):
+              bad.append('renovate.json has no packageRule typing react-doctor bumps chore(deps), so a bump would not release')
+          # Run each manager's own matchStrings over the file, so one match proves
+          # the default is an exact x.y.z, carries the marker, and is reached.
+          for f in files:
+              text = open(f).read()
+              hits = [re.search(s.replace('(?<', '(?P<'), text)
+                      for m in managers
+                      if any(re.search(p[1:-1], f) for p in m.get('managerFilePatterns', []))
+                      for s in m.get('matchStrings', [])]
+              hit = next((h for h in hits if h), None)
+              if not hit or (hit['datasource'], hit['depName']) != ('npm', 'react-doctor'):
+                  bad.append(f + ' has no exact x.y.z version default with a # renovate: datasource=npm depName=react-doctor marker that a renovate.json customManager reads')
+              else:
+                  found[f] = hit['currentValue']
+          if len(set(found.values())) > 1:
+              bad.append('the two version defaults differ: ' + repr(found))
+          if bad:
+              print('::error::' + '; '.join(bad) + '. See AGENTS.md.')
+              sys.exit(1)
+          print('react-doctor pinned at ' + next(iter(found.values())) + ' in both files, read by a Renovate manager')
+          PIN
+
       # `build` runs beside `checks`, and the summary must still require
       # `checks`, or a red lint stops failing the required context.
       - name: pr-checks runs build beside checks and the summary still needs checks

@@ -39,10 +39,12 @@ on:
         default: "none"
       version:
         description: >-
-          react-doctor npm spec. Empty keeps the vendor's `latest`, exposed so a
-          repo that has been bitten can pin without forking this workflow.
+          react-doctor npm spec. The default is a pinned exact version, bumped by
+          Renovate as a reviewed PR, because the job holds write scopes and an
+          unreviewed upstream publish must not run there. A caller may pass its
+          own spec.
         type: string
-        default: ""
+        default: "0.9.18" # renovate: datasource=npm depName=react-doctor
       timeout-minutes:
         description: "Cold npx pulls ~9.4 MB of dist plus oxlint and typescript."
         type: number

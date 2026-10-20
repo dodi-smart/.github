@@ -19,7 +19,7 @@
 # nothing is installed on a config's say-so.
 #
 # Env: CONFIG (path in the repo), REF (commit to read it at), REPO, NUMBER,
-# GH_TOKEN, PREFIX, CACHE_HIT (true when the action restored node_modules).
+# GH_TOKEN, PREFIX.
 # test.sh sets COMMITLINT and SKIP_INSTALL=true.
 set -euo pipefail
 
@@ -54,12 +54,10 @@ fi
 
 if [ "${SKIP_INSTALL:-false}" != true ]; then
   # The preset is a `file:` dependency, so node_modules holds a symlink to a copy
-  # beside package.json. It is needed on a cache hit too.
+  # beside package.json.
   cp -R "$HERE/preset" "$PREFIX/"
-  if [ "${CACHE_HIT:-}" != true ]; then
-    cp "$HERE/package.json" "$HERE/package-lock.json" "$PREFIX/"
-    (cd "$PREFIX" && npm ci --prefer-offline --ignore-scripts --no-audit --no-fund >/dev/null)
-  fi
+  cp "$HERE/package.json" "$HERE/package-lock.json" "$PREFIX/"
+  (cd "$PREFIX" && npm ci --prefer-offline --ignore-scripts --no-audit --no-fund >/dev/null)
 fi
 lint="${COMMITLINT:-$PREFIX/node_modules/.bin/commitlint}"
 

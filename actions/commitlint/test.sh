@@ -34,14 +34,14 @@ echo "$*" >> "$TMP/npm.log"
 EOF
 chmod +x "$TMP/bin/gh" "$TMP/bin/commitlint" "$TMP/bin/npm"
 
-# SKIP and CACHE_HIT come from the environment. SKIP=false runs the install step
+# SKIP comes from the environment. SKIP=false runs the install step
 # against the fake npm. COMMITLINT= (empty) runs the real commitlint, for the
 # REAL=1 section at the end.
 run() { # fixture-lines -> exit code; $TMP/npm.log holds this run's npm calls
   printf '%s\n' "$@" > "$TMP/fixture"
   : > "$TMP/npm.log"
   (cd "$TMP" && PATH="$TMP/bin:$PATH" FIXTURE="$TMP/fixture" COMMITLINT="${COMMITLINT-$TMP/bin/commitlint}" \
-     SKIP_INSTALL="${SKIP:-true}" CACHE_HIT="${CACHE_HIT:-}" \
+     SKIP_INSTALL="${SKIP:-true}" \
      REPO=o/r NUMBER=1 REF=abc PREFIX="$TMP/p" CONFIG=.commitlintrc.json \
      "$HERE/lint.sh" > "$TMP/out" 2>&1); echo $?
 }
@@ -77,16 +77,12 @@ check "the relative entry is named" 1 "$(grep -c "extends './shared.json'" "$TMP
 printf 'module.exports = { extends: ["@commitlint/config-conventional"] };\n' > "$TMP/repo/.commitlintrc.json"
 check "a non-JSON config is not checked" 0 "$(run 'aaaaaaa1|feat: ok')"
 
-# The install step: `npm ci` of the pinned set on a miss, nothing on a hit, never `npm install`.
+# The install step: `npm ci` of the pinned set, never `npm install`.
 printf '{"extends":["@dodi-smart/commitlint-config"]}\n' > "$TMP/repo/.commitlintrc.json"
 rm -rf "$TMP/p/preset"
-check "a cache miss installs" 0 "$(SKIP=false run 'aaaaaaa1|feat: ok')"
-check "the miss runs npm ci and nothing else" "ci --prefer-offline --ignore-scripts --no-audit --no-fund" "$(cat "$TMP/npm.log")"
+check "an install runs" 0 "$(SKIP=false run 'aaaaaaa1|feat: ok')"
+check "the install is npm ci and nothing else" "ci --prefer-offline --ignore-scripts --no-audit --no-fund" "$(cat "$TMP/npm.log")"
 check "the preset is copied beside package.json" 1 "$([ -f "$TMP/p/preset/index.js" ] && echo 1 || echo 0)"
-rm -rf "$TMP/p/preset"
-check "a cache hit lints" 0 "$(SKIP=false CACHE_HIT=true run 'aaaaaaa1|feat: ok')"
-check "a cache hit skips npm" "" "$(cat "$TMP/npm.log")"
-check "a cache hit still copies the preset" 1 "$([ -f "$TMP/p/preset/index.js" ] && echo 1 || echo 0)"
 
 # The preset's rules, read from the file the lockfile links. subject-case is absent
 # on purpose: it stays as config-conventional has it.
@@ -104,7 +100,7 @@ if [ "${REAL:-}" = 1 ]; then
   line() { head -c "$1" < /dev/zero | tr '\0' "$2"; }
   check "real: long header and body lines pass under the preset" 0 \
     "$(COMMITLINT='' SKIP=false run "aaaaaaa1|feat: $(line 144 y)\n\n$(line 190 z)")"
-  check "real: a 190-char header still fails" 1 "$(COMMITLINT='' SKIP=false CACHE_HIT=true run "aaaaaaa1|feat: $(line 184 y)")"
+  check "real: a 190-char header still fails" 1 "$(COMMITLINT='' run "aaaaaaa1|feat: $(line 184 y)")"
   check "real: on header-max-length" 1 "$(grep -c 'header-max-length' "$TMP/out")"
 fi
 

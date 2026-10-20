@@ -43,14 +43,6 @@ inputs:
     description: 'Token for the release upload and read. Needs contents: write.'
     default: ${{ github.token }}
 
-outputs:
-  apks:
-    description: 'JSON array of the APK paths that were attached'
-    value: ${{ steps.distribute.outputs.apks }}
-  distributed:
-    description: '"true" when Firebase took the build, "false" otherwise'
-    value: ${{ steps.distribute.outputs.distributed }}
-
 runs:
   using: composite
   steps:

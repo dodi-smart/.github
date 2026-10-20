@@ -55,7 +55,7 @@ new_case() {
   CASE="$ROOT/case-$1"; mkdir -p "$CASE/ws"
   CALLS="$CASE/calls"; : > "$CALLS"
   NOTES_SEEN="$CASE/notes-seen"
-  OUT="$CASE/out"; GHOUT="$CASE/github-output"; : > "$GHOUT"
+  OUT="$CASE/out"
   export CALLS NOTES_SEEN
   unset FAKE_UPLOAD_FAIL FAKE_VIEW_FAIL FAKE_NPX_FAIL
   export FAKE_BODY_FILE="$CASE/body"
@@ -69,7 +69,7 @@ body() { printf '%s' "$1" > "$FAKE_BODY_FILE"; }
 run() {
   ( cd "$CASE/ws" && env -u TAG -u REPO -u APK_GLOB -u FIREBASE_APP_ID -u FIREBASE_GROUPS -u FIREBASE_TOOLS_VERSION \
       -u CREDENTIALS_FILE -u GITHUB_REPOSITORY -u NOTES_MAX \
-      PATH="$ROOT/bin:$PATH" GITHUB_OUTPUT="$GHOUT" RUNNER_TEMP="$CASE" \
+      PATH="$ROOT/bin:$PATH" RUNNER_TEMP="$CASE" \
       GITHUB_SERVER_URL=https://example.invalid "${ENVV[@]}" "$@" "$SCRIPT" ) > "$OUT" 2>&1
   RC=$?
 }
@@ -138,9 +138,6 @@ apk app/build/outputs/apk/release/app-release.apk
 run
 expect_rc 0 "an empty app id succeeds"
 expect_calls "  attaches the APK and calls no Firebase" 1 0
-grep -q 'distributed=false' "$GHOUT" && ok "  and reports distributed=false" || bad "  distributed output" "$(cat "$GHOUT")"
-grep -q 'apks=\["app/build/outputs/apk/release/app-release.apk"\]' "$GHOUT" \
-  && ok "  and reports the APKs" || bad "  apks output" "$(cat "$GHOUT")"
 
 new_case upload-fails
 apk app/build/outputs/apk/release/app-release.apk
@@ -164,7 +161,6 @@ grep -q "^ENV"$'\t'"GOOGLE_APPLICATION_CREDENTIALS=$CREDS\$" "$CALLS" \
 grep -q 'a thing' "$NOTES_SEEN" && ok "  the notes are the release body" || bad "  notes" "$(cat "$NOTES_SEEN" 2>/dev/null)"
 [ "$(grep -n 'release.upload' "$CALLS" | head -1 | cut -d: -f1)" -lt "$(grep -n '^npx' "$CALLS" | head -1 | cut -d: -f1)" ] \
   && ok "  and the upload comes before the distribution" || bad "  order" "$(cut -c1-40 "$CALLS")"
-grep -q 'distributed=true' "$GHOUT" && ok "  and reports distributed=true" || bad "  distributed output" "$(cat "$GHOUT")"
 compgen -G "$CASE/android-distribute.*" > /dev/null \
   && bad "  and removes its scratch directory" "left behind" || ok "  and removes its scratch directory"
 
@@ -220,7 +216,6 @@ run FIREBASE_APP_ID=app FIREBASE_TOOLS_VERSION=15.32.1 CREDENTIALS_FILE="$CREDS"
 expect_rc 1 "several APKs with an app id fail the distribution"
 expect_calls "  after attaching both" 1 0
 expect_out "  and say which to narrow" "Narrow apk-glob"
-grep -q 'distributed=false' "$GHOUT" && ok "  and report distributed=false" || bad "  distributed output" "$(cat "$GHOUT")"
 grep -q $'upload\tv1.2.3\tapp/build/outputs/apk/release/app-release.apk\tother/build/outputs/apk/release/other-release.apk\t' "$CALLS" \
   && ok "  both were uploaded in one call" || bad "  upload" "$(grep upload "$CALLS")"
 
@@ -235,7 +230,6 @@ new_case firebase-fails
 apk app/build/outputs/apk/release/app-release.apk
 run FAKE_NPX_FAIL=1 FIREBASE_APP_ID=app FIREBASE_TOOLS_VERSION=15.32.1 CREDENTIALS_FILE="$CREDS"
 expect_rc 1 "a failed distribution fails the job"
-grep -q 'distributed=true' "$GHOUT" && bad "  and does not report distributed=true" "reported" || ok "  and does not report distributed=true"
 
 # --- inputs that must be right before anything is uploaded -------------------------
 echo "refusals"

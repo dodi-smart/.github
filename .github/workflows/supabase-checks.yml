@@ -286,10 +286,24 @@ jobs:
     steps:
       - uses: dodi-smart/.github/actions/runner-report@v1
 
+      # Reports success, not skipped, when no migration changed, the way `types`
+      # and `pgtap` do, and without a checkout: the file list comes from the API.
+      - name: Check for migration changes
+        id: changes
+        uses: dodi-smart/.github/actions/changed-files@v1
+        with:
+          patterns: ${{ inputs.migrations-path }}
+
+      - name: Skip (no migration changes)
+        if: steps.changes.outputs.matched != 'true'
+        run: echo "No migration changes detected, nothing to lint."
+
       - uses: actions/checkout@v7
+        if: steps.changes.outputs.matched == 'true'
         with: { persist-credentials: false }
 
       - name: Lint changed migrations
+        if: steps.changes.outputs.matched == 'true'
         uses: dodi-smart/.github/actions/migration-lint@v1
         with:
           migrations-path: ${{ inputs.migrations-path }}

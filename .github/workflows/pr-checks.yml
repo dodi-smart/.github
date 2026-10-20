@@ -92,6 +92,15 @@ on:
       commitlint:        { type: boolean, default: false }
       commitlint-config: { type: string,  default: ".commitlintrc.json" }
 
+      # Opt-in osv-scanner over the lockfiles the PR changed; only the findings
+      # the PR introduces count, and a dependency PR is skipped (deps-verify owns
+      # it). `none` reports; low | moderate | high | critical fails a new finding
+      # at or above it, and a scan that could not run. Never
+      # dependency-review-action: it needs GitHub Advanced Security on private
+      # repos and `security-events`, which no pr-checks job holds (see `hk`).
+      dependency-check:         { type: boolean, default: false }
+      dependency-check-fail-on: { type: string,  default: "none" }
+
       # Opt-in jobs that replace zavet-check.yml and react-doctor.yml. They
       # feed the `pr-checks` summary only when their `*-blocking` input is on.
       # `zavet-stack` is the toolchain the decision checks run on.
@@ -326,7 +335,8 @@ jobs:
       - uses: dodi-smart/.github/actions/runner-report@v1
         with:
           selector: ${{ needs.pick.outputs.light }}
-      - if: ${{ needs.pick.outputs.docs_only != 'true' }}
+      - id: checkout
+        if: ${{ needs.pick.outputs.docs_only != 'true' }}
         uses: actions/checkout@v7
         with: { persist-credentials: false }
       # Every job passes every command: setup-stack only resolves them into
@@ -386,6 +396,29 @@ jobs:
           lint:        ${{ steps.setup.outputs.lint }}
           design-lint: ${{ steps.setup.outputs.design-lint }}
           typecheck:   ${{ steps.setup.outputs.typecheck }}
+      # Opt-in `dependency-check`, a step like commitlint and not a job: a job
+      # would pay a runner start for seconds of work. After the phases on
+      # !cancelled(), so a red lint does not hide it, and on the checkout, so a
+      # docs-only change skips it. The gate is called for `author-kind` alone, as
+      # zavet-check does: it is written before every rule, `proceed` is ignored,
+      # and a missing value scans. See AGENTS.md.
+      - &dependency-author
+        id: author
+        if: ${{ !cancelled() && inputs.dependency-check && steps.checkout.outcome == 'success' }}
+        uses: dodi-smart/.github/actions/agent-gate@v1
+        with:
+          labels:     ${{ toJson(github.event.pull_request.labels.*.name) }}
+          event-name: ${{ github.event_name }}
+          author:     ${{ github.event.pull_request.user.login }}
+          bots:       'allow'
+          skip-draft: 'false'
+      - &dependency-check
+        name: Dependency check
+        if: ${{ !cancelled() && inputs.dependency-check && steps.checkout.outcome == 'success' }}
+        uses: dodi-smart/.github/actions/dependency-check@v1
+        with:
+          author-kind: ${{ steps.author.outputs.author-kind }}
+          fail-on:     ${{ inputs.dependency-check-fail-on }}
       # Last, on !cancelled(): a red phase still gets its messages checked. A CLI,
       # not a Docker action: see actions/commitlint.
       - name: commitlint
@@ -480,7 +513,8 @@ jobs:
       - uses: dodi-smart/.github/actions/runner-report@v1
         with:
           selector: ${{ needs.pick.outputs.heavy }}
-      - uses: actions/checkout@v7
+      - id: checkout
+        uses: actions/checkout@v7
         with: { persist-credentials: false }
       - id: setup
         uses: dodi-smart/.github/actions/setup-stack@v1
@@ -536,6 +570,8 @@ jobs:
           path: ${{ env.COVERAGE_REPORT }}
           if-no-files-found: error
           retention-days: 1
+      - *dependency-author
+      - *dependency-check
       # Last, on !cancelled(): a red phase still gets its messages checked. A CLI,
       # not a Docker action: see actions/commitlint.
       - name: commitlint

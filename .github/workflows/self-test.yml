@@ -771,10 +771,11 @@ jobs:
           if 'commitlint' in str(jobs['all'].get('if', '')):
               errors.append('all must skip on a docs-only change even with commitlint on: never start a heavy runner to lint commit messages.')
           # Every other step of checks skips on docs-only; the phases after hk
-          # follow the install step, which does.
+          # follow the install step and dependency-check follows the checkout,
+          # and both of those skip.
           for st in jobs['checks']['steps'][1:-1]:
               cond = str(st.get('if', ''))
-              if DOCS not in cond and 'steps.install.outcome' not in cond:
+              if DOCS not in cond and 'steps.install.outcome' not in cond and 'steps.checkout.outcome' not in cond:
                   errors.append('checks step %r must skip on a docs-only change.' % (st.get('name') or st.get('uses')))
           need = next(st for st in jobs['pick']['steps'] if st.get('id') == 'need')
           if 'inputs.commitlint' not in str(need.get('env', {}).get('COMMITLINT', '')):
@@ -783,6 +784,62 @@ jobs:
               sys.exit('::error::' + ' '.join(errors))
           print('commitlint is the last step of checks and all, and checks runs for it alone on docs-only')
           CL
+
+      # dependency-check is an opt-in step of `checks` and `all`, not a job: a job
+      # would pay a runner start for seconds of work. It runs after the phases on
+      # !cancelled(), on the checkout (a docs-only change skips it), before
+      # commitlint, and reads author-kind from the gate in the same job. Never
+      # dependency-review-action, which needs GHAS and `security-events`.
+      - name: pr-checks runs dependency-check as an opt-in step of checks and all
+        run: |
+          set -euo pipefail
+          python3 - <<'DC'
+          import sys, yaml
+          doc = yaml.safe_load(open('.github/workflows/pr-checks.yml'))
+          inputs = doc[True]['workflow_call']['inputs']
+          jobs = doc['jobs']
+          errors = []
+          on = inputs.get('dependency-check')
+          if not on or on.get('type') != 'boolean' or on.get('default') is not False:
+              errors.append('dependency-check must be a boolean input that defaults to false.')
+          fail_on = inputs.get('dependency-check-fail-on')
+          if not fail_on or fail_on.get('type') != 'string' or fail_on.get('default') != 'none':
+              errors.append('dependency-check-fail-on must be a string input that defaults to none.')
+          if any('dependency-review-action' in str(st.get('uses', '')) for j in jobs.values() for st in j.get('steps') or []):
+              errors.append('pr-checks must never use actions/dependency-review-action: it needs GHAS on private repos and security-events.')
+          if 'dependency-check' in jobs:
+              errors.append('dependency-check must stay a step of checks and all, not a job.')
+          for name, job in jobs.items():
+              if 'security-events' in (job.get('permissions') or {}):
+                  errors.append(name + ' must not hold security-events.')
+          for name in ('checks', 'all'):
+              steps = jobs[name]['steps']
+              at = [i for i, st in enumerate(steps) if 'actions/dependency-check@' in str(st.get('uses', ''))]
+              if len(at) != 1:
+                  errors.append(name + ' must run actions/dependency-check exactly once.')
+                  continue
+              step = steps[at[0]]
+              cond = str(step.get('if', ''))
+              for need in ('!cancelled()', 'inputs.dependency-check', 'steps.checkout.outcome'):
+                  if need not in cond:
+                      errors.append(name + ': the dependency-check condition must contain ' + need + '.')
+              phases = [i for i, st in enumerate(steps) if 'actions/run-phases@' in str(st.get('uses', ''))]
+              lint = [i for i, st in enumerate(steps) if 'actions/commitlint@' in str(st.get('uses', ''))]
+              if not phases or max(phases) > at[0] or lint != [at[0] + 1]:
+                  errors.append(name + ': dependency-check must come after the phases and right before commitlint.')
+              if not any(st.get('id') == 'checkout' and 'actions/checkout@' in str(st.get('uses', '')) for st in steps):
+                  errors.append(name + ': the checkout step must have id: checkout, which dependency-check is conditioned on.')
+              gate = [i for i, st in enumerate(steps) if st.get('id') == 'author' and 'actions/agent-gate@' in str(st.get('uses', ''))]
+              if len(gate) != 1 or gate[0] > at[0]:
+                  errors.append(name + ': author-kind must come from an actions/agent-gate step with id: author, earlier in the same job.')
+              if 'steps.author.outputs.author-kind' not in str((step.get('with') or {}).get('author-kind', '')):
+                  errors.append(name + ': dependency-check must be given steps.author.outputs.author-kind.')
+              if 'inputs.dependency-check-fail-on' not in str((step.get('with') or {}).get('fail-on', '')):
+                  errors.append(name + ': dependency-check must pass inputs.dependency-check-fail-on as fail-on.')
+          if errors:
+              sys.exit('::error::' + ' '.join(errors))
+          print('dependency-check is an opt-in step of checks and all, after the phases and before commitlint')
+          DC
 
       # A `test` or `build` with no command must not start a large runner, which
       # cost one caller 5 minutes of queue for 2 seconds of work. `pick` decides,

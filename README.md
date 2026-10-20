@@ -567,6 +567,34 @@ permissions when the run starts, so every caller would have to grant it, hk on
 or off. A repo that wants code scanning downloads the artifact in its own
 workflow and runs `github/codeql-action/upload-sarif` there.
 
+### dependency-check
+
+An opt-in step that scans the lockfiles a pull request changed for known
+vulnerabilities and reports only the ones the pull request introduces
+(`actions/dependency-check`, osv-scanner underneath). Default `false`, and no new
+permission: it reads with the `contents: read` and `pull-requests: read` that
+`checks` and `all` already hold.
+
+```yaml
+jobs:
+  pr-checks:
+    uses: dodi-smart/.github/.github/workflows/pr-checks.yml@v1
+    with:
+      stack: bun
+      dependency-check: true
+      dependency-check-fail-on: none   # none | low | moderate | high | critical
+```
+
+`dependency-check-fail-on` defaults to `none`, which reports and never blocks.
+Any other value fails the job on a new finding at or above that severity (one
+with no score counts as high), and on a scan that could not run. It is a step of
+`checks` (or `all`, with `single-job`) after the phases and before commitlint, so
+a red lint does not hide it, and a docs-only change skips it. A dependency bot's
+pull request is skipped too, because `deps-verify` owns those. The findings are in
+the job summary. It never uses `dependency-review-action`: that needs GitHub Advanced Security on
+private repos and a `security-events` scope, which would fail every caller at
+startup.
+
 ### One job or three
 
 `pr-checks.yml` splits light work from heavy by default. `single-job: true`
@@ -723,7 +751,7 @@ or more, where the API stops listing), `docs_only` is `false` and every job runs
 as normal.
 
 `pr-checks.yml` grants `contents: read` at the workflow level, so a job that
-needs more asks for it: `pick`, `checks` and `all` read pull requests (`checks` and `all` for commitlint), `zavet` and
+needs more asks for it: `pick`, `checks` and `all` read pull requests (`checks` and `all` for commitlint and dependency-check), `zavet` and
 `react-doctor` write them for their comments, and only the `coverage` job
 writes them for the coverage comment, so `test` and `all` run your tests with no
 write token. A checkout in these workflows never keeps the job

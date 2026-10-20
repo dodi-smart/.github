@@ -1209,9 +1209,13 @@ jobs:
       - name: setup-stack parses env files and resolves bun
         run: ./actions/setup-stack/test.sh
 
-      # ~/.konan is a toolchain cache: an exact key, never restore-keys.
+      # ~/.konan is a toolchain cache: an exact key, never restore-keys, on both
+      # of its steps. Who saves (cache_save, default branch only) is test.sh's.
       - name: The Kotlin/Native cache uses an exact key
         run: |
+          if [ "$(grep -c 'path: ~/.konan' actions/setup-stack/action.yml)" -lt 2 ]; then
+            echo "::error::expected a restore-only and a saving ~/.konan step"; exit 1
+          fi
           if grep -A4 'path: ~/.konan' actions/setup-stack/action.yml | grep -q restore-keys; then
             echo "::error::the ~/.konan cache uses restore-keys. Exact key only."; exit 1
           fi

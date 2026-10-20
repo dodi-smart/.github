@@ -76,7 +76,7 @@ check "mise latest passes through" "latest mise.toml" "$(resolve "$d" auto)"
 d="$(fx)"; printf '[settings]\nbun = "7.7.7"\n' > "$d/mise.toml"
 check "no bun under [tools] -> latest" "latest none" "$(resolve "$d" auto)"
 
-# --- action.yml, read once: the defaults and resolve scripts, and setup-bun's no-cache.
+# --- action.yml, read once: the defaults and resolve scripts, setup-bun's no-cache, and who saves.
 python3 - "$HERE/action.yml" "$TMP" <<'EOF'
 import sys, yaml
 steps = yaml.safe_load(open(sys.argv[1]))['runs']['steps']
@@ -84,6 +84,24 @@ for id in ('defaults', 'resolve'):
     open(f'{sys.argv[2]}/{id}.sh', 'w').write([s for s in steps if s.get('id') == id][0]['run'])
 bun = [s for s in steps if str(s.get('uses', '')).startswith('oven-sh/setup-bun@')][0]
 open(f'{sys.argv[2]}/bun-no-cache', 'w').write(str(bun['with'].get('no-cache', '')))
+# Only cache_save decides who writes: ~/.konan restores where it is false and
+# saves (post step, on a miss) where it is true, under one exact key.
+uses = lambda s: str(s.get('uses', ''))
+konan = [s for s in steps if '.konan' in str((s.get('with') or {}).get('path', ''))]
+by = {u: [s for s in konan if uses(s).startswith(u)] for u in ('actions/cache/restore@', 'actions/cache@')}
+gradle = [s for s in steps if uses(s).startswith('gradle/actions/setup-gradle@')][0]['with']
+rust = [s for s in steps if uses(s).startswith('Swatinem/rust-cache@')][0]['with']
+bad = [m for m, broken in (
+    ('want one restore-only and one saving konan step', len(konan) != 2 or any(len(v) != 1 for v in by.values())),
+    ('a konan step has restore-keys', any(s['with'].get('restore-keys') for s in konan)),
+    ('konan steps use different keys', len({s['with'].get('key') for s in konan}) != 1),
+    ('restore-only konan step not gated on cache_save != true', "cache_save != 'true'" not in str(by['actions/cache/restore@'][:1])),
+    ('saving konan step not gated on cache_save == true', "cache_save == 'true'" not in str(by['actions/cache@'][:1])),
+    ('an inline actions/cache/save saves before the build', any(uses(s).startswith('actions/cache/save') for s in steps)),
+    ('setup-gradle cache-read-only ignores cache_save', 'cache_save' not in str(gradle.get('cache-read-only'))),
+    ('rust-cache save-if ignores cache_save', 'cache_save' not in str(rust.get('save-if'))),
+) if broken]
+open(f'{sys.argv[2]}/saves', 'w').write('; '.join(bad) or 'ok')
 EOF
 
 # --- the defaults step: lock command, version files and the lockfile list.
@@ -131,6 +149,58 @@ check "isolate turns cache off on hosted"      false "$(cached github-hosted Lin
 check "cache: false turns it off on hosted"    false "$(cached github-hosted Linux X64 false false)"
 # shellcheck disable=SC2016  # the expression is matched literally
 check "setup-bun's cache follows the mode"     '${{ steps.resolve.outputs.cache_enabled != '\''true'\'' }}' "$(< "$TMP/bun-no-cache")"
+
+# --- RUNNER_PERSISTENT_CACHE and cache_save. `res` runs resolve with extra
+# VAR=VALUE pairs on top of a self-hosted macOS gradle job on a pull request ref.
+res() {
+  : > "$TMP/p.env"; : > "$TMP/p.out"
+  env -i PATH="$PATH" STACK=gradle ISOLATE=false CACHE=auto RUNNER_ENVIRONMENT=self-hosted RUNNER_OS=macOS \
+    RUNNER_ARCH=ARM64 RUNNER_TEMP="$TMP" REF=refs/pull/7/merge DEFAULT_BRANCH=main \
+    GITHUB_ENV="$TMP/p.env" GITHUB_OUTPUT="$TMP/p.out" "$@" bash "$TMP/resolve.sh" > "$TMP/p.log" 2>&1
+}
+out() { sed -n "s/^$1=//p" "$TMP/p.out"; }
+envv() { sed -n "s/^$1=//p" "$TMP/p.env"; }
+warned() { grep -c '::warning::RUNNER_PERSISTENT_CACHE' "$TMP/p.log"; }
+# A path that is not usable leaves the runner's usual mode, says so, and fails nothing.
+falls_back() { # desc warnings
+  check "$1: the usual macOS mode"     true "$(out cache_enabled)"
+  check "$1: no GRADLE_USER_HOME"      ''   "$(envv GRADLE_USER_HOME)"
+  check "$1: no KONAN_DATA_DIR"        ''   "$(envv KONAN_DATA_DIR)"
+  check "$1: empty persistent output"  ''   "$(out persistent)"
+  check "$1: warnings"                 "$2" "$(warned)"
+}
+
+share="$TMP/ci cache"; mkdir -p "$share"   # a space, like a VM share's "My Shared Files"
+res RUNNER_PERSISTENT_CACHE="$share"
+check "persistent: cache goes off on macOS"       false "$(out cache_enabled)"
+check "persistent: the output names the path"     "$share" "$(out persistent)"
+check "persistent: GRADLE_USER_HOME under it"     "$share/gradle" "$(envv GRADLE_USER_HOME)"
+check "persistent: KONAN_DATA_DIR under it"       "$share/konan" "$(envv KONAN_DATA_DIR)"
+check "persistent: both directories are created"  yes "$([ -d "$share/gradle" ] && [ -d "$share/konan" ] && echo yes || echo no)"
+check "persistent: no warning when it is usable"  0 "$(warned)"
+check "persistent: the log line names it"         1 "$(grep -c "persistent=$share" "$TMP/p.log")"
+res RUNNER_PERSISTENT_CACHE="$share" RUNNER_ENVIRONMENT=github-hosted RUNNER_OS=Linux RUNNER_ARCH=X64
+check "persistent: any OS honours the declaration" false "$(out cache_enabled)"
+res RUNNER_PERSISTENT_CACHE="$TMP/does not exist"; falls_back "persistent: a missing path" 1
+: > "$TMP/a file"
+res RUNNER_PERSISTENT_CACHE="$TMP/a file"; rc=$?
+falls_back "persistent: a file" 1
+check "persistent: a file does not fail the step" 0 "$rc"
+res RUNNER_PERSISTENT_CACHE=""; falls_back "persistent: empty is unset" 0
+res RUNNER_PERSISTENT_CACHE="$share" ISOLATE=true
+check "persistent: isolate=true ignores it"       '' "$(out persistent)"
+check "persistent: isolate=true keeps RUNNER_TEMP dirs" "$TMP/gradle-home" "$(envv GRADLE_USER_HOME)"
+check "persistent: isolate=true sets no KONAN_DATA_DIR" '' "$(envv KONAN_DATA_DIR)"
+res RUNNER_PERSISTENT_CACHE="$share" RUNNER_OS=Linux
+check "persistent: isolated Linux ARM64 ignores it" '' "$(out persistent)"
+
+res;                         check "a pull request ref reads and never saves" false "$(out cache_save)"
+res REF=refs/heads/main;     check "the default branch saves"                 true  "$(out cache_save)"
+res REF=refs/heads/feat/x;   check "another branch never saves"               false "$(out cache_save)"
+res REF=refs/heads/ DEFAULT_BRANCH=; check "no default branch in the payload never saves" false "$(out cache_save)"
+res REF=refs/heads/main RUNNER_OS=Linux RUNNER_ARCH=X64; check "no cache, nothing to save (self-hosted Linux)" false "$(out cache_save)"
+res REF=refs/heads/main RUNNER_PERSISTENT_CACHE="$share"; check "a persistent dir saves nothing to Actions" false "$(out cache_save)"
+check "every cache step's save follows cache_save" ok "$(< "$TMP/saves")"
 
 echo "setup-stack: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

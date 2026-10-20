@@ -1,3 +1,9 @@
+## [1.33.1](https://github.com/dodi-smart/.github/compare/v1.33.0...v1.33.1) (2026-10-20)
+
+### ⚡ Performance Improvements
+
+* **pr-checks:** run hk through actions/hk-check, follow setup-stack's cache mode, and keep a red hk from hiding lint ([e8d84f0](https://github.com/dodi-smart/.github/commit/e8d84f0a9f726e6cb9c9270859446278fec0b65e)), references [#104](https://github.com/dodi-smart/.github/issues/104) [#103](https://github.com/dodi-smart/.github/issues/103)
+
 ## [1.33.0](https://github.com/dodi-smart/.github/compare/v1.32.0...v1.33.0) (2026-10-20)
 
 ### ✨ Features

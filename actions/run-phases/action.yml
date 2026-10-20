@@ -2,11 +2,13 @@
 #
 # pr-checks used to repeat a source-the-env-file step per command in four jobs,
 # which left no timings anywhere. This runs the commands setup-stack resolved,
-# in a fixed order, each in its own subshell inside a log group, stops at the
-# first failure, and writes a `| phase | result | seconds |` table to the job
-# summary. Logic and its tests live in run-phases.sh and test.sh.
+# in a fixed order, each in its own shell inside a log group, stops at the
+# first failure, and writes a `| phase | result | seconds | peak memory |` table
+# to the job summary. The peak memory is what tells a caller whether its test or
+# build needs a heavy runner. Logic and its tests live in run-phases.sh and
+# test.sh.
 name: Run phases
-description: Run resolved commands as timed phases in their own subshells, stop at the first failure, and write a timing table to the job summary.
+description: Run resolved commands as timed phases in their own shells, stop at the first failure, and write a timing and peak-memory table to the job summary.
 
 inputs:
   env-file:
@@ -36,6 +38,9 @@ outputs:
   failed:
     description: 'The failed phases, space-separated. Empty when every phase passed.'
     value: ${{ steps.run.outputs.failed }}
+  peak-rss:
+    description: 'The largest per-phase peak memory of the run, in whole MiB. Empty when nothing could be measured, or when every phase was only an upper bound.'
+    value: ${{ steps.run.outputs.peak-rss }}
 
 runs:
   using: composite

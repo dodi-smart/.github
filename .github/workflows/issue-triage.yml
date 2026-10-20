@@ -87,7 +87,7 @@ jobs:
       mode:    ${{ steps.bots.outputs.mode }}
       runner:  ${{ steps.pick.outputs.runner }}
     steps:
-      - uses: dodi-smart/.github/actions/runner-report@v1
+      - uses: dodi-smart/.github/actions/runner-report@pinned/v1.38.1
         with:
           selector: light
 
@@ -96,7 +96,7 @@ jobs:
       # event payload only, so it needs no checkout and stays cheap enough to
       # run before the runner picker.
       - id: gate
-        uses: dodi-smart/.github/actions/agent-gate@v1
+        uses: dodi-smart/.github/actions/agent-gate@pinned/v1.38.1
         with:
           labels:        ${{ toJson(github.event.issue.labels.*.name) }}
           number:        ${{ inputs.issue-number }}
@@ -160,7 +160,7 @@ jobs:
       # kill-switched issue must never pay for a hosted picker.
       - id: pick
         if: steps.bots.outputs.proceed == 'true'
-        uses: dodi-smart/.github/actions/pick-runner@v1
+        uses: dodi-smart/.github/actions/pick-runner@pinned/v1.38.1
         with:
           weight:             ${{ inputs.runner-weight }}
           labels:             ${{ inputs.runner-labels }}
@@ -177,7 +177,7 @@ jobs:
       issues: write
       id-token: write
     steps:
-      - uses: dodi-smart/.github/actions/runner-report@v1
+      - uses: dodi-smart/.github/actions/runner-report@pinned/v1.38.1
         with:
           selector: ${{ needs.gate.outputs.runner }}
 
@@ -198,7 +198,7 @@ jobs:
 
       # Opus for triage. It reads unfamiliar code and decides between a plan
       # and questions, which is judgement work.
-      - uses: dodi-smart/.github/actions/run-agent@v1
+      - uses: dodi-smart/.github/actions/run-agent@pinned/v1.38.1
         with:
           oauth-token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           stage: triage

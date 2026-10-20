@@ -66,7 +66,7 @@ push() {   # push ROUND [SUBJECT]
 msg() { git -C "$WORK/r" log -1 --format=%B; }
 
 repo; commit "$AGENT" src/a.ts; commit "$AGENT" test/a.test.ts
-mkdir -p "$WORK/r/.factory"; printf 'test/a.test.ts\n' > "$WORK/r/.factory/holdout"
+mkdir -p "$WORK/r/.factory/holdout.d"; printf 'test/a.test.ts\n' > "$WORK/r/.factory/holdout.d/1"
 git -C "$WORK/r" add -A; git -C "$WORK/r" -c user.name=a -c "user.email=$AGENT" commit -q -m 'list holdout'
 push 0 'feat(export): add csv export'
 expect "round 0 is one commit"                test "$(git -C "$WORK/r" rev-list --count "$BASE..HEAD")" = 1
@@ -108,20 +108,21 @@ repo
 push 0 'feat: x'
 expect "no commits is no push"                test "$(val refused)" = 'the agent committed nothing'
 
-# Fix rounds go through actions/push-round. `holdout` turns the list as round 0
-# wrote it into push-round's refuse-paths, and push-round's own check refuses.
+# Fix rounds go through actions/push-round. `holdout` turns the issue's list as
+# round 0 wrote it into push-round's refuse-paths, and push-round's own check
+# refuses. ISSUE is the PR's issue; the list is .factory/holdout.d/<issue>.
 holdout_repo() {
   repo
-  mkdir -p "$WORK/r/.factory" "$WORK/r/test"
-  printf '# holdout\ntest/a.test.ts\ntest/b(1).test.ts\n' > "$WORK/r/.factory/holdout"
+  mkdir -p "$WORK/r/.factory/holdout.d" "$WORK/r/test"
+  printf '# holdout\ntest/a.test.ts\ntest/b(1).test.ts\n' > "$WORK/r/.factory/holdout.d/1"
   echo t > "$WORK/r/test/a.test.ts"; echo t > "$WORK/r/test/b(1).test.ts"
   git -C "$WORK/r" add -A; git -C "$WORK/r" -c user.name=a -c "user.email=$AGENT" commit -q -m 'feat: x'
   BASE="$(git -C "$WORK/r" rev-parse HEAD)"
 }
 ROUND_SH="$HERE/../push-round/round.sh"
-round() {  # round -> refused (empty when the round is ready)
+round() {  # round [ISSUE] -> refused (empty when the round is ready); ISSUE defaults to 1
   : > "$WORK/out"
-  paths=$(cd "$WORK/r" && BASE_SHA="$BASE" GITHUB_OUTPUT=/dev/null bash "$F" holdout | sed -n 's/^refuse-paths=//p')
+  paths=$(cd "$WORK/r" && BASE_SHA="$BASE" ISSUE="${1-1}" GITHUB_OUTPUT=/dev/null bash "$F" holdout | sed -n 's/^refuse-paths=//p')
   ( cd "$WORK/r" && env -i PATH="$PATH" HOME="$WORK" GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null \
       BASE_SHA="$BASE" ROUNDS=0 MAX_ROUNDS=3 ALLOWED=true AGENT_EMAILS="$AGENT" \
       AUTHOR_NAME='claude[bot]' AUTHOR_EMAIL="$AGENT" REFUSE_PATHS="$paths" \
@@ -135,12 +136,56 @@ holdout_repo; commit "$AGENT" test/a.test.ts 'fix: relax the test'
 expect "a fix round that edits a holdout test is refused" grep -q 'test/a.test.ts' <<<"$(round)"
 holdout_repo; git -C "$WORK/r" rm -q 'test/b(1).test.ts'; git -C "$WORK/r" -c user.name=a -c "user.email=$AGENT" commit -q -m 'fix: drop it'
 expect "deleting a holdout test is refused, with ( ) read literally" grep -qF 'test/b(1).test.ts' <<<"$(round)"
-holdout_repo; commit "$AGENT" .factory/holdout 'fix: shorter list'
-expect "editing the holdout list is refused"  grep -q '.factory/holdout' <<<"$(round)"
+holdout_repo; commit "$AGENT" .factory/holdout.d/1 'fix: shorter list'
+expect "editing the holdout list is refused"  grep -q '.factory/holdout.d/1' <<<"$(round)"
 holdout_repo; commit "$AGENT" test/a.test.tsx 'fix: a sibling'
 expect "a file that only starts like a holdout path is not refused" test -z "$(round)"
 repo; commit "$AGENT" src/a.ts
 expect "with no holdout list only the list itself is guarded" test -z "$(round)"
+
+# One list per issue: another issue's list, and the tests it names, are not this
+# PR's to keep. They sit in the same tree once its PR has merged.
+holdout_repo
+printf 'test/c.test.ts\n' > "$WORK/r/.factory/holdout.d/2"; echo t > "$WORK/r/test/c.test.ts"
+git -C "$WORK/r" add -A; git -C "$WORK/r" -c user.name=a -c "user.email=$AGENT" commit -q -m 'feat: y'
+BASE="$(git -C "$WORK/r" rev-parse HEAD)"
+commit "$AGENT" test/c.test.ts 'fix: another issue test'
+expect "another issue's holdout test is not guarded"       test -z "$(round)"
+commit "$AGENT" .factory/holdout.d/2 'fix: another issue list'
+expect "nor is another issue's list"                       test -z "$(round)"
+expect "but it is that issue's own"                        grep -q 'test/c.test.ts' <<<"$(round 2)"
+
+# A PR opened before the lists moved has no holdout.d/<issue>. Its round 0 added
+# its entries to the shared .factory/holdout, which also holds older PRs'.
+legacy_repo() {  # legacy_repo ROUND0-ISSUE
+  repo
+  mkdir -p "$WORK/r/.factory" "$WORK/r/test"
+  printf 'test/old.test.ts\n' > "$WORK/r/.factory/holdout"; echo t > "$WORK/r/test/old.test.ts"
+  git -C "$WORK/r" add -A; git -C "$WORK/r" -c user.name=a -c "user.email=$AGENT" commit -q -m 'feat: older'
+  printf '# mine\ntest/a.test.ts\n' >> "$WORK/r/.factory/holdout"; echo t > "$WORK/r/test/a.test.ts"
+  git -C "$WORK/r" add -A
+  git -C "$WORK/r" -c user.name=a -c "user.email=$AGENT" commit -q -m 'feat: x' -m "Factory-Round: 0
+Factory-Issue: $1"
+  BASE="$(git -C "$WORK/r" rev-parse HEAD)"
+}
+legacy_repo 1; commit "$AGENT" test/a.test.ts 'fix: relax'
+expect "legacy: an entry this PR's round 0 added is guarded"  grep -q 'test/a.test.ts' <<<"$(round)"
+legacy_repo 1; commit "$AGENT" test/old.test.ts 'fix: relax'
+expect "legacy: an older PR's entry is not"                   test -z "$(round)"
+legacy_repo 1; commit "$AGENT" .factory/holdout 'fix: shorter list'
+expect "legacy: the old list itself is guarded"               grep -q '.factory/holdout' <<<"$(round)"
+legacy_repo 12; commit "$AGENT" test/a.test.ts 'fix: relax'
+expect "legacy: another issue's round 0 does not match (1 vs 12)" test -z "$(round)"
+legacy_repo 12; commit "$AGENT" .factory/holdout 'fix: shorter list'
+expect "legacy: with no round 0 of its own only the old list is guarded" grep -q '.factory/holdout' <<<"$(round)"
+legacy_repo 12; commit "$AGENT" test/a.test.ts 'fix: relax'
+expect "legacy: issue 12 does guard its own entry"            grep -q 'test/a.test.ts' <<<"$(round 12)"
+
+# A PR a person labelled has no issue and no list to find.
+holdout_repo; commit "$AGENT" test/a.test.ts 'fix: relax'
+expect "with no issue the list's tests are not guarded"       test -z "$(round '')"
+holdout_repo; commit "$AGENT" .factory/holdout 'fix: write the old list'
+expect "with no issue the old list is guarded"                grep -q '.factory/holdout' <<<"$(round '')"
 
 # 4. decide. The stub answers each API path from a file under $WORK/api.
 mkdir -p "$WORK/bin"

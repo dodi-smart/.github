@@ -204,7 +204,7 @@ jobs:
         run: |
           set -euo pipefail
           python3 - <<'PY'
-          import sys, yaml
+          import re, sys, yaml
           bad = []
           gate = yaml.safe_load(open('.github/workflows/pr-iterate.yml'))['jobs']['gate']
           if any(gate['permissions'].get(k) == 'write' for k in gate['permissions']):
@@ -232,6 +232,12 @@ jobs:
               agent = [s for s in j['steps'] if 'run-agent@' in str(s.get('uses', ''))][0]
               if (agent.get('with') or {}).get('track-progress') == 'true':
                   bad.append('%s %s: track-progress forces tag mode, which pushes its own branch' % (f, job))
+              # One holdout list per issue: the shared file conflicted between agent PRs.
+              if re.search(r'\.factory/holdout(?!\.d/)', str((agent.get('with') or {}).get('prompt', ''))):
+                  bad.append('%s %s: the prompt names the shared .factory/holdout, not .factory/holdout.d/<issue>' % (f, job))
+          hold = [s for s in yaml.safe_load(open('.github/workflows/pr-iterate.yml'))['jobs']['fix']['steps'] if s.get('id') == 'holdout']
+          if not hold or 'needs.gate.outputs.issue' not in str((hold[0].get('with') or {}).get('issue', '')):
+              bad.append('pr-iterate fix: the holdout step must pass the PR issue')
           if bad:
               sys.exit('::error::' + '; '.join(bad))
           print('the agent jobs cannot push, and pr-iterate lands through merge-gate')

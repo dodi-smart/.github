@@ -4,14 +4,17 @@
 #   pull_request (labeled agent:iterate)   a person or issue-implement asks
 #   workflow_run (PR Checks, completed)    the build verdict on a new head
 #   status (the review verdict context)    pr-review's verdict on a head
+# and may add `schedule:` (and `workflow_dispatch:`) for the sweep below.
 #
 # One deterministic step, `actions/factory decide`, reads the PR, its issue's
 # fields, PR Checks and the review verdict, LIVE, and names the next action:
 #
+#   update               GitHub reports the PR as conflicting with its base: the
+#                        base is merged into the branch, no agent involved
 #   fix-ci, fix-review   the agent makes one fix round; a step pushes it
 #   ready                a draft at tier ready or merge whose checks are not red
 #   review               ready, green, no verdict on this head: add agent:review
-#   land                 tier merge, green, review approved: rebase-merge
+#   land                 tier merge, green, review approved: squash-merge
 #   handoff              approved below tier merge: a person takes it
 #   give-up              still red or still `changes` after max-rounds
 #   stop                 anything else, including agent:no-touch anywhere
@@ -19,6 +22,14 @@
 # claude-code-action does not run on a `status` event, so a fix round decided on
 # one becomes `relay`: the App removes and re-adds agent:iterate, and the round
 # runs on that pull_request event, which decides the same way on the same head.
+#
+# A PR that conflicts with its base gets no PR Checks, so no event would ever
+# reach this loop. `update` merges the base into the branch as a round (a merge
+# commit, never a rebase, never a force-push) and hands a real conflict to a
+# person with the list of files. A `sweep` step lists the open agent PRs GitHub
+# calls `dirty` and relays each to its own labeled event, which decides `update`.
+# It runs after every `land` (a merge moves the base) and on the caller's
+# `schedule`, as a backstop.
 #
 # The agent writes code and local commits only. Pushing, marking ready, labels
 # and the merge are steps with the org App token. The non-fix actions run at the
@@ -51,9 +62,10 @@ on:
       AGENT_ENV_SECRET:        { required: false }   # KEY=VALUE lines for the agent alone
 
 # One loop per PR at a time, keyed on its branch, which every one of the three
-# events names. Never kill a run that may be pushing.
+# events names. A sweep names none and shares one group with other sweeps, a
+# name no branch can have. Never kill a run that may be pushing.
 concurrency:
-  group: iterate-${{ github.repository }}-${{ github.event.pull_request.head.ref || github.event.workflow_run.head_branch || github.event.branches[0].name }}
+  group: iterate-${{ github.repository }}-${{ github.event.pull_request.head.ref || github.event.workflow_run.head_branch || github.event.branches[0].name || ':sweep' }}
   cancel-in-progress: false
 
 # Every job grants its own, so one added later starts with nothing.
@@ -64,6 +76,8 @@ jobs:
   # no runner. It is looser than the gate: agent:no-touch, the live labels and
   # everything about the PR stay in the steps. A PR Checks run a person's push
   # started is not the loop's: the loop's own pushes and ready marks are the App's.
+  # A schedule or workflow_dispatch event passes every term, since each one is
+  # about another event: it is the sweep.
   gate:
     if: >-
       (github.event_name != 'pull_request' || (github.event.action == 'labeled' && github.event.label.name == 'agent:iterate'))
@@ -111,10 +125,11 @@ jobs:
           author:        ${{ github.event.pull_request.user.login }}
           bots:          'allow'     # agent PRs are opened by the App
           skip-draft:    'false'     # a draft is exactly what the loop works on
-          events:        'pull_request workflow_run status'
+          events:        'pull_request workflow_run status schedule workflow_dispatch'
 
+      # A sweep decides nothing about one PR: it lists the conflicted ones below.
       - id: decide
-        if: steps.gate.outputs.proceed == 'true'
+        if: steps.gate.outputs.proceed == 'true' && !contains(fromJSON('["schedule","workflow_dispatch"]'), github.event_name)
         uses: dodi-smart/.github/actions/factory@v1
         with:
           command:    decide
@@ -124,7 +139,7 @@ jobs:
 
       # The agent cannot run on a status event; see the header.
       - id: route
-        if: steps.gate.outputs.proceed == 'true'
+        if: steps.decide.outcome == 'success'
         env:
           EVENT:  ${{ github.event_name }}
           ACTION: ${{ steps.decide.outputs.action }}
@@ -160,11 +175,19 @@ jobs:
           client-id:   ${{ secrets.GH_APP_CLIENT_ID }}
           private-key: ${{ secrets.GH_APP_PRIVATE_KEY }}
 
+      # The agent PRs now in conflict with their base: a land moved it, or the
+      # caller's schedule came round. A listing only; `relay-dirty` acts on it.
+      - id: sweep
+        if: steps.gate.outputs.proceed == 'true' && (contains(fromJSON('["schedule","workflow_dispatch"]'), github.event_name) || steps.land.outputs.merged == 'true')
+        uses: dodi-smart/.github/actions/factory@v1
+        with:
+          command: sweep
+
       # Labels and ready go through the App so the events they cause start
       # workflows; GITHUB_TOKEN's do not. Marking a PR ready needs contents
       # write as well as pull-requests write.
       - id: app-token
-        if: contains(fromJSON('["ready","review","land","handoff","give-up","relay"]'), steps.route.outputs.action)
+        if: contains(fromJSON('["ready","review","land","handoff","give-up","relay"]'), steps.route.outputs.action) || steps.sweep.outputs.dirty != ''
         uses: dodi-smart/.github/actions/app-token@v1
         with:
           client-id:   ${{ secrets.GH_APP_CLIENT_ID }}
@@ -214,6 +237,120 @@ jobs:
               gh pr edit "$PR" --repo "$REPO" --add-label agent:iterate
               echo "::notice title=Relayed::$REASON. The fix round runs on the labeled event." ;;
           esac
+
+      # Each conflicted PR gets its own labeled event, which decides `update`
+      # under that PR's own concurrency group.
+      - id: relay-dirty
+        if: steps.sweep.outputs.dirty != ''
+        env:
+          REPO:     ${{ github.repository }}
+          DIRTY:    ${{ steps.sweep.outputs.dirty }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          set -euo pipefail
+          if [ -z "$GH_TOKEN" ]; then
+            echo "::error title=No App token::GH_APP_CLIENT_ID is not set. A GITHUB_TOKEN label starts no workflow."
+            exit 1
+          fi
+          for pr in $DIRTY; do
+            gh api -X DELETE "/repos/$REPO/issues/$pr/labels/agent:iterate" >/dev/null 2>&1 || true
+            gh pr edit "$pr" --repo "$REPO" --add-label agent:iterate
+            echo "::notice title=Relayed::#$pr conflicts with its base; the update runs on the labeled event."
+          done
+
+  # Merge the base in as one round: ONE merge commit on the head, pushed by
+  # push-round in merge mode (same holdout and author rules, counted as a round).
+  # No agent runs. A merge that conflicts is aborted and handed to a person.
+  update:
+    needs: [gate]
+    if: needs.gate.outputs.action == 'update'
+    runs-on: ${{ fromJSON((github.event.repository.private && !github.event.pull_request.head.repo.fork) && '["self-hosted","Linux","light"]' || '"ubuntu-latest"') }}
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      pull-requests: write     # the comment, and the label removed on a hand-off
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPO:     ${{ github.repository }}
+      PR:       ${{ needs.gate.outputs.number }}
+    steps:
+      - uses: dodi-smart/.github/actions/runner-report@v1
+        with:
+          selector: light
+
+      # Full history and no blob filter: a merge reads blobs, and a lazy fetch
+      # would need the credential this checkout does not keep.
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.gate.outputs.head-ref }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      # A conflict is aborted and handed to the last step through `refused`.
+      - id: merge
+        env:
+          BASE_REF: ${{ needs.gate.outputs.base-ref }}
+        run: |
+          set -euo pipefail
+          git config user.name 'claude[bot]'
+          git config user.email '41898282+claude[bot]@users.noreply.github.com'
+          echo "base-sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          if git merge --no-edit --no-ff "origin/$BASE_REF"; then
+            exit 0
+          fi
+          # shellcheck disable=SC2016  # the backticks are markdown, not a substitution
+          files=$(git diff --name-only --diff-filter=U | sed -e 's/`//g' -e 's/.*/- `&`/')
+          git merge --abort || true
+          {
+            echo "refused<<END_REFUSED"
+            echo "the branch conflicts with \`$BASE_REF\`, and the fix loop does not resolve conflicts"
+            [ -z "$files" ] || printf '\nConflicted files:\n\n%s\n' "$files"
+            echo "END_REFUSED"
+          } >> "$GITHUB_OUTPUT"
+
+      # The same holdout list the fix job uses, plus lockfiles: a resolution
+      # may not hand-edit either.
+      - id: holdout
+        if: steps.merge.outputs.refused == ''
+        uses: dodi-smart/.github/actions/factory@v1
+        with:
+          command:  holdout
+          base-sha: ${{ steps.merge.outputs.base-sha }}
+          issue:    ${{ needs.gate.outputs.issue }}
+
+      # Only this step pushes, with the fix job's identity and checks.
+      - id: push
+        if: steps.merge.outputs.refused == ''
+        uses: dodi-smart/.github/actions/push-round@v1
+        with:
+          merge:        'true'
+          base-sha:     ${{ steps.merge.outputs.base-sha }}
+          head-ref:     ${{ needs.gate.outputs.head-ref }}
+          rounds:       ${{ needs.gate.outputs.rounds }}
+          max-rounds:   ${{ inputs.max-rounds }}
+          trailer-key:  Factory-Round
+          author-name:  claude[bot]
+          author-email: 41898282+claude[bot]@users.noreply.github.com
+          agent-emails: |
+            41898282+claude[bot]@users.noreply.github.com
+            claude@anthropic.com
+          refuse-paths: ${{ steps.holdout.outputs.merge-refuse-paths }}
+          client-id:    ${{ secrets.GH_APP_CLIENT_ID }}
+          private-key:  ${{ secrets.GH_APP_PRIVATE_KEY }}
+
+      # The one hand-off, for a conflict and a refused push alike. A pushed merge
+      # starts PR Checks on the new head, which starts the next decision.
+      - if: ${{ always() && steps.push.outputs.pushed != 'true' }}
+        env:
+          REFUSED: ${{ steps.merge.outputs.refused || steps.push.outputs.refused }}
+          RUN:     ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          why="${REFUSED:-the merge produced no commit}"
+          # shellcheck disable=SC2016  # the backticks are markdown, not a substitution
+          printf '**Branch not updated:** %s\n\nA person brings it up to date; the loop has stopped (`agent:iterate` removed). [Run log](%s)\n' "$why" "$RUN" > "$RUNNER_TEMP/handoff.md"
+          gh pr comment "$PR" --repo "$REPO" --body-file "$RUNNER_TEMP/handoff.md" || true
+          gh api -X DELETE "/repos/$REPO/issues/$PR/labels/agent:iterate" >/dev/null 2>&1 || true
 
   # One fix round. The agent commits; the push step writes the round and
   # refuses a holdout edit, a stranger's commit, the cap, or a moved branch.

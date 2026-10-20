@@ -12,10 +12,17 @@
 # `trailers` prints the replaced commits' trailers a round keeps, for push
 # and for the factory's round 0, so one rule decides it.
 #
+# MERGE=true is the one other kind of round: the update job's one merge of the
+# base into a conflicted branch, first parent BASE_SHA, amended in place and
+# never squashed. Only the paths the resolution changed count as the round's.
+#
 # A round is refused, never forced, when:
 #   - ALLOWED is not true (the caller's own precondition, DENIED_WHY says why)
 #   - the round cap is reached
 #   - a commit carries an author outside AGENT_EMAILS
+#   - the range holds a merge commit (a soft reset across one would squash the
+#     base's changes into the round), or MERGE=true and HEAD is not one merge
+#     of the base onto BASE_SHA
 #   - a commit touches a path matching REFUSE_PATHS (lockfiles; a holdout list)
 #   - a commit removes or rewrites a line that a commit in KEEP_RANGE not by
 #     AUTHOR_EMAIL added (the dependency bot's chosen versions)
@@ -33,9 +40,26 @@ check() {
   if [ "$(git rev-list --count "$BASE_SHA..HEAD")" = 0 ]; then echo "no commits"; exit 0; fi
   [ "${ALLOWED:-}" = true ] || refuse "${DENIED_WHY:-the caller precondition was not met}"
   [ "$ROUNDS" -lt "${MAX_ROUNDS:-2}" ] || refuse "round cap of ${MAX_ROUNDS:-2} reached"
-  others=$(git log --format='%ae' "$BASE_SHA..HEAD" | grep -vxF -f <(printf '%s' "$AGENT_EMAILS") || true)
+  local fp=''
+  if [ "${MERGE:-}" = true ]; then
+    # Those checks diff all of BASE..HEAD, which here includes the base's own changes.
+    [ -z "${KEEP_RANGE:-}${RECORD_PATHS:-}${LOCK:-}" ] \
+      || refuse "a merge round takes no keep-range, record-paths or lock"
+    [ "$(git rev-list --parents -n 1 HEAD | awk '{ print NF }')" = 3 ] && [ "$(git rev-parse HEAD^1)" = "$(git rev-parse "$BASE_SHA")" ] \
+      || refuse "a merge round is a merge commit whose first parent is the head it started from"
+    fp=--first-parent   # the base's own commits come in by the second parent
+  else
+    [ -z "$(git rev-list --merges "$BASE_SHA..HEAD")" ] \
+      || refuse "a round may not contain a merge commit; only the update job merges"
+  fi
+  others=$(git log ${fp:+"$fp"} --format='%ae' "$BASE_SHA..HEAD" | grep -vxF -f <(printf '%s' "$AGENT_EMAILS") || true)
   [ -z "$others" ] || refuse "a commit carries another author: $(printf '%s' "$others" | oneline)"
-  changed=$(git diff --name-only "$BASE_SHA" HEAD)
+  if [ "${MERGE:-}" = true ]; then
+    # Paths the resolution changed: HEAD differs from both parents.
+    changed=$(comm -12 <(git diff --name-only --no-renames HEAD^1 HEAD | sort) <(git diff --name-only --no-renames HEAD^2 HEAD | sort))
+  else
+    changed=$(git diff --name-only "$BASE_SHA" HEAD)
+  fi
   if [ -n "${REFUSE_PATHS:-}" ]; then
     hit=$(printf '%s\n' "$changed" | grep -E "$REFUSE_PATHS" || true)
     [ -z "$hit" ] || refuse "a commit touched a path it may not: $(printf '%s' "$hit" | oneline)"
@@ -106,8 +130,30 @@ keep_trailers() {
         { key = tolower($0); sub(/[[:space:]]*:.*/, "", key); sub(/^[[:space:]]+/, "", key); if (!(key in drop)) print }'
 }
 
+# Merge mode: the merge commit stays a merge. Its message is its own subject
+# (commitlint's default ignores match `Merge ... into ...`) and the round trailer.
+push_merge() {
+  GIT_COMMITTER_NAME="$AUTHOR_NAME" GIT_COMMITTER_EMAIL="$AUTHOR_EMAIL" \
+    git commit -q --amend --author="$AUTHOR_NAME <$AUTHOR_EMAIL>" -m "$(git log -1 --format=%s)" -m "$TRAILER_KEY: $(( ROUNDS + 1 ))"
+}
+
 push() {
   out pushed=false
+  if [ "${MERGE:-}" = true ]; then
+    push_merge
+  else
+    push_squash
+  fi
+  [ -n "${APP_TOKEN:-}" ] || refuse "GH_APP_CLIENT_ID is not set, and a GITHUB_TOKEN push starts no checks"
+  url="https://x-access-token:${APP_TOKEN}@github.com/${REPO}.git"
+  remote=$(git ls-remote "$url" "refs/heads/$HEAD_REF" | cut -f1)
+  [ "$remote" = "$BASE_SHA" ] || refuse "the branch moved since checkout"
+  git push -q "$url" "HEAD:refs/heads/$HEAD_REF"
+  out pushed=true
+  echo "::notice title=Round pushed::Round $(( ROUNDS + 1 )) to $HEAD_REF."
+}
+
+push_squash() {
   first=$(git log --reverse --format='%s' "$BASE_SHA..HEAD" | head -n 1)
   rest=$(git log --reverse --format='- %s' "$BASE_SHA..HEAD" | tail -n +2)
   trailers="$TRAILER_KEY: $(( ROUNDS + 1 ))"
@@ -124,13 +170,6 @@ push() {
   git reset -q --soft "$BASE_SHA"
   GIT_COMMITTER_NAME="$AUTHOR_NAME" GIT_COMMITTER_EMAIL="$AUTHOR_EMAIL" \
     git commit -q --author="$AUTHOR_NAME <$AUTHOR_EMAIL>" "${args[@]}"
-  [ -n "${APP_TOKEN:-}" ] || refuse "GH_APP_CLIENT_ID is not set, and a GITHUB_TOKEN push starts no checks"
-  url="https://x-access-token:${APP_TOKEN}@github.com/${REPO}.git"
-  remote=$(git ls-remote "$url" "refs/heads/$HEAD_REF" | cut -f1)
-  [ "$remote" = "$BASE_SHA" ] || refuse "the branch moved since checkout"
-  git push -q "$url" "HEAD:refs/heads/$HEAD_REF"
-  out pushed=true
-  echo "::notice title=Round pushed::Round $(( ROUNDS + 1 )) to $HEAD_REF."
 }
 
 case "${1:-}" in

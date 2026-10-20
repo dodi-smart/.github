@@ -88,6 +88,9 @@ triage_ev false "no-touch beats an allowed event"   '["agent:no-touch"]' issues 
 triage_ev false "no-touch + review event"           '["agent:no-touch"]' pull_request_review submitted
 case_ true  "empty events allows any event"     '[]' pull_request_review submitted '' agent:triage alice false '' '' allow false ''
 
+# pr-iterate's sweep runs on a schedule with no PR, so no labels and no number.
+case_ true "pr-iterate: a schedule event proceeds with no PR" '[]' schedule '' '' agent:iterate '' false '' '' allow false '' '' '' 'pull_request workflow_run status schedule workflow_dispatch'
+
 # author-kind is written before every rule, so it is set on a stopped run too.
 # $1 want, $2 author, $3 labels, $4 bots
 kind_() {

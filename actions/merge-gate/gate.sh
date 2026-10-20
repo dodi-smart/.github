@@ -14,12 +14,15 @@
 #              approving the head
 #        factory  the PR carries `agent:iterate`, its issue has no
 #              `agent:no-touch`, the issue's fields put it on the `merge` tier
-#              (actions/factory, the one place the tier is computed), and
-#              `review / verdict` approves the head
+#              (actions/factory, the one place the tier is computed), no
+#              conflict with the base (the fix loop merges the base in; nothing
+#              here asks anyone to rebase), and `review / verdict` approves the head
 #   3. the required check is `success` on the head commit
 #   4. every commit on the PR is by an allowed author
 #
 # `tick` is the rebase request's text edit, kept here so test.sh covers it.
+# `squash-body` reads the PR's commit messages, one base64 per line, and prints
+# their trailers, each once, in the order first seen: the body of a factory squash.
 # `run` reads the inputs from the API and writes merge/rebase/reason/kind to
 # $GITHUB_OUTPUT; `decide` is the part test.sh runs on fixed inputs.
 # LABELS, the input, and labels, its lines, are two names on purpose.
@@ -64,6 +67,8 @@ decide() {
       has agent:iterate || { reason="no agent:iterate"; return; }
       if [ "${ISSUE_NO_TOUCH:-}" = true ]; then reason="agent:no-touch on the issue"; return; fi
       [ "${TIER:-}" = merge ] || { reason="tier ${TIER:-draft}: a person merges it"; return; }
+      # No rebase box here: the loop's update job merges the base into the branch.
+      if [ "${MERGEABLE:-}" = dirty ]; then reason="the branch conflicts with its base; the fix loop brings it up to date"; return; fi
       [ "$REVIEW" = success ] || { reason="waits for $REVIEW_CONTEXT to approve (it is ${REVIEW:-missing})"; return; } ;;
     *) reason="unknown policy '${POLICY}'"; return ;;
   esac
@@ -85,8 +90,16 @@ tick() {
   printf '%s\n' "${body/'- [ ] <!-- rebase-check -->'/'- [x] <!-- rebase-check -->'}"
 }
 
+squash_body() {
+  local line
+  while IFS= read -r line; do
+    [ -z "$line" ] || printf '%s\n' "$line" | base64 -d | git interpret-trailers --parse
+  done | awk 'NF && !seen[$0]++'
+}
+
 case "${1:-run}" in
   tick) tick; exit $? ;;
+  squash-body) squash_body; exit 0 ;;
   decide) : "${LABELS:?}" "${POLICY:?}"; CHECK="${CHECK:-}" REVIEW="${REVIEW:-}" FOREIGN="${FOREIGN:-}" TIER="${TIER:-}"
           decide; printf 'merge=%s\nrebase=%s\nkind=%s\nreason=%s\n' "$merge" "$rebase" "$kind" "$reason"; exit 0 ;;
 esac

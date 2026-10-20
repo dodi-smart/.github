@@ -8,8 +8,10 @@
 #   factory.sh branch   TYPE NUM TITLE          -> branch=<feat|fix|chore>/<n>-<slug>
 #   factory.sh fields   (REPO, ISSUE)           -> state, mode, risk, effort, priority, tier
 #   factory.sh push     (env, see push())       -> pushed, refused, sha (round 0)
-#   factory.sh holdout  (BASE_SHA, ISSUE)       -> refuse-paths for a fix round
+#   factory.sh holdout  (BASE_SHA, ISSUE)       -> refuse-paths for a fix round,
+#                                                  merge-refuse-paths for a merge round
 #   factory.sh decide   (env, see decide())     -> action and the facts behind it
+#   factory.sh sweep    (REPO)                  -> dirty=<numbers of agent PRs that conflict>
 #
 # Outputs go to $GITHUB_OUTPUT as key=value lines, and are echoed for the log.
 set -euo pipefail
@@ -164,13 +166,36 @@ holdout_paths() {
 }
 
 # ---------------------------------------------------------------------------
+# mergeable_of: the PR's mergeable_state, `dirty` whenever `mergeable` is
+# false (a draft reads `draft`, conflict or not). GitHub computes it on first
+# read, so a fresh answer is `unknown`: read once more after a short wait.
+# Still unknown is no conflict. Args: PR number, the PR json already read.
+# ---------------------------------------------------------------------------
+MERGEABLE_Q='if .mergeable == false then "dirty" else .mergeable_state // "unknown" end'
+mergeable_reread() { gh api "/repos/$REPO/pulls/$1" --jq "$MERGEABLE_Q" 2>/dev/null || echo unknown; }
+mergeable_of() {
+  local s
+  s=$(jq -r "$MERGEABLE_Q" <<<"$2")
+  if [ "$s" = unknown ]; then
+    sleep "${MERGEABLE_WAIT:-5}"
+    s=$(mergeable_reread "$1")
+  fi
+  printf '%s' "${s:-unknown}"
+}
+
+# ---------------------------------------------------------------------------
 # decide: what the fix loop does next for one PR. Reads everything live, so a
 # re-run decides from the state now, never from the event that started it.
 #
 # env: REPO, PR (may be empty), EVENT_SHA (the commit the event was about; may be
 #      empty), MAX_ROUNDS
 #
-# action: stop | fix-ci | fix-review | ready | review | land | handoff | give-up
+# MERGEABLE_WAIT: seconds to wait before the one re-read of a mergeable state
+#      GitHub has not computed yet (default 5)
+#
+# action: stop | update | fix-ci | fix-review | ready | review | land | handoff | give-up
+#   update is a PR GitHub reports as conflicting with its base: no PR Checks run
+#   on it, so no event would ever reach the loop. It is judged before the checks.
 # ---------------------------------------------------------------------------
 decide() {
   local pr="${PR:-}" json state draft labels head base fork body issue rounds checks run_id verdict tier
@@ -230,6 +255,16 @@ decide() {
   last=$(printf '%s\n' "$nums" | tail -n 1)
   out rounds "$rounds"
 
+  # Only `dirty` is a conflict; behind, blocked, unstable and a state GitHub has
+  # not computed are left to the rules below.
+  local mstate
+  mstate=$(mergeable_of "$pr" "$json")
+  out mergeable-state "$mstate"
+  if [ "$mstate" = dirty ]; then
+    [ "$rounds" -ge "${MAX_ROUNDS:-3}" ] && finish give-up "the branch conflicts with its base after $rounds fix rounds"
+    finish update "the branch conflicts with $base"
+  fi
+
   # PR Checks is the one required context. The caller's job prefixes its name
   # ("<job> / PR Checks"), so match the end. The newest run on the head wins.
   checks=$(gh api "/repos/$REPO/commits/$head/check-runs?per_page=100" \
@@ -280,6 +315,36 @@ decide() {
   esac
 }
 
+# ---------------------------------------------------------------------------
+# sweep: the open agent PRs that conflict with their base, as `dirty` numbers.
+# It only lists; the caller relays each one to `decide`.
+#
+# env: REPO, MERGEABLE_WAIT
+# Skipped: agent:no-touch, a fork, a dependency bot's PR (the rules `decide` stops on).
+# ---------------------------------------------------------------------------
+sweep() {
+  local nums n json dirty='' unknown=''
+  nums=$(gh api --paginate "/repos/$REPO/issues?state=open&labels=agent:iterate&per_page=100" \
+           --jq '.[] | select(.pull_request != null and (([.labels[].name] | index("agent:no-touch")) | not)) | .number' 2>/dev/null || true)
+  for n in $nums; do
+    json=$(gh api "/repos/$REPO/pulls/$n" 2>/dev/null) || continue
+    [ "$(jq -r '.head.repo.full_name != .base.repo.full_name' <<<"$json")" = false ] || continue
+    [ "$("$HERE/../agent-gate/gate.sh" kind "$(jq -r '.user.login // ""' <<<"$json")")" != dependency ] || continue
+    case "$(jq -r "$MERGEABLE_Q" <<<"$json")" in
+      dirty)   dirty="${dirty:+$dirty }$n" ;;
+      unknown) unknown="${unknown:+$unknown }$n" ;;
+    esac
+  done
+  # One wait for all of them: the first read started GitHub's computation.
+  if [ -n "$unknown" ]; then
+    sleep "${MERGEABLE_WAIT:-5}"
+    for n in $unknown; do
+      [ "$(mergeable_reread "$n")" != dirty ] || dirty="${dirty:+$dirty }$n"
+    done
+  fi
+  out dirty "$dirty"
+}
+
 cmd="${1:-}"; shift || true
 case "$cmd" in
   tier)   out tier "$(tier_of "${1:-}" "${2:-}" "${3:-}")" ;;
@@ -290,7 +355,13 @@ case "$cmd" in
     out priority "$F_PRIORITY"
     out tier "$(tier_of "$F_MODE" "$F_RISK" "$F_EFFORT")" ;;
   push)    push_round ;;
-  holdout) out refuse-paths "$(holdout_paths)" ;;
+  holdout)
+    hp=$(holdout_paths)
+    out refuse-paths "$hp"
+    # A merge round may not hand-resolve a lockfile either; the list is the one
+    # setup-stack and deps-intent share.
+    out merge-refuse-paths "($hp)|($(cat "$HERE/../setup-stack/lockfiles.re"))" ;;
   decide) decide ;;
-  *) echo "usage: factory.sh tier|branch|fields|push|holdout|decide" >&2; exit 2 ;;
+  sweep)  sweep ;;
+  *) echo "usage: factory.sh tier|branch|fields|push|holdout|decide|sweep" >&2; exit 2 ;;
 esac

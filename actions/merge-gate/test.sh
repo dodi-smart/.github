@@ -68,6 +68,9 @@ decide "factory: no review status"                                false "$F" "$F
 decide "factory: approved, but the check failed"                  false "$F" "$FL" TIER=merge REVIEW=success CHECK=failure
 decide "factory: approved, but a person committed"                false "$F" "$FL" TIER=merge REVIEW=success FOREIGN=someone
 decide "factory: merge tier, approved, green"                     true  "$F" "$FL" TIER=merge REVIEW=success
+decide "factory: the branch conflicts with its base"              false "$F" "$FL" TIER=merge REVIEW=success MERGEABLE=dirty
+decide "factory: behind its base is not a conflict"               true  "$F" "$FL" TIER=merge REVIEW=success MERGEABLE=behind
+decide "factory: mergeable state not computed yet"                true  "$F" "$FL" TIER=merge REVIEW=success MERGEABLE=unknown
 
 decide "verified minor, green"                                    true
 decide "verified minor, release age met, mergeable"               true  AGE=success MERGEABLE=clean
@@ -76,6 +79,24 @@ decide "verified patch, green"                                    true  'LABELS=
 decide "verified lock file maintenance, green"                    true  'LABELS=["deps:verified"]' TITLE='chore(deps): lock file maintenance'
 decide "fixed patch, approved, green"                             true  'LABELS=["deps:fixed","deps:patch"]' REVIEW=success
 decide "a Dependabot minor by title, verified, green"             true  'LABELS=["deps:verified"]' TITLE='Bump react from 19.0.0 to 19.1.0'
+
+# A conflicted agent PR is held with the loop's own reason, and no rebase box.
+got="$(env -i PATH="$PATH" POLICY=factory 'LABELS=["agent:iterate"]' TIER=merge REVIEW=success CHECK=success MERGEABLE=dirty "$HERE/gate.sh" decide)"
+check() { local name="$1"; shift; if "$@"; then ok "$name"; else bad "$name"; fi; }
+check "factory dirty: the reason says the loop brings it up to date" \
+  grep -qx 'reason=the branch conflicts with its base; the fix loop brings it up to date' <<<"$got"
+check "factory dirty: it is not a rebase request" grep -qx 'rebase=false' <<<"$got"
+
+# squash-body: the trailers of every commit on the PR, one base64 message per
+# line (as the API step feeds it), each once, in the order first seen.
+msgs() { local m; for m in "$@"; do printf '%s' "$m" | base64 | tr -d '\n'; echo; done; }
+body="$(msgs $'feat: x\n\nFactory-Round: 0\nFactory-Issue: 4\nDecision: D-1' \
+             $'fix: y\n\nnot: a trailer\n\nFactory-Round: 1\nDecision: D-1\nCo-Authored-By: A <a@example.com>' \
+             $'Merge remote-tracking branch \'origin/main\' into feat/4-x\n\nFactory-Round: 2' \
+             'chore: no trailers at all' | "$HERE/gate.sh" squash-body)"
+check "squash-body keeps each round trailer, in order" \
+  test "$body" = $'Factory-Round: 0\nFactory-Issue: 4\nDecision: D-1\nFactory-Round: 1\nCo-Authored-By: A <a@example.com>\nFactory-Round: 2'
+check "squash-body of nothing is empty" test -z "$(: | "$HERE/gate.sh" squash-body)"
 
 # `run` reads the check, the authors and the review only when a verdict label
 # makes them matter. `gh` is a stub that records its calls.
@@ -97,7 +118,6 @@ run() {
     REQUIRED_CHECK='checks / PR Checks' ALLOWED_AUTHORS='renovate[bot],dependabot[bot],github-actions[bot]' \
     GITHUB_OUTPUT="$WORK/out" "$HERE/gate.sh" run > /dev/null 2>&1
 }
-check() { local name="$1"; shift; if "$@"; then ok "$name"; else bad "$name"; fi; }
 run '["deps:fixed","deps:patch"]' 'renovate[bot] github-actions[bot]' success success
 check "run: a fixed, approved patch by allowed authors merges"   grep -qx 'merge=true' "$WORK/out"
 check "run: the check name is URL-encoded"                       grep -qF 'check_name=checks%20%2F%20PR%20Checks' "$WORK/calls"

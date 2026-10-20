@@ -51,13 +51,17 @@ commit() {
 }
 records() { printf '%s' "$1" > "$WORK/records.json"; }
 
-# round [ROUNDS]: check, then push when ready, as the action chains them.
+# round [ROUNDS]: check, then push when ready, as the action chains them. A
+# merge round takes no keep-range, record-paths or lock; KEEPR, RECP and LOCK
+# set them anyway.
 phase() {
+  local kr="origin/main..$BASE" rp="$VERSIONS" lk='npm install --package-lock-only --ignore-scripts'
+  [ -z "${MERGE:-}" ] || { kr=''; rp=''; lk=''; }
   ( cd "$WORK/r" && env -i PATH="$WORK/bin:$PATH" HOME="$WORK" GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null \
       AUTHOR_NAME="$FIX_NAME" AUTHOR_EMAIL="$FIX_EMAIL" AGENT_EMAILS="$AGENT_EMAILS" \
       ALLOWED="${ALLOWED-true}" DENIED_WHY="${DENIED_WHY:-}" BASE_SHA="$BASE" ROUNDS="${ROUNDS:-0}" MAX_ROUNDS=2 \
-      REFUSE_PATHS="$LOCKS" KEEP_RANGE="origin/main..$BASE" RECORD_PATHS="$VERSIONS" RECORDS="$WORK/records.json" \
-      LOCK="${LOCK:-npm install --package-lock-only --ignore-scripts}" LOCKFILES="$LOCKS" ENV_FILE='' \
+      REFUSE_PATHS="${REFUSE:-$LOCKS}" MERGE="${MERGE:-}" KEEP_RANGE="${KEEPR-$kr}" RECORD_PATHS="${RECP-$rp}" RECORDS="$WORK/records.json" \
+      LOCK="${LOCK-$lk}" LOCKFILES="$LOCKS" ENV_FILE='' \
       TRAILER_KEY=Deps-Verify-Round RECORD_TRAILER=Deps-Verify-Bump RECORDED="$(sed -n 's/^recorded=//p' "$WORK/out")" \
       HEAD_REF=renovate/x REPO=o/r APP_TOKEN='' GITHUB_OUTPUT="$WORK/out" bash "$HERE/round.sh" "$1" ) >> "$WORK/log" 2>&1
 }
@@ -179,6 +183,99 @@ repo; commit "$CLAUDE_EMAIL" package.json "$(printf '{\n  "peer": "5",\n  "x": "
 records '[{"name":"peer","from":"4","to":"5","why":"w"}]'
 round
 expect "no lockfile near the declaration: nothing to relock" test "$(refused)" = "$NO_TOKEN"
+
+# Merge mode: the update job merges the base into a conflicted branch. The
+# round is that one merge commit, pushed as a merge with the round trailer.
+# Only what the resolution changed is the round's. REFUSE is the pattern the
+# workflow builds: a holdout list or a lockfile.
+HOLD='(^test/a\.test\.ts$)|('"$LOCKS"')'
+advance() {  # advance EMAIL FILE [CONTENT] [TRAILERS]: a commit on main, the base moving
+  git -C "$WORK/r" checkout -q main
+  commit "$@"
+  git -C "$WORK/r" push -q origin main
+  git -C "$WORK/r" checkout -q renovate/x
+}
+# The job's BASE_SHA is the branch head it checked out, before the merge.
+merge_in() { BASE="$(git -C "$WORK/r" rev-parse HEAD)"; git -C "$WORK/r" merge -q --no-edit --no-ff origin/main > /dev/null 2>&1; }
+parents() { git -C "$WORK/r" rev-list --parents -n 1 HEAD; }
+merged_repo() { repo; commit "$CLAUDE_EMAIL" src/a.ts; advance 'person@example.com' src/b.ts; merge_in; }
+conflicted_repo() {  # conflicted_repo FILE: both sides changed FILE, the merge stopped
+  repo; commit "$CLAUDE_EMAIL" "$1" branch; advance 'person@example.com' "$1" base; merge_in
+}
+resolve() { printf 'resolved\n' > "$WORK/r/$1"; git -C "$WORK/r" add -A; git -C "$WORK/r" commit -q --no-edit; }
+merge_round() { MERGE=true REFUSE="$HOLD" round "$@"; }
+
+repo; commit "$CLAUDE_EMAIL" src/a.ts
+advance 'person@example.com' yarn.lock; advance 'other@example.com' test/a.test.ts
+merge_in; before="$(git -C "$WORK/r" rev-parse HEAD)"
+merge_round
+expect "merge: a clean merge of a base that changed a lockfile and a holdout path is ready" test "$(refused)" = "$NO_TOKEN"
+expect "merge: the pushed commit is still a merge, of three fields" test "$(parents | awk '{ print NF }')" = 3
+expect "merge: its first parent is the head the job started from" test "$(parents | cut -d' ' -f2)" = "$BASE"
+expect "merge: it keeps the merge's own subject" test "$(field %s)" = "Merge remote-tracking branch 'origin/main' into renovate/x"
+expect "merge: it carries the round trailer, parsed as a trailer" test "$(body | git interpret-trailers --parse)" = 'Deps-Verify-Round: 1'
+expect "merge: authored and committed as the fix identity" test "$(field '%an <%ae>|%cn <%ce>')" = "$FIX_NAME <$FIX_EMAIL>|$FIX_NAME <$FIX_EMAIL>"
+expect "merge: the merge was rewritten, so the amend changed it" test "$(git -C "$WORK/r" rev-parse HEAD)" != "$before"
+repo; commit "$CLAUDE_EMAIL" src/a.ts '' $'Decision: D-1'
+advance 'person@example.com' src/b.ts '' $'Decision: D-2\nDeps-Verify-Round: 9'
+merge_in
+merge_round 1
+expect "merge: no trailer of the base's or the branch's is kept" test "$(body | git interpret-trailers --parse)" = 'Deps-Verify-Round: 2'
+
+# A resolution that edits a refused path is the round's doing.
+conflicted_repo test/a.test.ts; resolve test/a.test.ts
+before="$(git -C "$WORK/r" rev-parse HEAD)"
+merge_round
+expect "merge: a resolution that changes a holdout path is refused" test "$(refused)" = 'a commit touched a path it may not: test/a.test.ts'
+expect "merge: and nothing is rewritten" test "$(git -C "$WORK/r" rev-parse HEAD)" = "$before"
+conflicted_repo test/a.test.ts
+git -C "$WORK/r" checkout -q --ours test/a.test.ts; git -C "$WORK/r" add -A; git -C "$WORK/r" commit -q --no-edit
+merge_round
+expect "merge: a resolution that keeps the branch's file is not the round's" test "$(refused)" = "$NO_TOKEN"
+conflicted_repo src/a.ts; resolve src/a.ts
+merge_round
+expect "merge: a resolution of an ordinary conflict is ready" test "$(refused)" = "$NO_TOKEN"
+conflicted_repo yarn.lock; resolve yarn.lock
+merge_round
+expect "merge: a resolved lockfile is refused too" test "$(refused)" = 'a commit touched a path it may not: yarn.lock'
+
+# Shape: one merge whose first parent is the head, and nothing else.
+SHAPE='a merge round is a merge commit whose first parent is the head it started from'
+merged_repo; commit "$CLAUDE_EMAIL" src/c.ts
+merge_round
+expect "merge: a commit on top of the merge is refused" test "$(refused)" = "$SHAPE"
+repo; commit "$CLAUDE_EMAIL" src/a.ts
+merge_round
+expect "merge: one plain commit is no merge" test "$(refused)" = "$SHAPE"
+repo; commit "$CLAUDE_EMAIL" src/a.ts; advance 'person@example.com' src/b.ts
+git -C "$WORK/r" checkout -q -b other origin/main
+git -C "$WORK/r" merge -q --no-edit --no-ff renovate/x > /dev/null 2>&1
+merge_round
+expect "merge: a merge of the branch into the base is refused" test "$(refused)" = "$SHAPE"
+merged_repo
+git -C "$WORK/r" commit -q --amend --author='Person <person@example.com>' --no-edit
+merge_round
+expect "merge: the merge itself must be by an agent identity" test "$(refused)" = 'a commit carries another author: person@example.com'
+merged_repo
+merge_round 2
+expect "merge: the round cap applies" test "$(refused)" = 'round cap of 2 reached'
+# Those checks diff all of BASE..HEAD, which here holds the base's own changes.
+for v in 'KEEPR origin/main..HEAD' "RECP $VERSIONS" 'LOCK true'; do
+  read -r k val <<<"$v"
+  merged_repo
+  ( export "$k=$val"; merge_round )
+  expect "merge: a merge round with $k set is refused" test "$(refused)" = 'a merge round takes no keep-range, record-paths or lock'
+done
+repo
+merge_round
+expect "merge: nothing to merge is no round and no refusal" bash -c '! grep -q "ready=true\|refused" "$1"' _ "$WORK/out"
+
+# Hardening: a normal round squashes with a soft reset, and across a merge
+# that would fold the base's changes into the round.
+merged_repo; before="$(git -C "$WORK/r" rev-parse HEAD)"
+round
+expect "a normal round with a merge commit in it is refused" test "$(refused)" = 'a round may not contain a merge commit; only the update job merges'
+expect "and nothing is rewritten" test "$(git -C "$WORK/r" rev-parse HEAD)" = "$before"
 
 printf '\n%s passed, %s failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

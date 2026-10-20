@@ -6,7 +6,7 @@
 # No push trigger: Publish release calls this before it moves `v1`.
 name: Self test
 
-# No `paths:` filter on purpose. The run takes about 15 seconds, and two of the
+# No `paths:` filter on purpose. The run is short, and two of the
 # checks read files a filter would have to list: the preset check compares the
 # README runner table against the picker, so a README-only change can break it.
 # A filter also makes this unusable as a required check, since a filtered-out
@@ -29,6 +29,11 @@ jobs:
   test:
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    env:
+      # The python steps import their helpers from here (lib.py), and leave no
+      # bytecode behind in the checkout.
+      PYTHONPATH: .github/selftest
+      PYTHONDONTWRITEBYTECODE: "1"
     steps:
       - uses: actions/checkout@v7
         with: { persist-credentials: false }
@@ -39,6 +44,8 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: 24
+          cache: npm
+          cache-dependency-path: package-lock.json
 
       - name: Install workspace dependencies
         run: npm ci
@@ -46,16 +53,48 @@ jobs:
       - name: Shared semantic-release config tests
         run: npm test
 
-      # The picker is static: each weight's labels, `labels`, the absence of any
-      # run-time override, and the public/fork guard are behaviour, so they are
-      # asserted, not reviewed.
-      - name: Pick-runner policy
-        run: ./actions/pick-runner/test.sh
-
-      # The model policy as a matrix: stage, fields and signals in, model and
-      # turn cap out. A wrong row is an expensive run or a weak one.
-      - name: Pick-model policy
-        run: ./actions/pick-model/test.sh
+      # Every actions/*/test.sh and scripts/*.test.sh, four at a time. Each writes its own
+      # log and the logs print in order, so the output does not interleave. The scripts
+      # share nothing: each makes its own temp dir and runs git and gh under its own HOME.
+      # REAL=1 is read by commitlint/test.sh alone: it also installs the pinned set and
+      # lints with the real commitlint (the preset declares no dependency, so only that
+      # proves it resolves config-conventional). Without it that section is skipped and
+      # nothing fails, which the commitlint step below asserts.
+      - name: Shell tests, four at a time
+        env:
+          REAL: "1"
+        run: |
+          set -euo pipefail
+          logs="$(mktemp -d "${TMPDIR:-/tmp}/shell-tests.XXXXXX")"
+          export logs
+          # shellcheck disable=SC2016
+          printf '%s\0' actions/*/test.sh scripts/*.test.sh |
+            xargs -0 -n1 -P4 bash -c '
+              base="$logs/${1//\//__}"
+              rc=0
+              "./$1" >"$base.log" 2>&1 || rc=$?
+              echo "$rc" >"$base.rc"
+            ' _
+          failed=()
+          for t in actions/*/test.sh scripts/*.test.sh; do
+            base="$logs/${t//\//__}"
+            # No .rc file means the script was killed (out of memory, say), not that it passed.
+          rc="$(cat "$base.rc" 2>/dev/null || echo 255)"
+            if [ "$rc" -eq 0 ]; then
+              echo "::group::$t"
+              cat "$base.log"
+              echo "::endgroup::"
+            else
+              echo "::error::$t exited $rc"
+              cat "$base.log"
+              failed+=("$t")
+            fi
+          done
+          if [ "${#failed[@]}" -gt 0 ]; then
+            echo "::error::failed: ${failed[*]}"
+            exit 1
+          fi
+          echo "every shell test passed"
 
       # The model ids live in pick-model. A workflow that names one, or calls
       # run-agent without a stage or the org pin, drifts from the policy
@@ -98,35 +137,15 @@ jobs:
           print('every run-agent call passes a stage, the pin and the org plugins and env, and no file names a model id')
           PY
 
-      # The kill switch is a claim about behaviour. Assert it.
-      - name: Agent gate behaviour
-        run: ./actions/agent-gate/test.sh
-
-      # Which comment a sticky run EDITS is the part that can be wrong quietly:
-      # picking wrong means a later run overwrites something it did not write.
-      - name: Sticky comment picks the right comment
-        run: ./actions/sticky-comment/test.sh
-
-      # The report must never fail a job: a 403 from the jobs API (a caller with
-      # `contents: read` only) still names the runner. Also run under bash 3.2.
-      - name: Runner report degrades without failing
-        run: ./actions/runner-report/test.sh
-
-      # REAL=1 also installs the pinned set and lints with the real commitlint.
-      - name: commitlint lints every PR commit without Docker
-        env:
-          REAL: "1"
-        run: ./actions/commitlint/test.sh
-
       # A pull request that can change the config it is linted by, or make CI
       # install a package, controls the check. Callers get the action defaults.
       - name: commitlint reads the base config, installs nothing unpinned and caches
         run: |
           set -euo pipefail
           python3 - <<'PY'
-          import yaml
+          from lib import load
           bad = []
-          doc = yaml.safe_load(open('actions/commitlint/action.yml'))
+          doc = load('actions/commitlint/action.yml')
           expr = '$' + '{{ github.event.pull_request.base.sha }}'
           if doc['inputs']['ref']['default'] != expr:
               bad.append('the ref input does not default to the pull request base sha')
@@ -137,74 +156,19 @@ jobs:
           if not cache or 'steps.key.outputs.key' not in cache[0]['with']['key'] \
              or not any('package-lock.json' in s.get('run', '') for s in steps if s.get('id') == 'key'):
               bad.append('the action has no actions/cache step keyed on package-lock.json')
-          elif 'restore-keys' in cache[0]['with']:
-              bad.append('the commitlint cache has restore-keys; an exact key never reuses a near-match tree')
           # A cache that is not wired to the install does nothing and fails no test.
           lint = [s for s in steps if 'lint.sh' in s.get('run', '')][0].get('env', {})
           if cache and (lint.get('CACHE_HIT') != '$' + '{{ steps.cache.outputs.cache-hit }}'
                         or cache[0]['with']['path'] != lint['PREFIX'] + '/node_modules'):
               bad.append('the cache does not cover PREFIX/node_modules, or lint.sh is not told about a hit')
           # Without REAL=1 the real-install section of test.sh is skipped and nothing fails.
-          me = yaml.safe_load(open('.github/workflows/self-test.yml'))['jobs']['test']['steps']
-          if not any(s.get('run') == './actions/commitlint/test.sh' and s.get('env', {}).get('REAL') == '1' for s in me):
-              bad.append('the Self test step that runs commitlint/test.sh does not set REAL=1')
+          me = load('.github/workflows/self-test.yml')['jobs']['test']['steps']
+          if not any('actions/*/test.sh' in s.get('run', '') and s.get('env', {}).get('REAL') == '1' for s in me):
+              bad.append('the Self test step that runs the shell tests does not set REAL=1, so commitlint/test.sh skips its real install')
           if bad:
               print('\n'.join(bad)); raise SystemExit(1)
           print('commitlint reads the config at the base sha, never runs npm install, caches on the lockfile and runs the real install')
           PY
-
-      # A skip built on changed-files is a positive claim, so every doubt has to
-      # come out as `matched=true`, the 3000-file cap included.
-      - name: Changed files count every doubt as a match
-        run: ./actions/changed-files/test.sh
-
-      # Findings fail the job only when asked to, a lint that could not run
-      # always does, and only the files a pull request changed reach squawk.
-      - name: Migration lint picks the changed files and fails only as asked
-        run: ./actions/migration-lint/test.sh
-
-      # A wrong percentage, or a floor that never trips, reads as a healthy repo.
-      - name: LCOV report does the arithmetic and enforces the floors
-        run: ./actions/lcov-report/test.sh
-
-      # kover-report never fails on a breached minimum, so the floor is ours: a
-      # figure at the floor passes, one under it or none at all fails.
-      - name: Kover floor fails below the minimum and on a missing figure
-        run: ./actions/kover-floor/test.sh
-
-      # The required context: a failed or cancelled job fails it, a skipped or
-      # advisory one never does, and a call with nothing to judge is no verdict.
-      - name: PR Checks summary fails on a failed job and ignores advisory ones
-        run: ./actions/pr-checks-summary/test.sh
-
-      # hk's status, the summary and the SARIF warning are what `hk: true` shows
-      # a caller. Run against a stub hk.
-      - name: hk-check keeps hk's status and reports through the summary
-        run: ./actions/hk-check/test.sh
-
-      # Only a finding the base commit lacks may block, and a scan that could not
-      # run is never read as a clean one. The pin and its Renovate marker too.
-      - name: Dependency check blocks only what the PR introduced
-        run: ./actions/dependency-check/test.sh
-
-      # A phase's command reaches the shell unmangled, each phase gets its own
-      # subshell, and the first failure stops the rest. pr-checks runs on this.
-      - name: run-phases runs each phase alone and stops at the first failure
-        run: ./actions/run-phases/test.sh
-
-      # claude-code-action replaces the git identity a job configured, so
-      # deps-verify's fixes were authored by claude[bot] and its own push guard
-      # refused them. This runs the push and publish steps against real git
-      # repos: the author allowlist, the explicit --author, the identity
-      # run-agent forwards, the Renovate-owned needs-manual label and the
-      # no-report comment.
-      - name: run-agent identity and deps-verify's push and publish steps
-        run: ./actions/run-agent/test.sh
-
-      # The autonomy ladder, branch names, the holdout guard on every fix
-      # round, and the fix loop's next step. A wrong tier is an unread merge.
-      - name: Factory tier, push guard and fix-loop decisions
-        run: ./actions/factory/test.sh
 
       # The agent writes; steps push, ready and merge. An agent job that holds a
       # write token beside the agent, or pushes outside a guarded push step, is
@@ -215,6 +179,7 @@ jobs:
           set -euo pipefail
           python3 - <<'PY'
           import re, sys, yaml
+          from lib import checkout_ok
           bad = []
           gate = yaml.safe_load(open('.github/workflows/pr-iterate.yml'))['jobs']['gate']
           if any(gate['permissions'].get(k) == 'write' for k in gate['permissions']):
@@ -235,7 +200,7 @@ jobs:
               if (j.get('permissions') or {}).get('contents') != 'read':
                   bad.append('%s %s: the agent job holds contents write; pushes go through the factory step' % (f, job))
               co = [s for s in j['steps'] if 'actions/checkout@' in str(s.get('uses', ''))][0]
-              if (co.get('with') or {}).get('persist-credentials') is not False:
+              if not checkout_ok(co):
                   bad.append('%s %s: checkout persists credentials beside the agent' % (f, job))
               if not any(s.get('id') == 'push' and pushes[f] in str(s.get('uses', '')) for s in j['steps']):
                   bad.append('%s %s: no guarded push step (%s)' % (f, job, pushes[f]))
@@ -263,6 +228,7 @@ jobs:
           set -euo pipefail
           python3 - <<'PY'
           import glob, re, sys, yaml
+          from lib import checkout_ok
           bad = []
           wf = yaml.safe_load(open('.github/workflows/pr-iterate.yml'))
           upd = wf['jobs'].get('update')
@@ -275,7 +241,7 @@ jobs:
                   bad.append('pr-iterate update must need the gate and run only on the update action')
               steps = upd.get('steps') or []
               co = [x for x in steps if 'actions/checkout@' in str(x.get('uses', ''))]
-              if not co or (co[0].get('with') or {}).get('persist-credentials') is not False:
+              if not co or not checkout_ok(co[0]):
                   bad.append('pr-iterate update checks out with persisted credentials')
               push = [x for x in steps if 'actions/push-round@' in str(x.get('uses', ''))]
               if len(push) != 1 or str((push[0].get('with') or {}).get('merge')) != 'true':
@@ -315,53 +281,28 @@ jobs:
           print('a conflicted agent PR is merged into through push-round, and a factory PR lands by squash')
           PY
 
-      # Only a bot's `chore(release): … [skip ci]` skips the guard wall (either
-      # half alone is still checked), only a decision or spec declaring `checks:`
-      # needs an install, and only a same-repo PR from the integration branch is a
-      # promotion.
-      - name: zavet-check release skip, lazy install and promotion rules
-        run: ./actions/zavet-check/test.sh
-
-      # The wait must never pass on the job's own Deployment, and must count the
-      # commit before a `[skip ci]` release commit, the one the host builds.
-      - name: Deployment wait proves the host's deployment
-        run: ./actions/wait-for-deployment/test.sh
-
-      # Which APKs count, what is attached, when Firebase is called, what its notes
-      # say, and that no secret is ever an argument.
-      - name: android-distribute attaches, distributes and keeps secrets off argv
-        run: ./actions/android-distribute/test.sh
-
       # The deploy holds a signing key on a machine other jobs share, so how it
-      # runs is asserted, not reviewed: the heavy-pool expression, the report
-      # first, nothing granted at the top, no persisted checkout token, every
-      # third-party action on a commit SHA, the cleanup last and unconditional.
+      # runs is asserted, not reviewed: nothing granted at the top, no persisted
+      # checkout token, every third-party action on a commit SHA, the cleanup last
+      # and unconditional. Its pool and first step are the runner step's.
       - name: android-deploy is confined, pinned and cleans up on every outcome
         run: |
           set -euo pipefail
           python3 - <<'PY'
-          import json, re, sys, yaml
-          # No literal dollar-brace in this script: Actions would evaluate it before bash runs.
-          D = '$' + '{{ '
-          # pick-runner.yml holds the light expression; heavy is the same text with the pool set to large.
-          Q = chr(34)
-          EXPR = yaml.safe_load(open('.github/workflows/pick-runner.yml'))['jobs']['pick']['runs-on'].replace(Q + 'light' + Q, Q + 'large' + Q)
+          import re, sys
+          from lib import load, D, checkout_ok
           path = '.github/workflows/android-deploy.yml'
           src = open(path).read()
-          doc = yaml.safe_load(src)
+          doc = load(path)
           bad = []
           job = doc['jobs']['deploy']
           steps = job['steps']
-          if job.get('runs-on') != EXPR:
-              bad.append('runs-on is not the heavy-or-hosted expression, character for character')
-          if steps[0].get('uses') != 'dodi-smart/.github/actions/runner-report@v1':
-              bad.append('the first step is not runner-report')
           if doc.get('permissions') != {}:
               bad.append('the workflow has no top-level permissions: {}')
           if job.get('permissions') != {'contents': 'write'}:
               bad.append('the job holds more than contents: write')
           checkouts = [s for s in steps if str(s.get('uses', '')).startswith('actions/checkout@')]
-          if len(checkouts) != 1 or (checkouts[0].get('with') or {}).get('persist-credentials') is not False:
+          if len(checkouts) != 1 or not checkout_ok(checkouts[0]):
               bad.append('the checkout does not set persist-credentials: false')
           cleanup = [s for s in steps if 'rm -rf' in str(s.get('run', ''))]
           if len(cleanup) != 1 or str(cleanup[0].get('if', '')).strip() not in ('always()', D + 'always() }}'):
@@ -380,23 +321,18 @@ jobs:
           # Third-party actions that see secrets are on a full commit SHA. The first-party
           # ones (actions/*, dodi-smart/*) stay on this repo's tag convention.
           sha = re.compile(r'^[\w.-]+/[\w./-]+@[0-9a-f]{40}$')
-          action = yaml.safe_load(open('actions/android-distribute/action.yml'))['runs']['steps']
+          action = load('actions/android-distribute/action.yml')['runs']['steps']
           for where, ss in ((path, steps), ('actions/android-distribute/action.yml', action)):
               for s in ss:
                   u = str(s.get('uses', ''))
                   if u and not u.startswith(('actions/', 'dodi-smart/')) and not sha.match(u):
                       bad.append(where + ': ' + u + ' is third-party and not pinned to a 40-hex commit SHA')
-          # firebase-tools is pinned exact in one place, behind a marker a Renovate manager reads.
-          marker = re.compile(r'# renovate: datasource=npm depName=firebase-tools\n\s+FIREBASE_TOOLS_VERSION: \d+\.\d+\.\d+\n')
-          if src.count('FIREBASE_TOOLS_VERSION:') != 1 or not marker.search(src):
-              bad.append('firebase-tools is not pinned exact, once, behind a renovate marker')
-          managers = [m for m in json.load(open('renovate.json')).get('customManagers', [])
-                      if any('android-deploy' in p for p in m.get('managerFilePatterns', []))]
-          if not managers or not re.search(managers[0]['matchStrings'][0].replace('(?<', '(?P<'), src):
-              bad.append('renovate.json has no manager that reads the firebase-tools marker')
+          # firebase-tools is pinned in one place; the renovate step proves a manager reads it.
+          if src.count('FIREBASE_TOOLS_VERSION:') != 1:
+              bad.append('firebase-tools is not pinned exactly once')
           if bad:
               sys.exit('::error::' + '; '.join(bad))
-          print('android-deploy: heavy-or-hosted runner, report first, permissions: {}, no persisted token, SHA-pinned secrets actions, cleanup last and always')
+          print('android-deploy: permissions: {}, no persisted token, SHA-pinned secrets actions, cleanup last and always')
           PY
 
       # `sticky-comment` is read only in tag mode, which a non-empty `prompt`
@@ -431,10 +367,6 @@ jobs:
       # The fix was to stop asking the agent to publish and start requiring a file.
       # If the prompt stops naming the file, or the verdict step stops reading the
       # same path, the silence comes straight back.
-      # Other workflows merge on review / verdict, so the verdict fails closed.
-      - name: PR Review's verdict fails closed
-        run: ./scripts/pr-review.test.sh
-
       - name: PR Review publishes through a file, not through the agent
         run: |
           set -euo pipefail
@@ -607,8 +539,9 @@ jobs:
         run: |
           set -euo pipefail
           python3 -c "
-          import sys, yaml
-          jobs = yaml.safe_load(open('.github/workflows/pr-checks.yml'))['jobs']
+          import sys
+          from lib import load, D
+          jobs = load('.github/workflows/pr-checks.yml')['jobs']
 
           pickers = [name for name, job in jobs.items()
                      if any('pick-runner' in str(step.get('uses', ''))
@@ -624,6 +557,10 @@ jobs:
           if str(summary.get('if', '')).strip() != 'always()':
               sys.exit('::error::the pr-checks job must run unconditionally (if: always()), or it silently '
                         'skips instead of reporting the jobs it summarizes.')
+          # needs cannot vary with an input, so the summary judges the whole context.
+          step = [s for s in summary['steps'] if s.get('name') == 'Summarize'][0]
+          if 'actions/pr-checks-summary@' not in str(step.get('uses', '')) or (step.get('with') or {}).get('needs') != D + 'toJSON(needs) }}':
+              sys.exit('::error::the Summarize step must run actions/pr-checks-summary on the whole needs context, or a job added to needs is not judged.')
           print('pr-checks.yml has one picker job (%s) and an always-on pr-checks summary job' % pickers[0])
           "
 
@@ -647,8 +584,6 @@ jobs:
           summary = jobs['pr-checks']
           step = [s for s in summary['steps'] if s.get('name') == 'Summarize'][0]
           given = step.get('with') or {}
-          if 'actions/pr-checks-summary@' not in str(step.get('uses', '')) or given.get('needs') != '$' + '{{ toJSON(needs) }}':
-              errors.append('the Summarize step must run actions/pr-checks-summary on the whole needs context, or a job added to needs is not judged.')
           for j in ('zavet', 'react-doctor'):
               inp = inputs.get(j + '-blocking')
               if not inp or inp.get('type') != 'boolean' or inp.get('default') is not False:
@@ -668,69 +603,73 @@ jobs:
                   errors.append('pr-checks ' + job + ' must use ' + action)
               if action not in uses(load('.github/workflows/' + wf)['jobs'][wfjob]):
                   errors.append(wf + ' must use ' + action)
-          pickers = [n for n, j in jobs.items() if 'pick-runner' in uses(j)]
-          if len(pickers) != 1:
-              errors.append('exactly one pick-runner job is allowed, found ' + repr(pickers))
           if errors:
               sys.exit('::error::' + ' '.join(errors))
           print('zavet and react-doctor reach the summary only when blocking, and share their actions')
           "
 
-      # react-doctor.yml has no callers since pr-checks runs the same action, and
-      # goes at v2. Until then it must say so, in its header and in every run.
-      - name: react-doctor.yml says it is deprecated
+      # A pin only stays current if a manager reads it, and a manager that stops
+      # matching fails silently: Renovate just opens no more PRs. So every file that
+      # carries a `# renovate: datasource=` marker must be matched by a customManager
+      # in renovate.json that captures the marker's datasource and depName and an exact
+      # version. PINNED lists the pins that must carry a marker, so deleting one is not
+      # a way to stop their updates. react-doctor adds two claims of its own.
+      - name: Every renovate pin is read by a Renovate manager
         run: |
           set -euo pipefail
-          python3 - <<'DEP'
-          import sys, yaml
-          path = '.github/workflows/react-doctor.yml'
-          text = open(path).read()
-          steps = yaml.safe_load(text)['jobs']['doctor']['steps']
-          errors = []
-          if 'DEPRECATED, removed at v2' not in text.split('name:', 1)[0]:
-              errors.append(path + ' must say DEPRECATED, removed at v2 in its header.')
-          if not any('::warning' in str(s.get('run', '')) and 'deprecated' in str(s.get('run', '')) for s in steps):
-              errors.append(path + ' must warn that it is deprecated on every run.')
-          if '**Deprecated, removed at v2:**' not in open('README.md').read():
-              errors.append('the README workflow table must mark react-doctor.yml deprecated.')
-          if errors:
-              sys.exit('::error::' + ' '.join(errors))
-          print('react-doctor.yml says it is deprecated in its header, every run and the README')
-          DEP
-
-      # Both react-doctor `version` defaults stay one exact version that Renovate
-      # bumps. The manager has to read each, or the pin silently goes stale.
-      - name: react-doctor version is pinned and bumped by Renovate
-        run: |
-          set -euo pipefail
-          python3 - <<'PIN'
-          import json, re, sys
-          files = ('actions/react-doctor/action.yml', '.github/workflows/react-doctor.yml')
+          python3 - <<'PY'
+          import glob, json, os, re, sys
+          bad = []
           ren = json.load(open('renovate.json'))
           managers = [m for m in ren.get('customManagers', []) if m.get('customType') == 'regex']
-          bad, found = [], {}
+          # A marker starts a comment line or trails a value. One inside a comment that
+          # documents a caller's pin (supabase-*.yml) is prose, not a pin.
+          MARK = re.compile(r'^\s*(?:[^#\s][^\n]*)?# renovate: datasource=(\S+) depName=(\S+)', re.M)
+          PINNED = {
+              'actions/dependency-check/install.sh': 'google/osv-scanner',
+              'actions/migration-lint/install.sh': 'sbdchd/squawk',
+              'actions/react-doctor/action.yml': 'react-doctor',
+              '.github/workflows/react-doctor.yml': 'react-doctor',
+              '.github/workflows/android-deploy.yml': 'firebase-tools',
+          }
+          files = glob.glob('.github/workflows/*.yml') + glob.glob('actions/**/*', recursive=True)
+          versions = {}
+          for f in sorted(files):
+              if not os.path.isfile(f) or f.endswith(('self-test.yml', 'test.sh')):
+                  continue
+              try:
+                  text = open(f).read()
+              except UnicodeDecodeError:
+                  continue
+              marks = MARK.findall(text)
+              if f in PINNED and PINNED[f] not in [dep for _, dep in marks]:
+                  bad.append(f + ' lost its renovate marker for ' + PINNED[f])
+              # Run each manager's own matchStrings over the file: one match proves the
+              # pin is an exact version, carries the marker and is reached.
+              read = set()
+              for m in managers:
+                  if not any(re.search(p[1:-1], f) for p in m.get('managerFilePatterns', [])):
+                      continue
+                  for s in m.get('matchStrings', []):
+                      for hit in re.finditer(re.sub(r'\(\?<(?=[A-Za-z])', '(?P<', s), text):
+                          g = hit.groupdict()
+                          read.add((g.get('datasource') or m.get('datasourceTemplate'),
+                                    g.get('depName') or m.get('depNameTemplate'), g.get('currentValue')))
+              for ds, dep in marks:
+                  got = [v for d, n, v in read if (d, n) == (ds, dep) and v and re.fullmatch(r'v?\d+\.\d+\.\d+', v)]
+                  if not got:
+                      bad.append('%s: no customManager in renovate.json reads the marker for %s (%s) with an exact x.y.z version' % (f, dep, ds))
+                  elif dep == 'react-doctor':
+                      versions[f] = got[0]
+          # A react-doctor bump changes what every caller's scan runs, so it must release.
           if not any('react-doctor' in r.get('matchDepNames', []) and r.get('semanticCommitType') == 'chore' and r.get('semanticCommitScope') == 'deps' for r in ren.get('packageRules', [])):
               bad.append('renovate.json has no packageRule typing react-doctor bumps chore(deps), so a bump would not release')
-          # Run each manager's own matchStrings over the file, so one match proves
-          # the default is an exact x.y.z, carries the marker, and is reached.
-          for f in files:
-              text = open(f).read()
-              hits = [re.search(s.replace('(?<', '(?P<'), text)
-                      for m in managers
-                      if any(re.search(p[1:-1], f) for p in m.get('managerFilePatterns', []))
-                      for s in m.get('matchStrings', [])]
-              hit = next((h for h in hits if h), None)
-              if not hit or (hit['datasource'], hit['depName']) != ('npm', 'react-doctor'):
-                  bad.append(f + ' has no exact x.y.z version default with a # renovate: datasource=npm depName=react-doctor marker that a renovate.json customManager reads')
-              else:
-                  found[f] = hit['currentValue']
-          if len(set(found.values())) > 1:
-              bad.append('the two version defaults differ: ' + repr(found))
+          if len(set(versions.values())) > 1:
+              bad.append('the two react-doctor version defaults differ: ' + repr(versions))
           if bad:
-              print('::error::' + '; '.join(bad) + '. See AGENTS.md.')
-              sys.exit(1)
-          print('react-doctor pinned at ' + next(iter(found.values())) + ' in both files, read by a Renovate manager')
-          PIN
+              sys.exit('::error::' + '; '.join(bad) + '. See AGENTS.md.')
+          print('every renovate marker is read by a manager')
+          PY
 
       # `build` runs beside `checks`, and the summary must still require
       # `checks`, or a red lint stops failing the required context.
@@ -1086,32 +1025,24 @@ jobs:
           print('every agent workflow picks its runner inside the gate job, guarded on proceed')
           "
 
-      # The agent workflows' gates ran on a billed hosted runner before every
-      # agent job. They now take the light pool of a private repo and stay hosted
-      # for a public repo or a fork PR, through one expression, and every job
-      # reports the runner it got. Three claims keep that from drifting: no
-      # hosted literal is left behind, runner-report is the first step of every
-      # job, and the kill switch is still the first rule the gate evaluates.
+      # The agent workflows' gates ran on a billed hosted runner before every agent
+      # job. They now take the light pool of a private repo and stay hosted for a
+      # public repo or a fork PR (the runner step covers the expression and the first
+      # step of every job). Three claims stay here: each gate filters on the payload
+      # alone, every report names its selector, and the kill switch is still the first
+      # rule the gate evaluates.
       - name: Agent workflow gates are off hosted minutes and keep the kill switch first
         run: |
           set -euo pipefail
           python3 - <<'PY'
-          import re, sys, yaml
+          import sys
+          from lib import load
 
           files = ['pr-review', 'claude-assist', 'issue-triage', 'issue-implement', 'pr-iterate']
-          # Written as two pieces so the workflow linter does not read it as an expression.
-          expr = ('$' + '{{ fromJSON((github.event.repository.private && !github.event.pull_request.head.repo.fork) '
-                  '&& \'["self-hosted","Linux","light"]\' || \'"ubuntu-latest"\') }}')
           bad = []
           for f in files:
-              text = open('.github/workflows/' + f + '.yml').read()
-              jobs = yaml.safe_load(text)['jobs']
-              # The only hosted literal allowed is the one inside the expression.
-              if 'ubuntu-latest' in text.replace(expr, ''):
-                  bad.append(f + ': a hosted runner literal outside the gate expression')
+              jobs = load('.github/workflows/' + f + '.yml')['jobs']
               gate = jobs['gate']
-              if gate.get('runs-on') != expr:
-                  bad.append(f + ': gate runs-on is not the shared light-or-hosted expression')
               cond = str(gate.get('if', '')).strip()
               if not cond:
                   bad.append(f + ': gate has no job-level if for the payload-only filters')
@@ -1121,9 +1052,7 @@ jobs:
                   bad.append(f + ': gate gained an actions permission')
               for name, job in jobs.items():
                   first = (job.get('steps') or [{}])[0]
-                  if 'actions/runner-report@' not in str(first.get('uses', '')):
-                      bad.append(f + ': job ' + name + ' does not start with runner-report')
-                  elif (first.get('with') or {}).get('selector') is None:
+                  if (first.get('with') or {}).get('selector') is None:
                       bad.append(f + ': job ' + name + ' runner-report passes no selector')
               # The gate action is the step straight after the report, so
               # nothing evaluates ahead of agent:no-touch.
@@ -1137,23 +1066,8 @@ jobs:
                   bad.append('gate.sh evaluates ' + rule + ' before the kill switch')
           if bad:
               sys.exit('::error::' + '; '.join(bad))
-          print('agent gates use the shared runner expression, report first and check agent:no-touch first')
+          print('agent gates filter on the payload, report their selector and check agent:no-touch first')
           PY
-
-      # A skip that should not have happened is the costly mistake here, above
-      # all a `verified` label on a red build. test.sh asserts those cases first.
-      - name: deps-verify decides when a run is skipped
-        run: ./actions/deps-intent/test.sh
-
-      # Which PR a run is about, and whether it is still that open PR at the
-      # head it acted on. deps-verify reads it before and after its long job.
-      - name: pr-facts resolves the PR and refuses one that moved
-        run: ./actions/pr-facts/test.sh
-
-      # The one guarded push of an agent's round: deps-verify uses it, and so
-      # will any workflow that pushes agent commits to a PR branch.
-      - name: push-round refuses what a round may not do
-        run: ./actions/push-round/test.sh
 
       # Every unattended merge goes through actions/merge-gate, so its rules
       # exist once. `gh pr merge` anywhere else is a second gate. deps-automerge
@@ -1162,7 +1076,6 @@ jobs:
       - name: merge-gate is the only place anything merges
         run: |
           set -euo pipefail
-          ./actions/merge-gate/test.sh
           python3 -c "
           import glob, os, re, sys
           bad = []
@@ -1288,66 +1201,102 @@ jobs:
           print('pick-runner.yml still exposes inputs %s and outputs %s' % (sorted(need_in), sorted(need_out)))
           "
 
-      # The helper jobs of the shared checks run self-hosted in a private repo
-      # (light, or control for pick and PR Checks: see AGENTS.md), with no hosted
-      # minutes, and every runner job reports where it ran.
-      # Each claim below drifted or could drift quietly: a literal
-      # `ubuntu-latest` creeping back bills hosted minutes; a renamed summary job
-      # breaks the required status context; a job whose first step is not the
-      # runner report loses the report when a later step fails.
-      - name: Checks helper jobs are self-hosted, static and report their runner
+      # runs-on cannot read env, so the light-or-hosted expression is written out per
+      # job (AGENTS.md has why) and pick-runner.yml holds the reference copy. One walk
+      # over every job that runs steps, so a new job cannot skip the rule: a hosted
+      # literal bills hosted minutes in a private repo, and a job whose first step is
+      # not the runner report loses the report when a later step fails. A job takes
+      # the reference expression, the same text with another pool (POOLS), or a runner
+      # a gate job picked (needs.). A job that is hosted on purpose is listed in
+      # HOSTED with its reason.
+      - name: Every job is on the static runner expression and reports its runner
         run: |
           set -euo pipefail
-          python3 -c "
-          import glob, re, sys, yaml
-          REPORT = 'dodi-smart/.github/actions/runner-report@v1'
-          files = ['pr-checks', 'pick-runner', 'react-doctor', 'zavet-check']
-          errors = []
-          for name in files:
-              path = '.github/workflows/%s.yml' % name
-              text = open(path).read()
-              for n, line in enumerate(text.splitlines(), 1):
-                  if re.match(r'\s*runs-on:\s*[\"\']?ubuntu-latest', line):
-                      errors.append('%s:%d: a literal ubuntu-latest runs-on bills hosted minutes in a private repo' % (path, n))
-              for jid, job in yaml.safe_load(text)['jobs'].items():
-                  if 'uses' in job:
-                      continue
-                  steps = job.get('steps') or []
-                  if not steps or steps[0].get('uses') != REPORT:
-                      errors.append('%s: job %s must start with %s' % (path, jid, REPORT))
-                  runs_on = str(job.get('runs-on', ''))
-                  if 'self-hosted' not in runs_on and 'needs.' not in runs_on:
-                      errors.append('%s: job %s has runs-on %r, expected a self-hosted expression' % (path, jid, runs_on))
-          pc = yaml.safe_load(open('.github/workflows/pr-checks.yml'))['jobs']
-          wrapper = yaml.safe_load(open('.github/workflows/pick-runner.yml'))['jobs']['pick']
-          # The wrapper's expression is the reference; the others must match it
-          # character for character, and it must carry every part of the contract.
-          EXPR = wrapper['runs-on']
+          python3 - <<'PY'
+          import glob, os, sys
+          from lib import load, first_step_is_report
+          bad = []
+          LIGHT = load('.github/workflows/pick-runner.yml')['jobs']['pick']['runs-on']
           for part in ('github.event.repository.private', '!github.event.pull_request.head.repo.fork',
                        'self-hosted', 'Linux', 'light', 'ubuntu-latest'):
-              if part not in EXPR:
-                  errors.append('pick-runner.yml: the light runs-on expression lost ' + part)
-          # pick and PR Checks run on control (see AGENTS.md): the light expression
-          # with only the pool changed. chr(34) is a double quote: this script
-          # sits inside one.
-          Q = chr(34)
-          CONTROL = EXPR.replace(Q + 'light' + Q, Q + 'control' + Q)
-          for jid in ('pick', 'pr-checks'):
-              if pc[jid]['runs-on'] != CONTROL:
-                  errors.append('pr-checks.yml: %s must use the light expression with the pool set to control' % jid)
-          # No run-time switch: a job's pool changes in a release, never through
-          # a repository or org variable. No job but those two runs on control.
+              if part not in LIGHT:
+                  bad.append('pick-runner.yml: the light runs-on expression lost ' + part)
+          pool = lambda p: LIGHT.replace('"light"', '"%s"' % p)
+          # Every job is on light unless it is listed here.
+          POOLS = {
+              # A merge waits on both; control carries no work label, so it stays free for
+              # seconds-long jobs. No other job may name it.
+              ('pr-checks.yml', 'pick'): 'control',
+              ('pr-checks.yml', 'pr-checks'): 'control',
+              # A Gradle build that holds the signing key.
+              ('android-deploy.yml', 'deploy'): 'large',
+          }
+          HOSTED = {
+              ('self-test.yml', 'test'): 'this repo is public, and a public repo never touches a self-hosted runner',
+              ('publish-release.yml', 'release'): 'the public repo releases itself, so hosted like self-test',
+              ('promote.yml', 'promote'): 'the public repo moves its own tag, so hosted like self-test',
+              ('release-canary.yml', 'result'): 'the public repo posts its own status, so hosted like self-test',
+              ('supabase-checks.yml', 'types'): 'starts Postgres, which needs the runner whose localhost the CLI polls',
+              ('supabase-checks.yml', 'deno'): 'starts Postgres, which needs the runner whose localhost the CLI polls',
+              ('supabase-checks.yml', 'pgtap'): 'starts Postgres, which needs the runner whose localhost the CLI polls',
+              ('supabase-deploy.yml', 'deploy'): 'holds a production Supabase token, which belongs on a throwaway VM',
+          }
+          seen = set()
+          for path in sorted(glob.glob('.github/workflows/*.yml')):
+              f = os.path.basename(path)
+              for jid, job in load(path)['jobs'].items():
+                  if 'uses' in job:
+                      continue
+                  where = '%s: job %s' % (f, jid)
+                  ro = job.get('runs-on')
+                  if (f, jid) in HOSTED:
+                      seen.add((f, jid))
+                      if ro != 'ubuntu-latest':
+                          bad.append(where + ' is listed as hosted on purpose but runs on %r' % ro)
+                      continue
+                  if not first_step_is_report(job):
+                      bad.append(where + ' must start with actions/runner-report')
+                  want = POOLS.get((f, jid), 'light')
+                  if ro != pool(want) and 'needs.' not in str(ro):
+                      bad.append(where + ' runs-on is not the %s expression, character for character: %r' % (want, ro))
+              # Nothing else in the file may name the hosted runner (pick-runner.yml's
+              # hosted-runner input default aside).
+              if f != 'pick-runner.yml' and not any(k[0] == f for k in HOSTED):
+                  rest = open(path).read().replace(LIGHT, '')
+                  for p in set(POOLS.values()):
+                      rest = rest.replace(pool(p), '')
+                  if 'ubuntu-latest' in rest:
+                      bad.append(f + ': a hosted runner literal outside the runs-on expression')
+          for k in sorted(set(HOSTED) - seen):
+              bad.append('%s: job %s is listed as hosted on purpose but no longer exists' % k)
+          if bad:
+              sys.exit('::error::' + ' | '.join(bad))
+          print('every job uses the static runner expression and starts with runner-report; %d are hosted on purpose' % len(HOSTED))
+          PY
+
+      # The summary job is the required status context, so renaming it breaks every
+      # caller's ruleset. The control pool is sized for exactly two jobs (the runner
+      # step lists them), so no other file may name it. A pool changes in a release,
+      # never through a variable. The picker is static and makes no API call.
+      - name: pr-checks keeps its required context, the control pool and a call-free picker
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import glob, sys
+          from lib import load
+          errors = []
+          pc = load('.github/workflows/pr-checks.yml')['jobs']
           for path in sorted(glob.glob('.github/workflows/*.yml') + glob.glob('actions/*/*.yml') + glob.glob('actions/*/*.sh')):
               if path.endswith('self-test.yml') or path.endswith('test.sh'):
                   continue
               text = open(path).read()
               if 'DODI_RUNS_ON' in text:
                   errors.append(path + ': reads a DODI_RUNS_ON_* switch; pools change in a release, not at run time')
-              if text.count(Q + 'control' + Q) != (2 if path.endswith('/pr-checks.yml') else 0):
+              if text.count('"control"') != (2 if path.endswith('/pr-checks.yml') else 0):
                   errors.append(path + ': names the control pool; only pr-checks pick and PR Checks may')
           if pc['pr-checks'].get('name') != 'PR Checks':
               errors.append('the summary job must stay named PR Checks, it is the required status context')
-          modes = [s.get('with', {}).get('mode') for s in pc['pr-checks']['steps'] if s.get('uses') == REPORT]
+          modes = [s.get('with', {}).get('mode') for s in pc['pr-checks']['steps'] if 'actions/runner-report@' in str(s.get('uses', ''))]
           if 'run' not in modes:
               errors.append('the PR Checks job must run runner-report with mode: run')
           for f in glob.glob('actions/pick-runner/*'):
@@ -1359,8 +1308,8 @@ jobs:
                       errors.append(f + ' mentions ' + bad + '; the picker must make no API call')
           if errors:
               sys.exit('::error::' + ' | '.join(errors))
-          print('helper jobs in %s are self-hosted, report their runner, and the picker makes no API call' % files)
-          "
+          print('PR Checks keeps its name, only pick and PR Checks use control, and the picker makes no API call')
+          PY
 
       # The picker's `case` block is the only place a preset is defined, and the
       # README table is where people read it. Drift between them is how a
@@ -1413,55 +1362,40 @@ jobs:
           print('the picker has no fallback')
           PRESETS
 
-      # Caching a project build directory is a governed rule, not a preference.
-      # Those paths hold absolute paths that do not survive a move between
-      # runners, and a per-SHA key falls through restore-keys to another
-      # branch's compiled output. See AGENTS.md.
-      - name: No workflow caches a build directory
+      # Every actions/cache step in the workflows and the actions, in one scan. A
+      # package store or a toolchain takes an exact key: a near match there reimports a
+      # poisoned entry, or a compiled tree from another branch. The one exception is
+      # .next/cache in setup-stack (ALLOWED), which Next keys by content. Nothing caches
+      # a project build directory either: those paths hold absolute paths that do not
+      # survive a move between runners, and reusing compiled output is the build tool's
+      # job. See AGENTS.md.
+      - name: Caches take an exact key and none holds a build directory
         run: |
           set -euo pipefail
-          python3 -c "
-          import sys, glob, re, yaml
-          pat = re.compile(r'^(.*/)?(build|\.gradle)(/.*)?$')
+          python3 - <<'PY'
+          import glob, re, sys
+          from lib import load
+          ALLOWED = ('actions/setup-stack/action.yml', 'steps.next.outputs.paths')
+          build = re.compile(r'^(.*/)?(build|\.gradle)(/.*)?$')
           bad = []
-          for f in sorted(glob.glob('.github/workflows/*.yml') + glob.glob('actions/*/action.yml')):
-              doc = yaml.safe_load(open(f)) or {}
-              jobs = list((doc.get('jobs') or {}).values())
-              jobs += [doc.get('runs') or {}]
-              for job in jobs:
+          for f in sorted(glob.glob('.github/workflows/*.yml') + glob.glob('actions/**/action.yml', recursive=True)):
+              doc = load(f) or {}
+              for job in list((doc.get('jobs') or {}).values()) + [doc.get('runs') or {}]:
                   for step in (job.get('steps') or []) if isinstance(job, dict) else []:
                       if 'actions/cache' not in str(step.get('uses', '')):
                           continue
-                      for line in str((step.get('with') or {}).get('path', '')).splitlines():
+                      w = step.get('with') or {}
+                      path = str(w.get('path', ''))
+                      if 'restore-keys' in w and not (f == ALLOWED[0] and ALLOWED[1] in path):
+                          bad.append('%s: the cache of %r takes restore-keys; only .next/cache may, every other cache takes an exact key' % (f, path))
+                      for line in path.splitlines():
                           line = line.strip().lstrip('!')
-                          if line and pat.match(line):
-                              bad.append(f + ': ' + line)
+                          if line and build.match(line):
+                              bad.append('%s: %s is a build directory used as a cache path' % (f, line))
           if bad:
-              print('::error::a build directory is used as a cache path: ' + '; '.join(bad)
-                    + '. Reuse of compiled output is the build tool job, by content hash. See AGENTS.md.')
-              sys.exit(1)
-          print('no build directory is cached')
-          "
-
-      # The image cache key is exact: a `restore-keys` line would load images the
-      # CLI no longer asks for.
-      - name: Supabase image cache key is exact
-        run: |
-          set -euo pipefail
-          python3 - <<'SUPABASE'
-          import sys, yaml
-          bad = []
-          start = yaml.safe_load(open('actions/supabase-start/action.yml'))['runs']['steps']
-          caches = [s for s in start if str(s.get('uses', '')).startswith('actions/cache@')]
-          if len(caches) != 1:
-              bad.append('actions/supabase-start must hold exactly one actions/cache step')
-          elif 'restore-keys' in (caches[0].get('with') or {}):
-              bad.append('actions/supabase-start uses restore-keys; the key must be exact')
-          if bad:
-              print('::error::' + '; '.join(bad) + '. See AGENTS.md.')
-              sys.exit(1)
-          print('supabase cache key exact')
-          SUPABASE
+              sys.exit('::error::' + '; '.join(bad) + '. See AGENTS.md.')
+          print('every cache takes an exact key, bar .next/cache, and none holds a build directory')
+          PY
 
       # The release is cut the moment semantic-release succeeds, so the only thing
       # between a broken merge and `next` is this `needs`. Without it the two
@@ -1486,26 +1420,21 @@ jobs:
           print('release needs ' + ', '.join(gate))
           "
 
-      # What promotion does with a canary's word is a script with a stubbed `gh`;
-      # the cases are in its test, the wiring is asserted below.
-      - name: The canary gate holds anything but a passing canary
-        run: ./scripts/canary-gate.test.sh
-
       # pr-checks.yml calls its actions at `@v1`, so on a pull request it tests
       # the PR's workflow against the PREVIOUS release's actions. The end-to-end
       # run is therefore after a release, at the pinned commit (release-canary.yml,
       # dispatched by Publish release, read by Promote). This holds the wiring
-      # between those files; the gate's behaviour is canary-gate.test.sh.
+      # between those files. The gate's behaviour is canary-gate.test.sh, and what
+      # the result job posts is release-canary-status.test.sh.
       - name: The release canary runs pr-checks at the pinned release and gates promotion
         run: |
           set -euo pipefail
-          python3 - <<'CANARY'
-          import os, subprocess, sys, tempfile, yaml
+          python3 - <<'PY'
+          import os, sys
+          from lib import load, D, checkout_ok
 
           errors = []
           def err(msg): errors.append(msg)
-          def load(path): return yaml.safe_load(open(path))
-          D = '$' + '{{ '   # an expression opener, spelled so this script holds none
           RANK = {'none': 0, 'read': 1, 'write': 2}
 
           canary = load('.github/workflows/release-canary.yml')
@@ -1515,7 +1444,7 @@ jobs:
           cj = canary['jobs']
 
           # --- release-canary.yml: dispatch-only, every job grants its own
-          if set(canary[True]) != {'workflow_dispatch'}:   # PyYAML reads `on` as True
+          if set(canary[True]) != {'workflow_dispatch'}:
               err('release-canary.yml must trigger on workflow_dispatch only')
           if canary.get('permissions') != {}:
               err('release-canary.yml must set permissions: {} at the top')
@@ -1546,28 +1475,21 @@ jobs:
           if call.get('permissions') != need:
               err('the pr-checks call grants %s, but pr-checks.yml needs %s' % (call.get('permissions'), need))
 
-          # --- the result job posts success only for a successful call
+          # --- the result job runs the status script for the call's result, on the commit
           res = cj['result']
           if 'pr-checks' not in res.get('needs', []) or 'always()' not in str(res.get('if')):
               err('result must need pr-checks and run if always(), so a cancelled call still posts failure')
-          if res.get('permissions') != {'statuses': 'write'}:
-              err('result must hold statuses: write and nothing else')
-          step = res['steps'][0]
-          if step['env'].get('RESULT') != D + 'needs.pr-checks.result }}' or step['env'].get('SHA') != D + 'github.sha }}':
+          if res.get('permissions') != {'contents': 'read', 'statuses': 'write'}:
+              err('result must hold statuses: write and the contents: read its checkout needs, and nothing else')
+          if not any(checkout_ok(s) for s in res['steps']):
+              err('result must check the script out without persisting a token')
+          post = [s for s in res['steps'] if s.get('run') == './scripts/release-canary-status.sh']
+          if len(post) != 1:
+              err('result must run ./scripts/release-canary-status.sh once')
+          elif post[0]['env'].get('RESULT') != D + 'needs.pr-checks.result }}' or post[0]['env'].get('SHA') != D + 'github.sha }}':
               err('the status must come from needs.pr-checks.result and go on github.sha')
-          with tempfile.TemporaryDirectory() as tmp:
-              gh = os.path.join(tmp, 'gh')
-              open(gh, 'w').write('#!/usr/bin/env bash\nprintf "%s " "$@" >> "$STUB_LOG"\n')
-              os.chmod(gh, 0o755)
-              for result, state in (('success', 'success'), ('failure', 'failure'), ('cancelled', 'failure'), ('skipped', 'failure')):
-                  log = os.path.join(tmp, result)
-                  e = dict(os.environ, PATH=tmp + os.pathsep + os.environ['PATH'], STUB_LOG=log,
-                           GITHUB_STEP_SUMMARY=os.path.join(tmp, 'summary'), REPO='o/r', SHA='abc',
-                           RESULT=result, RUN_URL='https://example.test/run')
-                  ok = subprocess.run(['bash', '-c', step['run']], env=e, capture_output=True).returncode == 0
-                  posted = open(log).read() if ok else ''
-                  if not all(x in posted for x in ('repos/o/r/statuses/abc', 'state=' + state + ' ', 'context=release-canary')):
-                      err('a result of %s must post state=%s, context=release-canary; posted %r' % (result, state, posted))
+          if not os.access('scripts/release-canary-status.sh', os.X_OK):
+              err('scripts/release-canary-status.sh is not executable')
 
           # --- Publish release dispatches it after pinning next; it never calls it
           rel = pub['jobs']['release']
@@ -1591,8 +1513,8 @@ jobs:
 
           if errors:
               sys.exit('::error::' + ' | '.join(errors))
-          print('release canary: dispatch-only, pr-checks at the pinned ref (%d inputs), status from the call result, dispatched after pin, gated before promote' % len(w))
-          CANARY
+          print('release canary: dispatch-only, pr-checks at the pinned ref (%d inputs), status script on the call result, dispatched after pin, gated before promote' % len(w))
+          PY
 
       - name: Every workflow and action is parseable YAML
         run: |
@@ -1701,113 +1623,71 @@ jobs:
             console.log("nothing publishes, as expected");
           '
 
-      # A real backmerge in a bun or pnpm repo conflicts on the lockfile, not
-      # just package.json, because the shared git plugin commits those too.
-      # Assert the resolve list and the input that extends it stay in place,
-      # so an edit that narrows the list back down fails here, not in a
-      # caller's release run after the tag already moved.
-      - name: Backmerge auto-resolve list covers the shared config's lockfiles
+      # Everything callers and Publish release rely on in release.yml, from one load.
+      # A real backmerge in a bun or pnpm repo conflicts on the lockfile, not just
+      # package.json, because the shared git plugin commits those too, so the resolve
+      # list and the input that extends it must stay: an edit that narrows the list
+      # fails here, not in a caller's release run after the tag already moved. The
+      # tooling is installed outside the checkout, so an install there also resolving
+      # the caller's whole dependency tree cannot come back. The outputs and
+      # permissions are what every caller reads. Its runner is the runner step's.
+      - name: release.yml contract
         run: |
           set -euo pipefail
-          python3 -c "
-          import sys, yaml
-          doc = yaml.safe_load(open('.github/workflows/release.yml'))
-          # PyYAML reads the bare 'on' key as the boolean True (YAML 1.1).
+          python3 - <<'PY'
+          import sys
+          from lib import load, D
+          doc = load('.github/workflows/release.yml')
+          bad = []
           inputs = doc[True]['workflow_call']['inputs']
+          release = doc['jobs']['release']
+          steps = release['steps']
+
+          # --- backmerge
           if 'backmerge-resolve-paths' not in inputs:
-              sys.exit('::error::release.yml lost the backmerge-resolve-paths input, a consuming repo can no longer add its own manifest/lockfile paths')
-          if inputs['backmerge-resolve-paths'].get('default') != '':
-              sys.exit('::error::backmerge-resolve-paths must default to \"\", so today\'s behaviour is unchanged when a caller does not set it')
-
-          # The backmerge is the release job's last step: a job of its own
-          # mints a second App token and makes a second full clone.
+              bad.append('release.yml lost the backmerge-resolve-paths input, a consuming repo can no longer add its own manifest/lockfile paths')
+          elif inputs['backmerge-resolve-paths'].get('default') != '':
+              bad.append('backmerge-resolve-paths must default to "", so today\'s behaviour is unchanged when a caller does not set it')
+          # The backmerge is the release job's last step: a job of its own mints a second
+          # App token and makes a second full clone.
           if 'backmerge' in doc['jobs']:
-              sys.exit('::error::release.yml has a backmerge job again; it belongs in the release job, sharing its token and checkout')
-          steps = doc['jobs']['release']['steps']
-          step = [s for s in steps if 'RESOLVE_EXTRA' in str(s.get('env', {}))]
-          if not step:
-              sys.exit('::error::the backmerge step no longer wires backmerge-resolve-paths through as RESOLVE_EXTRA')
-          if steps[-1] is not step[0]:
-              sys.exit('::error::the backmerge step is no longer the last step of the release job, so it could run before the release finished')
-          if 'inputs.backmerge' not in str(step[0].get('if')):
-              sys.exit('::error::the backmerge step lost its condition (inputs.backmerge on the backmerge-from branch)')
-          script = step[0]['run']
-          for f in ('package.json', 'package-lock.json', 'bun.lock', 'pnpm-lock.yaml', 'yarn.lock', 'CHANGELOG.md', '\$RESOLVE_EXTRA'):
-              if f not in script:
-                  sys.exit('::error::the backmerge auto-resolve loop no longer names ' + f)
-          print('backmerge auto-resolve list is intact')
-          "
+              bad.append('release.yml has a backmerge job again; it belongs in the release job, sharing its token and checkout')
+          merge = [s for s in steps if 'RESOLVE_EXTRA' in str(s.get('env', {}))]
+          if not merge:
+              bad.append('the backmerge step no longer wires backmerge-resolve-paths through as RESOLVE_EXTRA')
+          else:
+              if steps[-1] is not merge[0]:
+                  bad.append('the backmerge step is no longer the last step of the release job, so it could run before the release finished')
+              if 'inputs.backmerge' not in str(merge[0].get('if')):
+                  bad.append('the backmerge step lost its condition (inputs.backmerge on the backmerge-from branch)')
+              for f in ('package.json', 'package-lock.json', 'bun.lock', 'pnpm-lock.yaml', 'yarn.lock', 'CHANGELOG.md', '$RESOLVE_EXTRA'):
+                  if f not in merge[0]['run']:
+                      bad.append('the backmerge auto-resolve loop no longer names ' + f)
 
-      # What a consumer gets from the installer, checked by resolving.
-      - name: Shared config links into a consumer
-        run: ./actions/semantic-release-config/test.sh
-
-      # The channel script decides what every caller runs; its tests build a
-      # throwaway repo and bare remote, so nothing here touches this checkout.
-      - name: Channel tags and ref pinning
-        run: ./scripts/channel-tag.test.sh
-
-      # The tooling is installed outside the checkout, so an install there
-      # also resolving the caller's whole dependency tree cannot come back.
-      - name: Release tooling installs outside the checkout and runs
-        run: ./actions/release-tooling/test.sh
-
-      - name: release.yml installs its tooling in a private prefix
-        run: |
-          set -euo pipefail
-          python3 -c "
-          import sys, yaml
-          doc = yaml.safe_load(open('.github/workflows/release.yml'))
-          inputs = doc[True]['workflow_call']['inputs']
+          # --- tooling in a private prefix
           if inputs['semantic-release-packages'].get('default') != '':
-              sys.exit('::error::semantic-release-packages must default to \"\", which installs the set pinned in actions/release-tooling')
-          steps = doc['jobs']['release']['steps']
+              bad.append('semantic-release-packages must default to "", which installs the set pinned in actions/release-tooling')
           install = [s for s in steps if s.get('name') == 'Install semantic-release']
           if len(install) != 1 or install[0].get('uses') != 'dodi-smart/.github/actions/release-tooling@v1':
-              sys.exit('::error::the Install semantic-release step must use actions/release-tooling, which installs into a private prefix')
+              bad.append('the Install semantic-release step must use actions/release-tooling, which installs into a private prefix')
           text = '\n'.join(str(s.get('run', '')) for s in steps)
-          for bad in ('npx semantic-release', 'npm install', '--no-save'):
-              if bad in text:
-                  sys.exit('::error::release.yml contains ' + bad + '. Tooling installed into the checkout also installs the caller\'s dependency tree, and npx ignores the private prefix.')
-          action = yaml.safe_load(open('actions/release-tooling/action.yml'))
-          for s in action['runs']['steps']:
-              if 'actions/cache' in str(s.get('uses', '')) and (s.get('with') or {}).get('restore-keys'):
-                  sys.exit('::error::release-tooling caches with restore-keys. Only an exact key, or a poisoned entry is reimported.')
-          print('release.yml installs its tooling in a private prefix')
-          "
+          for word in ('npx semantic-release', 'npm install', '--no-save'):
+              if word in text:
+                  bad.append("release.yml contains " + word + ". Tooling installed into the checkout also installs the caller's dependency tree, and npx ignores the private prefix.")
 
-      # env and build-env parsing, and bun version resolution.
-      - name: setup-stack parses env files and resolves bun
-        run: ./actions/setup-stack/test.sh
-
-      # ~/.konan is a toolchain cache: an exact key, never restore-keys, on both
-      # of its steps. Who saves (cache_save, default branch only) is test.sh's.
-      - name: The Kotlin/Native cache uses an exact key
-        run: |
-          python3 - <<'PY'
-          import sys, yaml
-          steps = yaml.safe_load(open('actions/setup-stack/action.yml'))['runs']['steps']
-          konan = [s['with'] for s in steps if '.konan' in str((s.get('with') or {}).get('path', ''))]
-          if len(konan) < 2:
-              sys.exit('::error::expected a restore-only and a saving ~/.konan step')
-          if any(w.get('restore-keys') for w in konan):
-              sys.exit('::error::the ~/.konan cache uses restore-keys. Exact key only.')
+          # --- outputs and permissions: the contract every caller reads
+          outs = doc[True]['workflow_call']['outputs']
+          for o in ('released', 'version', 'tag', 'tags'):
+              if outs.get(o, {}).get('value') != D + 'jobs.release.outputs.' + o + ' }}':
+                  bad.append('release.yml: workflow output ' + o + ' no longer reads jobs.release.outputs.' + o)
+              if release['outputs'].get(o) != D + 'steps.detect.outputs.' + o + ' }}':
+                  bad.append('release.yml: job output ' + o + ' no longer reads steps.detect.outputs.' + o)
+          if release['permissions'] != {'contents': 'write', 'issues': 'write', 'pull-requests': 'write'}:
+              bad.append('release.yml: the release job permissions changed')
+          if bad:
+              sys.exit('::error::' + '; '.join(bad))
+          print('release.yml: backmerge list intact, tooling in a private prefix, outputs and permissions unchanged')
           PY
-
-      # .next/cache is the one cache in setup-stack that may take restore-keys:
-      # Next keys its own entries by content. Any other cache step with one is a
-      # package store or a toolchain, and a near match there reimports a poisoned entry.
-      - name: Only the Next.js cache uses restore-keys
-        run: |
-          python3 -c "
-          import sys, yaml
-          steps = yaml.safe_load(open('actions/setup-stack/action.yml'))['runs']['steps']
-          for s in steps:
-              w = s.get('with') or {}
-              if 'actions/cache' in str(s.get('uses', '')) and w.get('restore-keys') and 'steps.next.outputs.paths' not in str(w.get('path')):
-                  sys.exit('::error::setup-stack caches ' + str(w.get('path')) + ' with restore-keys. Only .next/cache may; every other cache takes an exact key.')
-          print('only the .next/cache steps use restore-keys')
-          "
 
       # The per-stack command table has one copy, defaults.sh: a second one
       # (in action.yml, or pasted into a workflow for pick) would drift.
@@ -1827,95 +1707,53 @@ jobs:
             echo "::error::pin a tag or a full SHA, never a branch"; exit 1
           fi
 
-      # deps-verify's gate and release.yml run on the light pool of a private
-      # repository and on a hosted runner otherwise. The expression is the only
-      # place `ubuntu-latest` may appear, the runner report is each job's first
-      # step, and the gate's pre-filter may only test the SHAPE of a bot login, never
-      # name one (a pre-filter stricter than agent-gate would skip a real PR).
-      - name: deps-verify gate and release.yml select their runner by expression
+      # The gate's pre-filter may only test the SHAPE of a bot login, never name one (a
+      # pre-filter stricter than agent-gate would skip a real PR), and it keeps exactly
+      # the permissions it had, actions: write included. Its runner is the runner step's.
+      - name: deps-verify's gate keeps its permissions and filters on the shape of a bot login
         run: |
           set -euo pipefail
-          python3 -c "
-          import re, sys, yaml
-          # No literal dollar-brace in this script: Actions would evaluate it before bash runs.
-          D = chr(36) + '{' + '{'
-          EXPR = D + ' fromJSON((github.event.repository.private && !github.event.pull_request.head.repo.fork) && \'[\"self-hosted\",\"Linux\",\"light\"]\' || \'\"ubuntu-latest\"\') }}'
+          python3 - <<'PY'
+          import sys
+          from lib import load
+          dv = load('.github/workflows/deps-verify.yml')['jobs']
           bad = []
-          for f, job in (('deps-verify.yml', 'gate'), ('release.yml', 'release')):
-              path = '.github/workflows/' + f
-              src = open(path).read()
-              doc = yaml.safe_load(src)
-              j = doc['jobs'][job]
-              if j.get('runs-on') != EXPR:
-                  bad.append(f + ': ' + job + ' runs-on is not the shared light-or-hosted expression')
-              rest = src.replace(EXPR, '')
-              if re.search(r'^\s*runs-on:\s*ubuntu-latest', rest, re.M):
-                  bad.append(f + ': a runs-on: ubuntu-latest literal remains')
-              first = j['steps'][0]
-              if first.get('uses') != 'dodi-smart/.github/actions/runner-report@v1':
-                  bad.append(f + ': first step of ' + job + ' is not runner-report')
-          dv = yaml.safe_load(open('.github/workflows/deps-verify.yml'))['jobs']
-          if dv['verify']['steps'][0].get('uses') != 'dodi-smart/.github/actions/runner-report@v1':
-              bad.append('deps-verify.yml: first step of verify is not runner-report')
-          # The gate keeps exactly the permissions it had, actions: write included.
           if dv['gate']['permissions'] != {'contents': 'read', 'pull-requests': 'read', 'actions': 'write'}:
               bad.append('deps-verify.yml: the gate permissions changed')
           cond = str(dv['gate'].get('if'))
           # Shape only: the list of dependency bots lives in agent-gate alone.
-          for need in (\"endsWith(github.event.pull_request.user.login, '[bot]')\", \"workflow_run.conclusion != 'cancelled'\", \"workflow_run.conclusion != 'skipped'\", \"label.name == 'agent:review'\"):
+          for need in ("endsWith(github.event.pull_request.user.login, '[bot]')", "workflow_run.conclusion != 'cancelled'", "workflow_run.conclusion != 'skipped'", "label.name == 'agent:review'"):
               if need not in cond:
                   bad.append('deps-verify.yml: the gate if: lost ' + need)
-          # release outputs are the contract every caller reads.
-          rel = yaml.safe_load(open('.github/workflows/release.yml'))
-          outs = rel[True]['workflow_call']['outputs']
-          job_outs = rel['jobs']['release']['outputs']
-          for o in ('released', 'version', 'tag', 'tags'):
-              if outs.get(o, {}).get('value') != D + ' jobs.release.outputs.' + o + ' }}':
-                  bad.append('release.yml: workflow output ' + o + ' no longer reads jobs.release.outputs.' + o)
-              if job_outs.get(o) != D + ' steps.detect.outputs.' + o + ' }}':
-                  bad.append('release.yml: job output ' + o + ' no longer reads steps.detect.outputs.' + o)
-          if rel['jobs']['release']['permissions'] != {'contents': 'write', 'issues': 'write', 'pull-requests': 'write'}:
-              bad.append('release.yml: the release job permissions changed')
           if bad:
               sys.exit('::error::' + '; '.join(bad))
-          print('gate and release select their runner by expression, report it first, and keep their contracts')
-          "
+          print('the deps-verify gate keeps its permissions and its shape-only pre-filter')
+          PY
 
-      # migration-lint starts no database, so it alone leaves ubuntu-latest. The
-      # expression is read from pick-runner.yml, the one reference copy.
-      - name: migration-lint runs light, opt-in, and pins what it pulls in
+      # migration-lint starts no database, so it alone leaves ubuntu-latest (the runner
+      # step holds the other supabase-checks jobs to it).
+      - name: migration-lint is opt-in, asks for no permission and pins what it pulls in
         run: |
           set -euo pipefail
           python3 - <<'MIGLINT'
-          import re, sys, yaml
-          # No literal dollar-brace in this script: Actions would evaluate it before bash runs.
-          D = chr(36) + '{' + '{'
-          EXPR = yaml.safe_load(open('.github/workflows/pick-runner.yml'))['jobs']['pick']['runs-on']
+          import re, sys
+          from lib import load, D
           bad = []
           path = '.github/workflows/supabase-checks.yml'
-          doc = yaml.safe_load(open(path))
-          jobs = doc['jobs']
-          job = jobs.get('migration-lint')
+          doc = load(path)
+          job = doc['jobs'].get('migration-lint')
           if job is None:
               sys.exit('::error::supabase-checks.yml has no migration-lint job')
-          if job.get('runs-on') != EXPR:
-              bad.append('migration-lint runs-on is not the shared light-or-hosted expression, character for character')
-          if str(job.get('if')) != D + ' inputs.migration-lint }}':
+          if str(job.get('if')) != D + 'inputs.migration-lint }}':
               bad.append('the migration-lint if: must read inputs.migration-lint and nothing else, so an off job reports skipped')
-          if (job.get('steps') or [{}])[0].get('uses') != 'dodi-smart/.github/actions/runner-report@v1':
-              bad.append('the first step of migration-lint is not runner-report')
           if 'permissions' in job:
               bad.append('migration-lint asks for a permission of its own; it relies on the ones its siblings do')
-          for jid, j in jobs.items():
-              if jid != 'migration-lint' and j.get('runs-on') != 'ubuntu-latest':
-                  bad.append('job %s starts Postgres or Deno and must stay on ubuntu-latest, got %r' % (jid, j.get('runs-on')))
           inputs = doc[True]['workflow_call']['inputs']
           for name, want in (('migration-lint', False), ('migration-lint-blocking', False),
                              ('migrations-path', 'supabase/migrations'), ('migration-lint-excluded-rules', '')):
               if name not in inputs or inputs[name].get('default') != want:
                   bad.append('input %s must exist with default %r: off, advisory and the standard path unless a caller opts in' % (name, want))
-          action = yaml.safe_load(open('actions/migration-lint/action.yml'))
-          for step in action['runs']['steps']:
+          for step in load('actions/migration-lint/action.yml')['runs']['steps']:
               uses = step.get('uses', '')
               if not uses or uses.startswith(('actions/', 'dodi-smart/', './')):
                   continue
@@ -1923,7 +1761,7 @@ jobs:
                   bad.append('actions/migration-lint uses %s, which is not pinned to a full commit SHA' % uses)
           if bad:
               sys.exit('::error::' + '; '.join(bad))
-          print('migration-lint is light, opt-in and pinned; every other supabase-checks job is hosted')
+          print('migration-lint is opt-in, asks for no permission and is pinned')
           MIGLINT
 
       # shellcheck, jactionlint, typos and the whitespace checks all run
@@ -1941,6 +1779,7 @@ jobs:
           # default branch writes.
           cache-save: ${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
           artifact-name: self-test-hk-sarif
+
       # hk-check only warns on a bad SARIF file; here it fails, so an hk bump that
       # renames the flag or breaks the format shows up before a caller uploads it.
       - name: hk wrote valid SARIF

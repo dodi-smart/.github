@@ -1,23 +1,6 @@
-# The end-to-end check of a release, run against the exact release. Publish
-# release dispatches it on `pinned/vX.Y.Z` right after it moves `next`; promote.yml
-# reads the `release-canary` commit status it posts. Why it is shaped this way
-# (a `./` call at the pinned ref, a dispatch rather than a `uses:`, no status
-# meaning "wait") is in AGENTS.md.
-#
-# A dispatch has no pull request, so `changed-files` answers "everything matters"
-# and nothing skips as docs-only. The opt-in checks run on fixtures in
-# .github/canary/ (this repo has no .zavet/ and no React):
-#   - test           writes a small LCOV report, so the coverage job runs.
-#   - zavet          a stand-in vendored CLI with one declared check.
-#   - react-doctor   one component. On a non-PR event the action scans, posts a
-#                    status and exits 0 whatever it finds, so this proves the
-#                    action runs, not that code is clean.
-#   - dependency-check
-#                    skips with "not a pull request" on a dispatch, so it proves
-#                    only that the step resolves and starts. It scans nothing.
-# `commitlint` needs a PR number, so it stays off.
-#
-# Hosted on purpose, like every workflow here: this repo is public.
+# End-to-end run of pr-checks.yml at the exact pinned release, dispatched by
+# Publish release; the `release-canary` status it posts gates promote.yml.
+# Why it is shaped this way: AGENTS.md.
 name: Release canary
 
 on:
@@ -52,9 +35,8 @@ jobs:
       # A stuck job ends the canary red instead of holding the run for 30 minutes.
       timeout-minutes: 10
 
-  # `success` only when the call succeeded; failed, cancelled and skipped post
-  # `failure`. A canary that never gets here leaves no status, which promote.yml
-  # also holds on.
+  # Only a successful call posts `success`. A canary that never gets here leaves
+  # no status, which promote.yml also holds on. `contents: read` is the checkout.
   result:
     name: Post the release-canary status
     needs: [pr-checks]
@@ -62,8 +44,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
+      contents: read
       statuses: write
     steps:
+      - uses: actions/checkout@v7
+        with: { persist-credentials: false }
       - name: Post the status on the pinned commit
         env:
           GH_TOKEN: ${{ github.token }}
@@ -71,13 +56,4 @@ jobs:
           SHA: ${{ github.sha }}
           RESULT: ${{ needs.pr-checks.result }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-        run: |
-          set -euo pipefail
-          state=failure
-          [ "$RESULT" = success ] && state=success
-          gh api "repos/$REPO/statuses/$SHA" \
-            -f state="$state" \
-            -f context=release-canary \
-            -f description="pr-checks result against this release: $RESULT" \
-            -f target_url="$RUN_URL"
-          echo "release-canary: $state on $SHA ($RESULT)" >> "$GITHUB_STEP_SUMMARY"
+        run: ./scripts/release-canary-status.sh

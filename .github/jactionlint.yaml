@@ -27,3 +27,7 @@ ignores:
     file: .github/workflows/self-test.yml
     uses: jdx/mise-action
     reason: self test checks the release config, it never publishes
+  - rule: cache-poisoning
+    file: .github/workflows/self-test.yml
+    uses: actions/setup-node
+    reason: self test checks the release config, it never publishes, so the npm cache feeds nothing that is released

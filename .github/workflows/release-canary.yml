@@ -15,7 +15,7 @@
 #   - dependency-check
 #                    skips with "not a pull request" on a dispatch, so it proves
 #                    only that the step resolves and starts. It scans nothing.
-# `commitlint` needs a PR number and `bundle-report` a Next.js build: both off.
+# `commitlint` needs a PR number, so it stays off.
 #
 # Hosted on purpose, like every workflow here: this repo is public.
 name: Release canary

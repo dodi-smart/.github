@@ -128,18 +128,6 @@ on:
       coverage-min-overall: { type: number, default: 0 }
       coverage-min-changed: { type: number, default: 0 }
 
-      # Next.js only. A sticky comment with the gzip first-load JS per route and in
-      # total, from the manifests of the build. Deltas need a base report: it is
-      # saved from a run on a PUSH to the default branch, so the caller must also
-      # run this workflow on `push` there; the shipped caller template triggers on
-      # pull_request only, and without a push run the comment lists sizes alone.
-      # `bundle-max-increase-kb` fails the run when the total grew by more than
-      # that many kB against the base (0 = report only). `bundle-next-dir` is the
-      # build directory, e.g. `apps/web/.next` in a monorepo.
-      bundle-report:          { type: boolean, default: false }
-      bundle-max-increase-kb: { type: number,  default: 0 }
-      bundle-next-dir:        { type: string,  default: ".next" }
-
       # Applied to EVERY command step, via setup-stack's env-file. This is where
       # build tuning goes: GRADLE_OPTS, JAVA_OPTS, a worker count. Placeholders
       # and tuning only, never secrets. A value that must stay secret has no
@@ -226,9 +214,9 @@ jobs:
           patterns: ${{ inputs.react-doctor-paths }}
 
       # Only when some light job will run: the split `checks`, commitlint, zavet,
-      # react-doctor, coverage or the bundle report.
+      # react-doctor or coverage.
       - id: light
-        if: ${{ (!inputs.single-job && steps.docs.outputs.all-matched != 'true') || inputs.commitlint || inputs.zavet || steps.rd.outputs.matched == 'true' || (steps.docs.outputs.all-matched != 'true' && (inputs.coverage != 'none' || inputs.bundle-report)) }}
+        if: ${{ (!inputs.single-job && steps.docs.outputs.all-matched != 'true') || inputs.commitlint || inputs.zavet || steps.rd.outputs.matched == 'true' || (steps.docs.outputs.all-matched != 'true' && inputs.coverage != 'none') }}
         uses: dodi-smart/.github/actions/pick-runner@v1
         with:
           weight: ${{ inputs.light-weight }}
@@ -449,22 +437,6 @@ jobs:
           build-env-file: ${{ steps.setup.outputs.build-env-file }}
           install:        ${{ steps.setup.outputs.install }}
           build:          ${{ steps.setup.outputs.build }}
-      # The `bundle-report` job posts and holds the write token; this one hands
-      # over what the report reads of the build directory. The directory starts
-      # with a dot, so hidden files are included and the patterns keep the rest of
-      # the build out. A red build uploads nothing.
-      - &bundle-upload
-        if: ${{ inputs.bundle-report }}
-        uses: actions/upload-artifact@v7
-        with:
-          name: pr-checks-bundle-${{ needs.pick.outputs.key }}
-          path: |
-            ${{ inputs.bundle-next-dir }}/*-manifest.json
-            ${{ inputs.bundle-next-dir }}/server/app/**/page_client-reference-manifest.js
-            ${{ inputs.bundle-next-dir }}/static/**/*.js
-          include-hidden-files: true
-          if-no-files-found: warn
-          retention-days: 1
 
   # ---------------------------------------------------------------------------
   # Single-job shape: the same phases in the same order, with the same
@@ -509,7 +481,6 @@ jobs:
           test:           ${{ steps.setup.outputs.test }}
           build:          ${{ steps.setup.outputs.build }}
       - *coverage-upload
-      - *bundle-upload
       - *dependency-author
       - *dependency-check
       - *commitlint
@@ -572,61 +543,6 @@ jobs:
           min-overall: ${{ inputs.coverage-min-overall }}
 
   # ---------------------------------------------------------------------------
-  # The bundle report: like `coverage`, a light job that runs none of the
-  # caller's code (no checkout, no setup-stack). Its base is an exact-key cache
-  # entry, not an artifact, and needs no `actions: read`. AGENTS.md, "`bundle-report`".
-  # ---------------------------------------------------------------------------
-
-  bundle-report:
-    name: Bundle report
-    if: ${{ !cancelled() && inputs.bundle-report && (needs.build.result == 'success' || needs.all.result == 'success') }}
-    needs: [pick, build, all]
-    runs-on: ${{ fromJson(needs.pick.outputs.light) }}
-    timeout-minutes: 10
-    permissions: { contents: read, pull-requests: write }   # pull-requests: the sticky comment
-    steps:
-      - *report-light
-      # An upload that found no files leaves no artifact: say so and carry on, as
-      # the action does for a missing build directory.
-      - id: artifact
-        continue-on-error: true
-        uses: actions/download-artifact@v8
-        with:
-          name: pr-checks-bundle-${{ needs.pick.outputs.key }}
-          path: ${{ runner.temp }}/bundle-next
-      - if: ${{ steps.artifact.outcome != 'success' }}
-        run: echo "::warning title=No bundle report::the build uploaded no files from bundle-next-dir, so there is nothing to measure."
-      # The path is relative to the workspace, so save and restore agree on the
-      # cache version whatever the runner's work directory is.
-      - id: base
-        if: ${{ github.event.pull_request.base.sha != '' }}
-        uses: actions/cache/restore@v6
-        with:
-          path: bundle-base/report.json
-          key: pr-checks-bundle-base-${{ github.event.pull_request.base.sha }}
-          fail-on-cache-miss: false
-      - id: report
-        if: ${{ steps.artifact.outcome == 'success' }}
-        uses: dodi-smart/.github/actions/bundle-report@v1
-        with:
-          next-dir:        ${{ runner.temp }}/bundle-next
-          base-file:       ${{ steps.base.outputs.cache-hit == 'true' && format('{0}/bundle-base/report.json', github.workspace) || '' }}
-          max-increase-kb: ${{ inputs.bundle-max-increase-kb }}
-      - id: stage
-        if: ${{ github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && steps.report.outputs.report-file != '' }}
-        env:
-          REPORT: ${{ steps.report.outputs.report-file }}
-        run: |
-          set -euo pipefail
-          mkdir -p bundle-base
-          cp "$REPORT" bundle-base/report.json
-      - if: ${{ steps.stage.outcome == 'success' }}
-        uses: actions/cache/save@v6
-        with:
-          path: bundle-base/report.json
-          key: pr-checks-bundle-base-${{ github.sha }}
-
-  # ---------------------------------------------------------------------------
   # One stable context, on every push, in both modes. This is the job a branch
   # ruleset should require, never `checks` or `all` (AGENTS.md, "The `pr-checks`
   # job always runs"). Its name is the required status context, so it never
@@ -639,7 +555,7 @@ jobs:
 
   pr-checks:
     name: PR Checks
-    needs: [pick, checks, test, build, all, coverage, zavet, react-doctor, bundle-report]
+    needs: [pick, checks, test, build, all, coverage, zavet, react-doctor]
     if: always()
     runs-on: ${{ fromJSON((github.event.repository.private && !github.event.pull_request.head.repo.fork) && '["self-hosted","Linux","control"]' || '"ubuntu-latest"') }}
     timeout-minutes: 2

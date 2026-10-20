@@ -23,6 +23,16 @@
       "autoReplaceStringTemplate": "package://github.com/jdx/hk/releases/download/v{{{newValue}}}/hk@{{{newValue}}}#"
     },
     {
+      "description": "squawk, pinned in the migration-lint action's install script by the marker comment above its version",
+      "customType": "regex",
+      "managerFilePatterns": [
+        "/^actions/migration-lint/install\\.sh$/"
+      ],
+      "matchStrings": [
+        "# renovate: datasource=(?<datasource>\\S+) depName=(?<depName>\\S+)\\s+SQUAWK_VERSION=\"(?<currentValue>v\\d+\\.\\d+\\.\\d+)\""
+      ]
+    },
+    {
       "description": "The react-doctor version the action and its workflow default to, read from the trailing renovate marker on each default",
       "customType": "regex",
       "managerFilePatterns": [
@@ -51,6 +61,14 @@
         "aqua:jdx/hk"
       ],
       "groupName": "hk"
+    },
+    {
+      "description": "squawk is what migration-lint runs for every caller, so a bump changes callers and releases like any chore(deps). Listed after the custom.regex rule above so it wins",
+      "matchPackageNames": [
+        "sbdchd/squawk"
+      ],
+      "semanticCommitType": "chore",
+      "semanticCommitScope": "deps"
     },
     {
       "description": "A react-doctor bump changes what every caller's scan runs, so it must release, unlike the lint tools above. Later rules win, so this overrides ci(self-test) with the chore(deps) this repo releases on",

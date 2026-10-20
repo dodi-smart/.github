@@ -74,7 +74,7 @@ caller keeps working.
 | `supabase-deploy.yml` | called after `release.yml` | Pushes a Supabase project's schema and functions for the tag a release just cut |
 | `react-doctor.yml` | pull request, React repos | Static analysis of React/TS source. Advisory by default, on a pinned React Doctor version that Renovate bumps here (`version` overrides it). `pr-checks.yml` can run it as a job instead (`react-doctor: true`) |
 | `zavet-check.yml` | pull request | Knowledge-layer checks, for repos that have one. Report-only on dependency and automation bot PRs. `pr-checks.yml` can run it as a job instead (`zavet: true`) |
-| `supabase-checks.yml` | pull request, Supabase repos | Deno edge-function check, generated-types check, pgTAP tests. Hosted only. |
+| `supabase-checks.yml` | pull request, Supabase repos | Deno edge-function check, generated-types check, pgTAP tests, and an opt-in squawk lint of the migrations a pull request changed. The jobs that start Postgres are hosted only; the lint runs on the light pool |
 | `pick-runner.yml` | called by the others | Resolves a runner weight to a `runs-on` selector. Static: no API call, no token |
 
 `release.yml` reports what it did through `workflow_call` outputs, so a caller
@@ -244,6 +244,7 @@ The log shows the deployment id and commit before the routes are probed.
 | `actions/lcov-report` | Overall and changed-file line coverage from an LCOV file, posted as a sticky comment, with optional floors. What `pr-checks.yml`'s `coverage: lcov` calls |
 | `actions/bundle-report` | First-load JS per route and in total (gzip) from a Next.js build's manifests, compared with a default-branch report and posted as a sticky comment, with an optional growth limit. Reads Turbopack and webpack builds alike |
 | `actions/changed-files` | A pull request's changed files through the API, with no checkout, and whether any, or every one, match a set of globs. Pure bash: it needs `gh` and nothing else |
+| `actions/migration-lint` | Lints the `*.sql` migrations a pull request added or changed with a pinned squawk, as annotations. Advisory unless `blocking: true`; squawk failing to install or run always fails it. What `supabase-checks.yml`'s `migration-lint` job calls. The caller checks out first |
 | `actions/runner-report` | Writes which runner a job got (name, pool, labels, OS, image, queue time) to the job summary and a notice, or with `mode: run` a "Where it ran" table for every job of the run. Needs `actions: read` for queue time; without it the runner is still named. Never fails the job |
 | `actions/run-phases` | Runs a job's install, lint, design-lint, typecheck, test, build and smoke commands as timed phases, each in its own shell, and writes a timing and peak-memory table to the job summary. `log-dir` also writes each phase's output to a file; `keep-going: true` runs every phase and the `failed` output lists the ones that failed. The `peak-rss` output is the largest per-phase peak memory in MiB. What `pr-checks.yml` and `deps-verify.yml` run their commands with |
 | `actions/wait-for-deployment` | Waits for the frontend host's successful GitHub Deployment of the checked-out commit, or for a route to report its sha. What `supabase-deploy.yml`'s health check calls |
@@ -262,8 +263,10 @@ request, no `patterns`, an empty or unreadable list, and a list at the API's
 3000-file cap, which is cut off. `all-matched` is the opposite claim, for a
 skip that needs every file inside the paths (a docs-only change): it is `true`
 only when the whole list was read and every file matches, and `false` on every
-one of those doubts. Skip work on `all-matched` only when it is `true`. The
-token needs `pull-requests: read`.
+one of those doubts. Skip work on `all-matched` only when it is `true`.
+`complete` is for a caller that works from `files` itself: `true` only when the
+whole list was read (a pull request, no API error, not empty, below the cap),
+whatever `patterns` is. The token needs `pull-requests: read`.
 
 ```yaml
 - id: changes
@@ -813,11 +816,14 @@ content hash, and `setup-stack` already wires it up.
 
 `supabase-checks.yml` covers the Supabase-side checks a bun/node `pr-checks.yml`
 run never touches: a Deno edge-function check, a generated-types check, and
-pgTAP tests. It runs on `ubuntu-latest` only, with no runner picker — the
-self-hosted fleet runs jobs inside containers on a shared daemon, so `supabase
-db start` publishes postgres's ports on the HOST while the CLI polls the
-CONTAINER's own localhost. `concurrency`, `paths:` and the dispatch-aware draft
-gate stay with you, same as `pr-checks.yml`.
+pgTAP tests, plus an opt-in lint of the migrations a pull request changes. The
+jobs that start Postgres run on `ubuntu-latest` only, with no runner picker —
+the self-hosted fleet runs jobs inside containers on a shared daemon, so
+`supabase db start` publishes postgres's ports on the HOST while the CLI polls
+the CONTAINER's own localhost. `migration-lint` starts no database and only
+reads files, so it runs on the light pool of a private repo and on hosted
+otherwise. `concurrency`, `paths:` and the dispatch-aware draft gate stay with
+you, same as `pr-checks.yml`.
 
 | Input | Default | Meaning |
 |---|---|---|
@@ -827,6 +833,10 @@ gate stay with you, same as `pr-checks.yml`.
 | `seed-check` | `false` | Re-apply `supabase/seed.sql` after `db start` to prove it is re-runnable. |
 | `deno-dir` | `""` | Directory of Deno-only source, e.g. `supabase/functions`. Empty disables the `deno` job. |
 | `pgtap` | `false` | Run `supabase test db` in its own job. |
+| `migration-lint` | `false` | Lint the migrations a pull request adds or changes with [squawk](https://squawkhq.com), in its own job. Off reports the job as skipped. |
+| `migrations-path` | `supabase/migrations` | The one directory `migration-lint` lints. Not `migrations-paths` (plural): that is the list of paths whose change starts the `types` and `pgtap` jobs. Only `*.sql` files the pull request added, modified or renamed under this path are linted, so a migration already applied never fails a pull request. |
+| `migration-lint-excluded-rules` | `""` | squawk rule names to skip, separated by commas or whitespace. Passed as `--exclude`, which replaces `excluded_rules` in the repo's `.squawk.toml`; every other setting in that file (`pg_version`, `assume_in_transaction`, `excluded_paths`) still applies. |
+| `migration-lint-blocking` | `false` | `false` reports findings as warnings and the job stays green, so the baseline is visible first. `true` fails the job on any finding. squawk failing to install or run fails it either way. |
 | `deno-version` | `v2.x` | Passed straight to `denoland/setup-deno`. |
 | `timeout-minutes` | `30` | Per job. |
 
@@ -841,6 +851,16 @@ run pulls them, since a cache saved on a pull request is visible to that pull
 request alone. Run these checks on pushes to the default branch as well, and every
 pull request reads what those runs saved.
 
+`migration-lint` reads the same file list, installs one pinned squawk binary
+(checked against the release's sha256 digest) into the runner's temp directory,
+and lints the changed migrations only. Findings are annotations on the file and
+line, plus a table in the job summary. Turn `migration-lint-blocking` on once the
+baseline is clean. On any event but a pull request there is no diff, so it
+reports success without linting. When the file list cannot be read in full
+(an API error, or the 3000-file cap) it lints every `*.sql` under the path rather
+than none. It adds no permission: it needs the `pull-requests: read` the other
+jobs already use.
+
 ```yaml
 jobs:
   supabase:
@@ -853,6 +873,9 @@ jobs:
       seed-check: true
       deno-dir: supabase/functions
       pgtap: true
+      # Opt in advisory first; add `migration-lint-blocking: true` once clean.
+      migration-lint: true
+      migration-lint-excluded-rules: require-concurrent-index-creation
 ```
 
 ## Runners

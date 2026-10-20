@@ -1,0 +1,51 @@
+# Lint the SQL migrations a pull request added or changed with squawk.
+# Thin wrapper; the decisions are in lint.sh and the install in install.sh.
+name: Migration lint
+description: >-
+  Lint the `*.sql` migrations a pull request added or changed with a pinned
+  squawk, as annotations. The caller checks out first.
+
+inputs:
+  migrations-path:
+    description: >-
+      Directory of migrations. Only the pull request's added, modified and
+      renamed `*.sql` files under it are linted, so a migration already applied
+      never fails a pull request.
+    default: supabase/migrations
+  excluded-rules:
+    description: >-
+      squawk rule names to skip, comma or whitespace separated. Passed as
+      `--exclude`, which replaces `excluded_rules` in a `.squawk.toml`. Every
+      other setting in that file still applies.
+    default: ""
+  blocking:
+    description: >-
+      `true` fails the job on any finding. `false` reports findings as warnings
+      and the job stays green. squawk failing to install or run fails it either
+      way.
+    default: "false"
+  token:
+    description: >-
+      Token that reads the pull request's files (`pull-requests: read`) and
+      downloads the squawk release.
+    default: ${{ github.token }}
+
+runs:
+  using: composite
+  steps:
+    - id: changed
+      uses: dodi-smart/.github/actions/changed-files@v1
+      with:
+        token: ${{ inputs.token }}
+
+    - shell: bash
+      env:
+        MIGRATIONS_PATH: ${{ inputs.migrations-path }}
+        EXCLUDED_RULES:  ${{ inputs.excluded-rules }}
+        BLOCKING:        ${{ inputs.blocking }}
+        NUMBER:          ${{ github.event.pull_request.number }}
+        CHANGED_FILES:   ${{ steps.changed.outputs.files }}
+        LIST_COMPLETE:   ${{ steps.changed.outputs.complete }}
+        GH_TOKEN:        ${{ inputs.token }}
+        ACTION_PATH:     ${{ github.action_path }}
+      run: '"$ACTION_PATH/lint.sh"'

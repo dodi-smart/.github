@@ -329,6 +329,7 @@ Renovate marker, and a bump releases as `chore(deps)`.
 | `actions/app-token` | Mints the org App token for this repo, optionally narrowed; empty when no App is configured |
 | `actions/factory` | The deterministic half of `issue-implement.yml` and `pr-iterate.yml`: the autonomy tier from `Agent mode`, `Risk` and `Effort`, the branch name, round 0's push, the holdout pattern fix rounds give `push-round` (one list per issue, `.factory/holdout.d/<issue>`), and the fix loop's next step |
 | `actions/setup-stack` | Installs a toolchain, resolves cache isolation, supplies conventional commands |
+| `actions/setup-stack/resolve` | Resolves a caller's commands against the stack's with no checkout and no toolchain, by running `defaults.sh`. What `pr-checks.yml`'s `pick` asks whether `test` and `build` have a command |
 | `actions/sticky-comment` | One keyed comment per pull request, rewritten in place on every later run |
 | `actions/deps-intent` | Decides from a dependency PR's diff whether `deps-verify.yml` has anything new to judge. Internal to that workflow |
 | `actions/release-tooling` | Installs semantic-release and its default plugins from a pinned lockfile into a private prefix, cached on the lockfile hash, and puts `semantic-release` on `PATH` |
@@ -574,6 +575,9 @@ collapses it onto the heavy runner.
 Use it for Gradle. Three jobs mean three configuration phases and no shared
 daemon. One job keeps one checkout and one warm `GRADLE_USER_HOME`. The split
 stays the right default for a cheap, independent lint.
+
+A command that resolves to empty is skipped, and for `test` and `build` that
+means the job does not start at all, so no heavy runner is provisioned for it.
 
 `env` (newline `KEY=VALUE`) reaches every command step, which is where build
 tuning like `GRADLE_OPTS` belongs. `build-env` applies to the build step

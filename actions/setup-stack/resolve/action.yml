@@ -1,0 +1,43 @@
+# Composite: a caller's commands resolved against the stack's, with no checkout
+# and no toolchain. It is what pr-checks' `pick` job asks whether `test` and
+# `build` have a command at all, so an empty one never starts a large runner.
+#
+# A composite action is fetched as the whole repo at its ref, so this can run
+# the sibling defaults.sh without a checkout. The per-stack table lives in
+# defaults.sh only; do not copy any of it here. An unknown stack exits 1.
+name: Resolve stack commands
+description: Resolve a caller's commands against the stack's conventional ones, with no checkout.
+
+inputs:
+  stack:
+    description: 'bun | node | gradle | android | flutter | rust | xcode | none'
+    required: true
+  install:     { description: 'Override the install command',     default: '@stack' }
+  lint:        { description: 'Override the lint command',        default: '@stack' }
+  typecheck:   { description: 'Override the typecheck command',   default: '@stack' }
+  test:        { description: 'Override the test command',        default: '@stack' }
+  build:       { description: 'Override the build command',       default: '@stack' }
+  design-lint: { description: 'Override the design-lint command', default: '@stack' }
+
+outputs:
+  install:     { description: 'Resolved install command. Empty means skip.',     value: '${{ steps.defaults.outputs.install }}' }
+  lint:        { description: 'Resolved lint command. Empty means skip.',        value: '${{ steps.defaults.outputs.lint }}' }
+  typecheck:   { description: 'Resolved typecheck command. Empty means skip.',   value: '${{ steps.defaults.outputs.typecheck }}' }
+  test:        { description: 'Resolved test command. Empty means skip.',        value: '${{ steps.defaults.outputs.test }}' }
+  build:       { description: 'Resolved build command. Empty means skip.',       value: '${{ steps.defaults.outputs.build }}' }
+  design-lint: { description: 'Resolved design-lint command. Empty means skip.', value: '${{ steps.defaults.outputs.design-lint }}' }
+
+runs:
+  using: composite
+  steps:
+    - id: defaults
+      shell: bash
+      env:
+        STACK:         ${{ inputs.stack }}
+        O_INSTALL:     ${{ inputs.install }}
+        O_LINT:        ${{ inputs.lint }}
+        O_TYPECHECK:   ${{ inputs.typecheck }}
+        O_TEST:        ${{ inputs.test }}
+        O_BUILD:       ${{ inputs.build }}
+        O_DESIGN_LINT: ${{ inputs.design-lint }}
+      run: '"$GITHUB_ACTION_PATH/../defaults.sh"'

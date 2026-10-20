@@ -8,7 +8,8 @@
 # then waits on a pull request forever.
 #
 # Light work (lint, typecheck) goes to the light pool and heavy work (build,
-# tests) to the large one. Any step whose command resolves to empty is skipped.
+# tests) to the large one. Any step whose command resolves to empty is skipped,
+# and a `test` or `build` job with no command does not start at all.
 # `single-job: true` collapses the split onto the heavy runner.
 #
 # ONE `pick` job resolves both runners and whether the change is docs-only,
@@ -170,6 +171,8 @@ jobs:
       light:     ${{ steps.light.outputs.runner }}
       heavy:     ${{ steps.heavy.outputs.runner }}
       docs_only: ${{ steps.docs.outputs.all-matched }}
+      has_test:  ${{ steps.cmds.outputs.test != '' }}
+      has_build: ${{ steps.cmds.outputs.build != '' }}
       react_doctor: ${{ inputs.react-doctor && steps.rd.outputs.matched == 'true' }}
       key:       ${{ steps.key.outputs.key }}
     steps:
@@ -188,6 +191,16 @@ jobs:
           for t in gh jq python3; do
             command -v "$t" >/dev/null || echo "::warning title=Runner is missing $t::changed-files needs $t, so docs-only detection and the React Doctor path filter will not work on this runner."
           done
+
+      # Whether `test` and `build` have a command, so an empty one never starts a
+      # large runner. Bash only, no checkout. An unknown stack fails `pick` here,
+      # earlier than it used to fail inside `checks`.
+      - id: cmds
+        uses: dodi-smart/.github/actions/setup-stack/resolve@v1
+        with:
+          stack: ${{ inputs.stack }}
+          test:  ${{ inputs.test }}
+          build: ${{ inputs.build }}
 
       # `all-matched` is a positive claim, never a fallback: it is `true` only
       # when the whole list was read and every file matches `docs-only-paths`.
@@ -372,7 +385,7 @@ jobs:
           number: ${{ github.event.pull_request.number }}
 
   test:
-    if: ${{ !inputs.single-job && needs.pick.outputs.docs_only != 'true' }}
+    if: ${{ !inputs.single-job && needs.pick.outputs.docs_only != 'true' && needs.pick.outputs.has_test == 'true' }}
     needs: [pick]
     runs-on: ${{ fromJson(needs.pick.outputs.heavy) }}
     timeout-minutes: ${{ inputs.timeout-minutes }}
@@ -416,7 +429,7 @@ jobs:
   # phase only, into that phase's own shell and not $GITHUB_ENV, which refuses
   # NODE_OPTIONS outright, and NODE_OPTIONS is what a Next.js build needs here.
   build:
-    if: ${{ !inputs.single-job && needs.pick.outputs.docs_only != 'true' }}
+    if: ${{ !inputs.single-job && needs.pick.outputs.docs_only != 'true' && needs.pick.outputs.has_build == 'true' }}
     needs: [pick]
     runs-on: ${{ fromJson(needs.pick.outputs.heavy) }}
     timeout-minutes: ${{ inputs.timeout-minutes }}

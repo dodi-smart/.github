@@ -370,5 +370,23 @@ check "...with an override applied"             'vitest run'    "$(get test STAC
 check "...empty when the repo has no such step"  ''              "$(get build STACK=bun O_BUILD=)"
 check "...needs no GITHUB_OUTPUT"                0               "$(get install STACK=gradle >/dev/null; echo "$?")"
 
+# --- resolve/action.yml: pick's no-checkout view of the commands, run as the composite runs it.
+rstep="$(python3 -c "import sys, yaml; print(yaml.safe_load(open(sys.argv[1]))['runs']['steps'][0]['run'])" "$HERE/resolve/action.yml")"
+rget() { # key [VAR=VALUE...] -> that output, with only the variables the composite passes
+  local key="$1"; shift
+  : > "$TMP/defaults.out"
+  env -i PATH="$PATH" GITHUB_OUTPUT="$TMP/defaults.out" GITHUB_ACTION_PATH="$HERE/resolve" \
+    O_INSTALL=@stack O_LINT=@stack O_TYPECHECK=@stack O_TEST=@stack O_BUILD=@stack O_DESIGN_LINT=@stack "$@" \
+    bash -c "$rstep" >/dev/null
+  dval "$key"
+}
+# shellcheck disable=SC2016  # the script line is literal text, read back as written
+check "resolve: runs defaults.sh beside it"       '"$GITHUB_ACTION_PATH/../defaults.sh"' "$rstep"
+check "resolve: stack none has no test"           '' "$(rget test STACK=none)"
+check "resolve: ...and no build"                  '' "$(rget build STACK=none)"
+check "resolve: a stack's build when unset"       'bun run build' "$(rget build STACK=bun)"
+check "resolve: an empty build is empty"          '' "$(rget build STACK=bun O_BUILD=)"
+check "resolve: ...and leaves test alone"         'bun run test:run' "$(rget test STACK=bun O_BUILD=)"
+
 echo "setup-stack: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

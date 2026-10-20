@@ -1,3 +1,13 @@
+## [1.39.4](https://github.com/dodi-smart/.github/compare/v1.39.3...v1.39.4) (2026-10-20)
+
+### 🐛 Bug Fixes
+
+* **push-round:** stop head from killing a round with SIGPIPE under pipefail ([2995814](https://github.com/dodi-smart/.github/commit/299581415266353af43df3862cc8ea3879a61adc))
+
+### ⚡ Performance Improvements
+
+* **self-test:** run the shell tests four at a time and fold the duplicate checks into one each ([90c3d78](https://github.com/dodi-smart/.github/commit/90c3d78993eb6de7dc2a001908525913cccaa988))
+
 ## [1.39.3](https://github.com/dodi-smart/.github/compare/v1.39.2...v1.39.3) (2026-10-20)
 
 ### ⚡ Performance Improvements

@@ -338,7 +338,6 @@ Renovate marker, and a bump releases as `chore(deps)`.
 | `actions/lcov-report` | Overall and changed-file line coverage from an LCOV file, posted as a sticky comment, with optional floors. What `pr-checks.yml`'s `coverage: lcov` calls |
 | `actions/kover-floor` | Fails when `kover-report`'s overall coverage is below a minimum, or missing, since that action only marks a breached minimum in its comment. What `pr-checks.yml`'s `coverage: kover` runs |
 | `actions/pr-checks-summary` | The verdict of `pr-checks.yml`'s `PR Checks` job: fails when a job in the `needs` context failed or was cancelled, leaves out named advisory jobs, and prints the result. Internal to that workflow |
-| `actions/bundle-report` | First-load JS per route and in total (gzip) from a Next.js build's manifests, compared with a default-branch report and posted as a sticky comment, with an optional growth limit. Reads Turbopack and webpack builds alike |
 | `actions/hk-check` | Installs the repo's mise tools, runs `hk check --all --sarif`, appends the output to the job summary, warns on a SARIF file that is not valid JSON, and keeps the SARIF as an artifact. What `pr-checks.yml`'s `hk: true` runs |
 | `actions/changed-files` | A pull request's changed files through the API, with no checkout, and whether any, or every one, match a set of globs. Pure bash: it needs `gh` and nothing else |
 | `actions/migration-lint` | Lints the `*.sql` migrations a pull request added or changed with a pinned squawk, as annotations. Advisory unless `blocking: true`; squawk failing to install or run always fails it. What `supabase-checks.yml`'s `migration-lint` job calls. The caller checks out first |
@@ -678,29 +677,6 @@ with:
   coverage: lcov
   coverage-path: lcov.info
 ```
-
-### Bundle report
-
-`bundle-report: true` (Next.js only, default `false`) adds a `Bundle report` job
-on the light pool that posts one sticky comment: the gzip first-load JS of the
-largest-changing routes and the total, with the change against the base. It runs
-none of your code. `build` (or `all`) uploads the manifests and chunks of the
-build directory, and the job reads them. A red build uploads nothing.
-
-| Input | Default | Meaning |
-|---|---|---|
-| `bundle-report` | `false` | Turn the report on |
-| `bundle-max-increase-kb` | `0` | Fail the run when the total grew by more than this many kB against the base. `0` is report only. Never checked without a base |
-| `bundle-next-dir` | `.next` | The build directory, for example `apps/web/.next` in a monorepo |
-
-Deltas need a base report, and the base is saved by a run on a **push to the
-default branch**. The shipped caller template triggers on `pull_request` only, so
-add a `push` trigger for your default branch to the caller. Without it the
-comment lists sizes with no deltas and says so, and the job never fails for the
-missing base. The base is a cache entry keyed on the commit, which a pull
-request reads under its base commit; the cache is per repository, as GitHub
-scopes it. A pull request not based on a commit that has a saved report also gets sizes
-only.
 
 ### When `build` starts
 

@@ -1,3 +1,9 @@
+## [1.39.5](https://github.com/dodi-smart/.github/compare/v1.39.4...v1.39.5) (2026-10-20)
+
+### 🐛 Bug Fixes
+
+* **pr-checks:** skip commitlint on a run with no pull request ([5176405](https://github.com/dodi-smart/.github/commit/5176405289c8073f8b561198e18fe4678a8dfa85))
+
 ## [1.39.4](https://github.com/dodi-smart/.github/compare/v1.39.3...v1.39.4) (2026-10-20)
 
 ### 🐛 Bug Fixes

@@ -1,3 +1,22 @@
+## [1.31.0](https://github.com/dodi-smart/.github/compare/v1.30.5...v1.31.0) (2026-10-20)
+
+### ✨ Features
+
+* **bundle-report:** add a first-load JS report action for Next.js builds ([b9a398d](https://github.com/dodi-smart/.github/commit/b9a398de20934bb140bf9e50a307f6c9e2df70b7))
+* **commitlint:** ship an org preset, read the config at the base sha, pin extends ([007f9ec](https://github.com/dodi-smart/.github/commit/007f9ecc6b658fd1fcadede9fd1cd824092f2a33)), references [#103](https://github.com/dodi-smart/.github/issues/103) [#104](https://github.com/dodi-smart/.github/issues/104)
+* **run-phases:** record each phase's peak memory in the summary and a peak-rss output ([00456d6](https://github.com/dodi-smart/.github/commit/00456d6832b8d05ec43f3b7f3f9e982103156dcf)), references [#102](https://github.com/dodi-smart/.github/issues/102)
+
+### 🐛 Bug Fixes
+
+* **factory:** keep the agent's commit trailers on round commits ([de4b7b5](https://github.com/dodi-smart/.github/commit/de4b7b572e386de63d484fb7063e83536776e368)), closes [#146](https://github.com/dodi-smart/.github/issues/146)
+* **lcov-report:** truncate a below-floor figure so it never prints as the floor ([2c3d633](https://github.com/dodi-smart/.github/commit/2c3d63353b983da6a98623f77d2740f19a9b89d1)), references [#109](https://github.com/dodi-smart/.github/issues/109)
+* **react-doctor:** pin the scanner to an exact version that Renovate bumps ([f23361a](https://github.com/dodi-smart/.github/commit/f23361ab4c9cb5e5775912217d676c893fd5b632)), references [#109](https://github.com/dodi-smart/.github/issues/109)
+
+### ⚡ Performance Improvements
+
+* **setup-stack:** save Actions caches only from the default branch, and use RUNNER_PERSISTENT_CACHE when the runner has one ([899ebfa](https://github.com/dodi-smart/.github/commit/899ebfad830a9636c6cef33e14526c8014c692ce)), references [#61](https://github.com/dodi-smart/.github/issues/61)
+* **zavet-check:** install only when a decision or spec declares checks, skip guard walk on promotion PRs ([b5a6cd6](https://github.com/dodi-smart/.github/commit/b5a6cd65b20e4a8864f65658dd47fca3c3aa563b))
+
 ## [1.30.5](https://github.com/dodi-smart/.github/compare/v1.30.4...v1.30.5) (2026-10-20)
 
 ### 🐛 Bug Fixes

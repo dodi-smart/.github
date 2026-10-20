@@ -112,7 +112,7 @@ jobs:
       ci:      ${{ steps.ci.outputs.summary }}
       runner:  ${{ steps.pick.outputs.runner }}
     steps:
-      - uses: dodi-smart/.github/actions/runner-report@v1
+      - uses: dodi-smart/.github/actions/runner-report@pinned/v1.36.0
         with:
           selector: light
 
@@ -122,7 +122,7 @@ jobs:
       # applied `agent:review`. Renovate never does, so deps-verify keeps
       # owning a plain dependency PR and nothing double-posts.
       - id: gate
-        uses: dodi-smart/.github/actions/agent-gate@v1
+        uses: dodi-smart/.github/actions/agent-gate@pinned/v1.36.0
         with:
           labels:        ${{ toJson(github.event.pull_request.labels.*.name) }}
           event-name:    ${{ github.event_name }}
@@ -138,7 +138,7 @@ jobs:
       # list was read and every file is documentation.
       - id: changed
         if: steps.gate.outputs.proceed == 'true'
-        uses: dodi-smart/.github/actions/changed-files@v1
+        uses: dodi-smart/.github/actions/changed-files@pinned/v1.36.0
         with:
           patterns: |-
             **.md
@@ -262,7 +262,7 @@ jobs:
       # gate's own verdict further (no changed files, docs only).
       - id: pick
         if: steps.level.outputs.proceed == 'true'
-        uses: dodi-smart/.github/actions/pick-runner@v1
+        uses: dodi-smart/.github/actions/pick-runner@pinned/v1.36.0
         with:
           weight:             ${{ inputs.runner-weight }}
           labels:             ${{ inputs.runner-labels }}
@@ -281,7 +281,7 @@ jobs:
       id-token: write
       actions: read
     steps:
-      - uses: dodi-smart/.github/actions/runner-report@v1
+      - uses: dodi-smart/.github/actions/runner-report@pinned/v1.36.0
         with:
           selector: ${{ needs.gate.outputs.runner }}
 
@@ -324,7 +324,7 @@ jobs:
       # stops there posts nothing at all. Telling it in the system prompt to always
       # post did not hold. A file the job requires does.
       - id: agent
-        uses: dodi-smart/.github/actions/run-agent@v1
+        uses: dodi-smart/.github/actions/run-agent@pinned/v1.36.0
           # Two prompts, one step. `full` runs the code-review plugin on opus over
           # the whole pull request. `scoped` reviews a handful of automation
           # commits from a precomputed diff, which sonnet and a plain prompt do
@@ -534,7 +534,7 @@ jobs:
           [ "$recovered" = "true" ] && echo "::warning title=Verdict recovered from the agent's final message::The agent did not write review-body.md; its final message was posted instead. Check that the prompt still asks for the file."
           cat "$RUNNER_TEMP/review-verdict.md"
 
-      - uses: dodi-smart/.github/actions/sticky-comment@v1
+      - uses: dodi-smart/.github/actions/sticky-comment@pinned/v1.36.0
         with:
           key:       pr-review
           number:    ${{ github.event.pull_request.number }}
@@ -588,7 +588,7 @@ jobs:
       # no status, which every consumer reads as "not approved".
       - id: status-token
         if: always() && steps.decide.outcome == 'success'
-        uses: dodi-smart/.github/actions/app-token@v1
+        uses: dodi-smart/.github/actions/app-token@pinned/v1.36.0
         with:
           client-id:   ${{ secrets.GH_APP_CLIENT_ID }}
           private-key: ${{ secrets.GH_APP_PRIVATE_KEY }}

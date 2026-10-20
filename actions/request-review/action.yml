@@ -19,7 +19,7 @@ runs:
   using: composite
   steps:
     - id: token
-      uses: dodi-smart/.github/actions/app-token@v1
+      uses: dodi-smart/.github/actions/app-token@pinned/v1.36.0
       with:
         client-id:   ${{ inputs.client-id }}
         private-key: ${{ inputs.private-key }}

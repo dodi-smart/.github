@@ -298,6 +298,17 @@ automation that opens PRs with `GITHUB_TOKEN` triggers no pull request workflows
 at all, so nothing here would run on its PR. Open them with the org App token
 (`actions/create-github-app-token`) instead.
 
+**`actions/zavet-check`: lazy install and promotion PRs.** Nothing is installed
+unless a decision or spec declares `checks:` and the CLI is vendored: a repo
+whose decisions and specs carry no checks skips `setup-stack` and the install
+(yq still installs when the CLI is present, because guards read frontmatter
+with it). A declared check with no CLI still fails closed. The
+`integration-branch` input (default `develop`, `""` turns it off) names the
+branch whose promotion PRs, a same-repo head from that branch into another,
+walk no guard commits: they already passed the guard wall on their own pull
+requests and are logged as `skip (promotion)`. A commit pushed straight to that
+branch is not walked on promotion, so it should require pull requests.
+
 ## What you stop maintaining
 
 Adopting a workflow here removes a class of problem rather than a file.

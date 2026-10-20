@@ -34,6 +34,9 @@ inputs:
   audit:  { description: 'Report-only health sweep', default: 'false' }
   zavet-dir:  { description: 'Directory holding the knowledge layer', default: '.zavet' }
   yq-version: { description: 'mikefarah yq release to install when it is missing', default: 'v4.53.3' }
+  # A PR whose head is this branch is a promotion and its guard commits are not
+  # walked again (promotion.sh has the rule and the cost). "" turns it off.
+  integration-branch: { description: 'Branch whose promotion PRs skip the guard walk, or "" for none', default: 'develop' }
 
   # The toolchain the decision checks THEMSELVES run on. Default `none` suits
   # a repo whose checks are plain shell. A check that shells out to a test
@@ -92,10 +95,22 @@ runs:
           echo "::notice::no $DIR/ in this repository, nothing to check"
         fi
 
+    # Decided once, before anything is installed. need.sh holds the rule (and
+    # why) so test.sh covers it; the steps below read its outputs.
+    - id: need
+      if: steps.present.outputs.yes == 'true'
+      shell: bash
+      env:
+        DIR: ${{ inputs.zavet-dir }}
+        ACTION_PATH: ${{ github.action_path }}
+      run: '"$ACTION_PATH/need.sh" "$DIR" >> "$GITHUB_OUTPUT"'
+
     # mikefarah yq specifically. zavet reads decision frontmatter with it,
     # and the python `yq` of the same name takes different arguments. An
-    # easy and confusing way for every check to report NONE.
-    - if: steps.present.outputs.yes == 'true'
+    # easy and confusing way for every check to report NONE. Needed whenever
+    # the CLI runs (checks, guards and audit all read frontmatter), so it is
+    # gated on the CLI alone, not on declared checks.
+    - if: steps.present.outputs.yes == 'true' && steps.need.outputs.cli == 'true'
       shell: bash
       env:
         YQ: ${{ inputs.yq-version }}
@@ -124,13 +139,12 @@ runs:
         fi
         yq --version
 
-    # Installed before the checks run, because a decision's `checks:` command is
-    # arbitrary and usually belongs to the repo's own toolchain. `none` is a
-    # real value here, so this runs unconditionally and the env file below is
-    # always written; a conditional setup would give the step two code paths
-    # and one of them would rot.
+    # Installed before the checks run, because a `checks:` command is arbitrary
+    # and usually belongs to the repo's own toolchain. Only when `need` says a
+    # check will run. `none` is a real stack value, so once this runs it always
+    # writes the env file.
     - id: setup
-      if: steps.present.outputs.yes == 'true' && inputs.checks == 'true'
+      if: steps.present.outputs.yes == 'true' && inputs.checks == 'true' && steps.need.outputs.install == 'true'
       uses: dodi-smart/.github/actions/setup-stack@v1
       with:
         stack:           ${{ inputs.stack }}
@@ -150,7 +164,7 @@ runs:
     # dependencies would fail for the same reason and blame a decision.
     - name: Install dependencies for the decision checks
       id: install
-      if: steps.present.outputs.yes == 'true' && inputs.checks == 'true' && steps.setup.outputs.install != ''
+      if: steps.present.outputs.yes == 'true' && inputs.checks == 'true' && steps.need.outputs.install == 'true' && steps.setup.outputs.install != ''
       continue-on-error: ${{ steps.scope.outputs.report-only == 'true' }}
       uses: dodi-smart/.github/actions/run-phases@v1
       with:
@@ -165,6 +179,8 @@ runs:
         GH_TOKEN: ${{ github.token }}
         DIR: ${{ inputs.zavet-dir }}
         ENV_FILE: ${{ steps.setup.outputs.env-file }}
+        CLI: ${{ steps.need.outputs.cli }}
+        DECLARED: ${{ steps.need.outputs.declared }}
       run: |
         # `set +e` is REQUIRED and must come first.
         #
@@ -191,16 +207,15 @@ runs:
         # Severity splits on whether anything was actually meant to run:
         # a knowledge layer carrying no `checks:` at all has nothing to verify,
         # while one that declares them and cannot run them is unverified, which
-        # fails closed like any other unmet check.
+        # fails closed like any other unmet check. `need` counted them.
         zavet="$DIR/bin/zavet"
-        if [ ! -x "$zavet" ]; then
-          declared=$(grep -rlE '^checks:' "$DIR/decisions" 2>/dev/null | wc -l | tr -d ' ')
-          if [ "$declared" -eq 0 ]; then
-            echo "::notice::$zavet not present or not executable, and no decision declares checks:. Nothing to run."
-            exit 0
-          fi
-          echo "::error title=Decision checks could not run::$zavet is not present or not executable, but $declared decision(s) declare checks:. Those checks are unverified. The CLI is vendored into the repo, so commit it."
-          { echo "### Decision checks"; echo "Could not run: \`$zavet\` is missing or not executable, while $declared decision(s) declare \`checks:\`."; } >> "$GITHUB_STEP_SUMMARY"
+        if [ "$DECLARED" -eq 0 ]; then
+          echo "::notice::no decision or spec declares checks:. Nothing to run, and nothing was installed."
+          exit 0
+        fi
+        if [ "$CLI" != true ]; then
+          echo "::error title=Decision checks could not run::$zavet is not present or not executable, but $DECLARED decision or spec file(s) declare checks:. Those checks are unverified. The CLI is vendored into the repo, so commit it."
+          { echo "### Decision checks"; echo "Could not run: \`$zavet\` is missing or not executable, while $DECLARED decision or spec file(s) declare \`checks:\`."; } >> "$GITHUB_STEP_SUMMARY"
           exit 1
         fi
 
@@ -237,7 +252,8 @@ runs:
 
     # Guards are per-commit: the trailer belongs to the commit that touched
     # the guarded path, so checking the squashed diff would let one trailer
-    # cover changes it never described.
+    # cover changes it never described. A promotion PR walks nothing: see
+    # promotion.sh for the rule, and why the integration branch must require PRs.
     - id: guards
       if: steps.present.outputs.yes == 'true' && inputs.guards == 'true' && github.event_name == 'pull_request'
       continue-on-error: true
@@ -246,13 +262,23 @@ runs:
         DIR:  ${{ inputs.zavet-dir }}
         BASE: ${{ github.event.pull_request.base.sha }}
         HEAD: ${{ github.event.pull_request.head.sha }}
+        HEAD_REPO:   ${{ github.event.pull_request.head.repo.full_name }}
+        HEAD_REF:    ${{ github.event.pull_request.head.ref }}
+        BASE_REF:    ${{ github.event.pull_request.base.ref }}
+        INTEGRATION: ${{ inputs.integration-branch }}
+        CLI: ${{ steps.need.outputs.cli }}
         ACTION_PATH: ${{ github.action_path }}
       run: |
         set +e            # see the checks step: GitHub's `bash -e` would abort early
         set -uo pipefail
         zavet="$DIR/bin/zavet"
-        if [ ! -x "$zavet" ]; then
+        if [ "$CLI" != true ]; then
           echo "::notice::$zavet not present or not executable, skipping guard check"
+          exit 0
+        fi
+        if "$ACTION_PATH/promotion.sh" "$HEAD_REPO" "$GITHUB_REPOSITORY" "$HEAD_REF" "$BASE_REF" "$INTEGRATION"; then
+          echo "::notice::promotion PR ($HEAD_REF into $BASE_REF): these commits already passed the guard wall on their own pull requests, so none is walked again"
+          git log --format='skip (promotion) %H %s' "$BASE".."$HEAD"
           exit 0
         fi
         blocked=0

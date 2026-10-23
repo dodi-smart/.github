@@ -1,3 +1,10 @@
+## [1.40.0](https://github.com/dodi-smart/.github/compare/v1.39.5...v1.40.0) (2026-10-23)
+
+### ✨ Features
+
+* security hotfix lane, and a release back-merge that cannot fail on version or lock files ([c0372ac](https://github.com/dodi-smart/.github/commit/c0372ac1745ff57a9070df08dd88c12cb4affd0f))
+* **semantic-release:** prereleases commit nothing, and the default config drops the back-merge plugin ([63a1a9b](https://github.com/dodi-smart/.github/commit/63a1a9b9abb24ae46f724e17da46094f6af073cb))
+
 ## [1.39.5](https://github.com/dodi-smart/.github/compare/v1.39.4...v1.39.5) (2026-10-20)
 
 ### 🐛 Bug Fixes

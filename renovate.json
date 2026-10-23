@@ -54,13 +54,14 @@
       ]
     },
     {
-      "description": "The osv-scanner version actions/dependency-check installs: a renovate marker comment, then the pinned version on the next line",
+      "description": "The osv-scanner and syft versions actions/dependency-check and actions/sbom install: a renovate marker comment, then the pinned version on the next line",
       "customType": "regex",
       "managerFilePatterns": [
-        "/^actions/dependency-check/install\\.sh$/"
+        "/^actions/dependency-check/install\\.sh$/",
+        "/^actions/sbom/install\\.sh$/"
       ],
       "matchStrings": [
-        "# renovate: datasource=(?<datasource>[a-z-]+) depName=(?<depName>\\S+)\\nOSV_SCANNER_VERSION=(?<currentValue>\\d+\\.\\d+\\.\\d+)\\n"
+        "# renovate: datasource=(?<datasource>[a-z-]+) depName=(?<depName>\\S+)\\n(?:OSV_SCANNER|SYFT)_VERSION=(?<currentValue>\\d+\\.\\d+\\.\\d+)\\n"
       ],
       "extractVersionTemplate": "^v?(?<version>.+)$"
     }
@@ -84,12 +85,13 @@
       "groupName": "hk"
     },
     {
-      "description": "Each of these is what a shared workflow or action runs for callers (migration-lint, the deploy workflow, the react-doctor scan, dependency-check), so a bump releases like any chore(deps), unlike the other custom.regex pins",
+      "description": "Each of these is what a shared workflow or action runs for callers (migration-lint, the deploy workflow, the react-doctor scan, dependency-check, sbom), so a bump releases like any chore(deps), unlike the other custom.regex pins",
       "matchDepNames": [
         "sbdchd/squawk",
         "firebase-tools",
         "react-doctor",
-        "google/osv-scanner"
+        "google/osv-scanner",
+        "anchore/syft"
       ],
       "semanticCommitType": "chore",
       "semanticCommitScope": "deps"

@@ -68,6 +68,13 @@ on:
         type: string
         default: ""
 
+      # Attach a CycloneDX SBOM of the release commit to the GitHub release of
+      # every tag this run cut (actions/sbom). Off by default: it adds a syft
+      # download and a scan to each release. It never fails the job; see the
+      # action for why. `sbom-exclude` adds globs to the built-in exclude list.
+      sbom:         { type: boolean, default: false }
+      sbom-exclude: { type: string,  default: "" }
+
       node-version:    { type: string, default: "lts/*" }
       bun-version:     { type: string, default: "auto" }
       timeout-minutes: { type: number, default: 30 }
@@ -296,6 +303,17 @@ jobs:
             echo "version=${newest#v}"
             echo "tags=$(jq -Rnc '[inputs]' <<<"$version_tags")"
           } >> "$GITHUB_OUTPUT"
+
+      # Before the backmerge, which checks out another branch: the SBOM has to
+      # describe the commit the tags point at. Same job, so it reuses the
+      # checkout and the token that already holds contents: write.
+      - if: inputs.sbom && steps.detect.outputs.released == 'true'
+        name: Attach SBOM
+        uses: dodi-smart/.github/actions/sbom@v1
+        with:
+          tags:    ${{ steps.detect.outputs.tags }}
+          exclude: ${{ inputs.sbom-exclude }}
+          token:   ${{ steps.app-token.outputs.token || secrets.GITHUB_TOKEN || github.token }}
 
       # A real merge commit, never a force-push. The release commit must stay
       # reachable from both branches, or the next run recomputes versions from a

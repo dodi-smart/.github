@@ -122,6 +122,29 @@ reasons are in `actions/backmerge/backmerge.sh`.
 | `pr` | URL of the pull request, when one exists |
 | `issue` | URL of the issue filed or reused, when a person is needed |
 
+`release.yml` can attach a software bill of materials to every release it cuts:
+
+| Input | Default | Meaning |
+|---|---|---|
+| `sbom` | `false` | Build a CycloneDX SBOM of the release commit and attach it to the GitHub release of every new tag, as `sbom-<tag>.cdx.json` |
+| `sbom-exclude` | `""` | Extra globs to leave out of the scan, newline-separated, on top of the built-in list (`node_modules`, `.next`, `build`, `dist`, `target`, `.gradle`, `vendor`, `.git`) |
+
+```yaml
+  release:
+    uses: dodi-smart/.github/.github/workflows/release.yml@v1
+    with:
+      sbom: true
+```
+
+The SBOM is read from the lockfiles in the checkout (syft, pinned in
+`actions/sbom`), so it lists what the release declares, transitive dependencies
+included. A stack syft finds no lockfile for, such as a Gradle build without
+dependency locking, gets a warning and no attachment rather than an empty SBOM
+that would claim the release has no dependencies; build its SBOM in the build
+job instead. The step runs after the tags are pushed and never fails the job, so
+a missing SBOM never holds back a deploy chained on the release. Check the job
+summary, or the release assets, to confirm it was attached.
+
 When it drives semantic-release itself (no `release-command`), `release.yml`
 installs the tooling into a private prefix under `RUNNER_TEMP`, never into the
 checkout, so the caller's own dependency tree is not installed alongside it.
@@ -353,6 +376,7 @@ Renovate marker, and a bump releases as `chore(deps)`.
 | `actions/target-guard` | Fails a pull request into the release branch (`main`, when it is not the default branch) unless it is the default branch merged in, or a security patch (`fix/security-*` or Renovate's `[SECURITY]` update, a conventional `fix`, no `feat` or breaking commit) in a repo whose `security_hotfix` property is `enabled`. Outputs `verdict` (`skip`, `release`, `lane`, `reject`) and `reason`. Anything it cannot read is a reject. Needs `gh`, `jq` and metadata plus pull-requests read. What `pr-checks.yml`'s `pick` job runs; see [The release branch only gets releases](#the-release-branch-only-gets-releases) |
 | `actions/migration-lint` | Lints the `*.sql` migrations a pull request added or changed with a pinned squawk, as annotations. Advisory unless `blocking: true`; squawk failing to install or run always fails it. What `supabase-checks.yml`'s `migration-lint` job calls. The caller checks out first |
 | `actions/dependency-check` | Scans the lockfiles a pull request changed with osv-scanner and reports only the vulnerabilities it introduced, as a job summary table, with an optional `fail-on` threshold (`none` by default). Skipped for dependency PRs (it classifies its `author` input with `agent-gate`'s `gate.sh kind`). Reports through the job summary; it has no outputs |
+| `actions/sbom` | Builds a CycloneDX SBOM of the checkout with syft and attaches it to the GitHub release of each tag a run cut, as `sbom-<tag>.cdx.json`. Used by `release.yml`'s `sbom` input. Never fails the job: every problem is a warning and a line in the job summary, and an SBOM with no components is not attached |
 | `actions/runner-report` | Writes which runner a job got (name, pool, labels, OS, image, queue time) to the job summary and a notice, or with `mode: run` a "Where it ran" table for every job of the run. Needs `actions: read` for queue time; without it the runner is still named. Never fails the job |
 | `actions/run-phases` | Runs a job's install, lint, design-lint, typecheck, test, build and smoke commands as timed phases, each in its own shell, and writes a timing and peak-memory table to the job summary. `log-dir` also writes each phase's output to a file; `keep-going: true` runs every phase and the `failed` output lists the ones that failed. The `peak-rss` output is the largest per-phase peak memory in MiB. What `pr-checks.yml` and `deps-verify.yml` run their commands with |
 | `actions/wait-for-deployment` | Waits for the frontend host's successful GitHub Deployment of the checked-out commit, or for a route to report its sha. What `supabase-deploy.yml`'s health check calls |

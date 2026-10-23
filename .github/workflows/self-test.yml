@@ -633,6 +633,7 @@ jobs:
           MARK = re.compile(r'^\s*(?:[^#\s][^\n]*)?# renovate: datasource=(\S+) depName=(\S+)', re.M)
           PINNED = {
               'actions/dependency-check/install.sh': 'google/osv-scanner',
+              'actions/sbom/install.sh': 'anchore/syft',
               'actions/migration-lint/install.sh': 'sbdchd/squawk',
               'actions/react-doctor/action.yml': 'react-doctor',
               '.github/workflows/react-doctor.yml': 'react-doctor',
@@ -1641,7 +1642,7 @@ jobs:
           set -euo pipefail
           python3 - <<'PY'
           import sys
-          from lib import load, D
+          from lib import load, D, uses
           doc = load('.github/workflows/release.yml')
           bad = []
           inputs = doc[True]['workflow_call']['inputs']
@@ -1689,9 +1690,21 @@ jobs:
                   bad.append('release.yml: job output ' + o + ' no longer reads steps.detect.outputs.' + o)
           if release['permissions'] != {'contents': 'write', 'issues': 'write', 'pull-requests': 'write'}:
               bad.append('release.yml: the release job permissions changed')
+
+          # --- sbom: opt-in, after detect, before the backmerge checks out another branch
+          if inputs.get('sbom', {}).get('default') is not False:
+              bad.append('release.yml: the sbom input must exist and default to false, so a caller that does not set it is unchanged')
+          sbom = [i for i, s in enumerate(steps) if uses(s).startswith('dodi-smart/.github/actions/sbom@')]
+          detect = [i for i, s in enumerate(steps) if s.get('id') == 'detect']
+          if len(sbom) != 1:
+              bad.append('release.yml: exactly one step must use actions/sbom')
+          elif detect and not detect[0] < sbom[0] < len(steps) - 1:
+              bad.append('release.yml: the SBOM step must run after detect and before the backmerge, so it describes the tagged commit')
+          elif "steps.detect.outputs.released == 'true'" not in str(steps[sbom[0]].get('if')) or 'inputs.sbom' not in str(steps[sbom[0]].get('if')):
+              bad.append('release.yml: the SBOM step must run only when inputs.sbom is set and a tag was cut')
           if bad:
               sys.exit('::error::' + '; '.join(bad))
-          print('release.yml: backmerge list intact, tooling in a private prefix, outputs and permissions unchanged')
+          print('release.yml: backmerge list intact, tooling in a private prefix, outputs and permissions unchanged, sbom step in place')
           PY
 
       # The per-stack command table has one copy, defaults.sh: a second one

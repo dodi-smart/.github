@@ -1,3 +1,9 @@
+## [1.41.0](https://github.com/dodi-smart/.github/compare/v1.40.0...v1.41.0) (2026-10-23)
+
+### ✨ Features
+
+* **release:** attach a CycloneDX SBOM to each release when asked ([4196fd3](https://github.com/dodi-smart/.github/commit/4196fd366ccec56de09697a3f452bc5c3b14d162))
+
 ## [1.40.0](https://github.com/dodi-smart/.github/compare/v1.39.5...v1.40.0) (2026-10-23)
 
 ### ✨ Features

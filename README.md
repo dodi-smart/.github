@@ -64,7 +64,7 @@ caller keeps working.
 |---|---|---|
 | `pr-checks.yml` | pull request | Lint, typecheck, test, build, per stack |
 | `deps-verify.yml` | Renovate/Dependabot PRs | Reads the PR checks result, reads upstream changelogs, fixes code the update broke, posts a one-comment verdict. Never merges. |
-| `deps-automerge.yml` | verdict labels, `review / verdict`, `renovate/stability-days`, PR Checks done | Merges a dependency bot's minor, patch or lock file PR once it is `deps:verified`, or `deps:fixed` and approved, and the required check is green. No agent |
+| `deps-automerge.yml` | verdict labels, `review / verdict`, `renovate/stability-days`, PR Checks done | Merges a dependency bot's minor, patch or lock file PR once it is `deps:verified`, or `deps:fixed` and approved, and the required check is green, and only into the default branch. A second job merges the clean back-merge PR a hotfix release opens on `chore/backmerge-*`. No agent |
 | `pr-review.yml` | `ready_for_review`, `agent:review` | Second-opinion review, deeper on sensitive paths. Publishes the `review / verdict` status and a `review-verdict.json` artifact |
 | `issue-triage.yml` | issue opened or reopened, `agent:triage`, `@claude triage`, manual dispatch with `issue-number` | Classifies, sets fields, then plans or asks blocking questions |
 | `issue-implement.yml` | `agent:implement`, `@claude implement` | Holdout tests from the plan's acceptance criteria, then code. A step pushes one commit to `feat\|fix\|chore/<n>-<slug>` and opens a draft PR. Requires a plan. |
@@ -97,21 +97,30 @@ uses `modules` or a custom `release-command`.
 
 | Input | Default | Meaning |
 |---|---|---|
-| `backmerge` | `false` | Merge `backmerge-from` into `backmerge-to` after releasing |
+| `backmerge` | `true` | Merge `backmerge-from` into `backmerge-to` after releasing. This step is the one back-merge path (the shared semantic-release config no longer back-merges), and it skips a repo that has no `backmerge-to` branch; set `false` to turn it off |
 | `backmerge-from` | `"main"` | Branch the release was cut from |
 | `backmerge-to` | `"develop"` | Prerelease branch to merge into |
 | `backmerge-resolve-paths` | `""` | Extra paths to auto-resolve toward `backmerge-from` on conflict, newline- or space-separated (e.g. a subdirectory manifest and its lockfile) |
 
-A stable release after a prerelease always conflicts on the files both commits
-rewrote, so the job auto-resolves `package.json`, `package-lock.json`,
-`bun.lock`, `pnpm-lock.yaml`, `yarn.lock` and `CHANGELOG.md` toward
-`backmerge-from` and fails on any other conflict. `backmerge-resolve-paths`
-extends that list; it does not replace it.
+The backmerge is the last step of the `release` job, a call to
+`actions/backmerge`, so it reuses that job's token and checkout. A merge commit,
+never a squash or a rebase, so the release commit and its tag stay reachable
+from `backmerge-to`. The version and lock files a stable release after a
+prerelease always conflicts on are resolved exactly, so `backmerge-to`'s own
+dependency changes survive, and `backmerge-resolve-paths` adds paths resolved
+whole-file toward `backmerge-from`. A release branch carrying only release
+commits is pushed straight to `backmerge-to` with `[skip ci]`; one carrying a
+fix, or needing a regenerated lockfile, goes through a `chore/backmerge-<tag>`
+pull request so its checks run; a conflict beyond the version files opens that
+pull request and an issue for a person. It never fails the job, so a deploy
+chained on `release.yml` still ships the fix just released. The rules and their
+reasons are in `actions/backmerge/backmerge.sh`.
 
-The backmerge is the last step of the `release` job, not a job of its own, so
-it reuses that job's token and checkout. It fetches `backmerge-from` again
-before merging, and a failed backmerge fails the job, so a caller chaining a
-deploy on `release.yml` starts it after the backmerge.
+| `actions/backmerge` output | Meaning |
+|---|---|
+| `result` | `merged`, `pull-request`, `conflict`, `up-to-date`, or `skipped` (`backmerge-to` does not exist on the remote) |
+| `pr` | URL of the pull request, when one exists |
+| `issue` | URL of the issue filed or reused, when a person is needed |
 
 When it drives semantic-release itself (no `release-command`), `release.yml`
 installs the tooling into a private prefix under `RUNNER_TEMP`, never into the
@@ -325,7 +334,7 @@ Renovate marker, and a bump releases as `chore(deps)`.
 | `actions/run-agent` | Invokes the agent with the org's tool allowlist and reporting defaults, on the model `actions/pick-model` chooses for its `stage`. Does not start it when the running workflow file differs from the default branch, says why a run stopped (`why`), and with `report-file` guarantees a valid report file on every path |
 | `actions/pr-facts` | Resolves the PR from a number or a pull_request, workflow_run or status event, and checks it is open, not a fork, and at the expected head |
 | `actions/request-review` | Applies `agent:review` with the App token when the head commit has no `review / verdict` yet |
-| `actions/merge-gate` | The one unattended merge: resolves the PR, runs `agent-gate`, decides by policy (`deps` or `factory`) from labels, the required check, `review / verdict`, Renovate's release-age status, mergeability and commit authors, and merges with the App token (a dependency PR by rebase, an agent PR by squash). A conflicted Renovate PR gets its rebase box ticked instead; a conflicted agent PR waits for the fix loop |
+| `actions/merge-gate` | The one unattended merge: resolves the PR, runs `agent-gate`, decides by policy (`deps`, `factory` or `backmerge`) from labels, the required check, `review / verdict`, Renovate's release-age status, mergeability, the base branch, commit authors and, for a back-merge, the head commit's parents, and merges with the App token (a dependency PR by rebase, an agent PR by squash, a back-merge by merge commit). A conflicted Renovate PR gets its rebase box ticked instead; a conflicted agent PR waits for the fix loop |
 | `actions/push-round` | Checks an agent's commits on a PR branch, regenerates lockfiles, and pushes them as one trailered commit with the App token, or refuses with a reason; its merge mode pushes the update job's merge of the base |
 | `actions/app-token` | Mints the org App token for this repo, optionally narrowed; empty when no App is configured |
 | `actions/factory` | The deterministic half of `issue-implement.yml` and `pr-iterate.yml`: the autonomy tier from `Agent mode`, `Risk` and `Effort`, the branch name, round 0's push, the holdout pattern fix rounds give `push-round` (one list per issue, `.factory/holdout.d/<issue>`), and the fix loop's next step |
@@ -333,6 +342,7 @@ Renovate marker, and a bump releases as `chore(deps)`.
 | `actions/setup-stack/resolve` | Resolves a caller's commands against the stack's with no checkout and no toolchain, by running `defaults.sh`. What `pr-checks.yml`'s `pick` asks whether `test` and `build` have a command |
 | `actions/sticky-comment` | One keyed comment per pull request, rewritten in place on every later run |
 | `actions/deps-intent` | Decides from a dependency PR's diff whether `deps-verify.yml` has anything new to judge. Internal to that workflow |
+| `actions/backmerge` | Merges the release branch back into the integration branch after a release, as a merge commit: directly, or through a `chore/backmerge-<tag>` pull request when it carries a fix or conflicts. Outputs `result`, `pr` and `issue`. What `release.yml`'s last step calls; see `backmerge.sh` |
 | `actions/release-tooling` | Installs semantic-release and its default plugins from a pinned lockfile into a private prefix, cached on the lockfile hash, and puts `semantic-release` on `PATH` |
 | `actions/semantic-release-config` | Links the shared semantic-release config into a consumer's `node_modules` from a private prefix, never from a registry and never into the checkout it came with |
 | `actions/lcov-report` | Overall and changed-file line coverage from an LCOV file, posted as a sticky comment, with optional floors. What `pr-checks.yml`'s `coverage: lcov` calls |
@@ -340,6 +350,7 @@ Renovate marker, and a bump releases as `chore(deps)`.
 | `actions/pr-checks-summary` | The verdict of `pr-checks.yml`'s `PR Checks` job: fails when a job in the `needs` context failed or was cancelled, leaves out named advisory jobs, and prints the result. Internal to that workflow |
 | `actions/hk-check` | Installs the repo's mise tools, runs `hk check --all --sarif`, appends the output to the job summary, warns on a SARIF file that is not valid JSON, and keeps the SARIF as an artifact. What `pr-checks.yml`'s `hk: true` runs |
 | `actions/changed-files` | A pull request's changed files through the API, with no checkout, and whether any, or every one, match a set of globs. Pure bash: it needs `gh` and nothing else |
+| `actions/target-guard` | Fails a pull request into the release branch (`main`, when it is not the default branch) unless it is the default branch merged in, or a security patch (`fix/security-*` or Renovate's `[SECURITY]` update, a conventional `fix`, no `feat` or breaking commit) in a repo whose `security_hotfix` property is `enabled`. Outputs `verdict` (`skip`, `release`, `lane`, `reject`) and `reason`. Anything it cannot read is a reject. Needs `gh`, `jq` and metadata plus pull-requests read. What `pr-checks.yml`'s `pick` job runs; see [The release branch only gets releases](#the-release-branch-only-gets-releases) |
 | `actions/migration-lint` | Lints the `*.sql` migrations a pull request added or changed with a pinned squawk, as annotations. Advisory unless `blocking: true`; squawk failing to install or run always fails it. What `supabase-checks.yml`'s `migration-lint` job calls. The caller checks out first |
 | `actions/dependency-check` | Scans the lockfiles a pull request changed with osv-scanner and reports only the vulnerabilities it introduced, as a job summary table, with an optional `fail-on` threshold (`none` by default). Skipped for dependency PRs (it classifies its `author` input with `agent-gate`'s `gate.sh kind`). Reports through the job summary; it has no outputs |
 | `actions/runner-report` | Writes which runner a job got (name, pool, labels, OS, image, queue time) to the job summary and a notice, or with `mode: run` a "Where it ran" table for every job of the run. Needs `actions: read` for queue time; without it the runner is still named. Never fails the job |
@@ -785,6 +796,30 @@ they were only skipped. It is the one job a branch ruleset should require:
 split mode, where `checks / checks` and `checks / all` do not -- exactly one
 of those two is always skipped depending on `single-job`, so neither can be
 named in a ruleset that has to work for every caller.
+
+### The release branch only gets releases
+
+A repo that develops on `develop` and releases from `main` should send nothing
+else to `main`: a feature merged straight there ships without ever passing
+through `develop`, and a breaking change cuts a major. So a pull request whose
+base is `release-branch` (default `main`) fails the `pick` job, and with it
+`PR Checks`, unless it is one of two things:
+
+- a release: the default branch merged in, from this repository, or
+- a security patch, in a repository that opted in with the `security_hotfix`
+  repository property set to `enabled`. It comes from a `fix/security-*` branch,
+  or is Renovate's `[SECURITY]` update; its title is a conventional `fix` without
+  `!`; and none of its commits is a `feat`, has `!` before the colon, or carries
+  a `BREAKING CHANGE` footer. That is what keeps it a patch release.
+
+The property is off for every repo until someone turns it on, and anything but
+`enabled` counts as off, an API error included. A repo whose default branch is
+`main`, and any pull request to another base, is not touched. The check only
+says no: it makes the pull request unmergeable where a ruleset requires
+`checks / PR Checks` on the release branch, so add that ruleset to a repo that
+opts in. Enabling the lane also needs Dependabot alerts on, Renovate watching
+`main` (see [Renovate](#renovate)), and a way for the patch to flow back into
+`develop` after it releases.
 
 ### One workflow instead of three
 
@@ -1303,7 +1338,9 @@ plugins from a scratch consumer, not by reading the installer's output.
 
 There are two ways to use the config once it is linked. Extend it whole, for
 a single-package repo released from `main` with `develop` as a prerelease
-channel:
+channel. The default plugins are the commit analyzer, release notes,
+changelog, npm, git and github; there is no back-merge plugin, because
+`release.yml` merges the release branch back itself:
 
 ```json
 // .releaserc.json
@@ -1322,6 +1359,13 @@ export default {
   plugins: [commitAnalyzer(), releaseNotes(), changelog, git({ assets: ["pubspec.yaml", "CHANGELOG.md"] }), github()],
 };
 ```
+
+`changelog`, `npm` and `git()` prepare on a stable release only, so a prerelease
+commits nothing (`semantic-release/README.md` has the detail).
+`git({ prerelease: true })` opts out; for
+`changelog` and `npm`, compose the plain plugin with `plugin()`. The named
+`backmerge` export is deprecated and no longer part of the default config; a
+config that still lists it gets both it and the workflow's step.
 
 A consumer installs `semantic-release` and nothing else. Every plugin the
 config names is a dependency of the package itself, and the package arrives
@@ -1426,6 +1470,28 @@ left alone (`updateNotScheduled: false`) and rebased only on a conflict
 At most eight PRs are open at once; security PRs ignore the schedule and the
 limit. Non-major Action bumps wait three days after release
 before a PR opens, then automerge.
+
+### Security hotfix preset
+
+```json5
+{
+  extends: ["github>dodi-smart/.github", "github>dodi-smart/.github:security-hotfix"],
+  baseBranchPatterns: ["develop", "main"],
+}
+```
+
+For a repo on the security hotfix lane (see [The release branch only gets
+releases](#the-release-branch-only-gets-releases)). `security-hotfix.json` makes
+a vulnerability update a `fix`, so it cuts a patch release, and switches off
+every other update whose base is `main`, so `main` gets security PRs only.
+
+The repo has to set `baseBranchPatterns` itself: a repo's own setting wins over
+a preset, and the default preset pins `["develop"]`, so the preset cannot add
+`main`. Renovate takes vulnerabilities from Dependabot alerts, so those must be
+on. A security PR on `main` is never merged unattended: the shared dependency
+automerge only merges into the default branch. The filename is exact for the
+same reason as `default.json`: `github>owner/repo:security-hotfix` fetches
+`security-hotfix.json`.
 
 ### Dependency verification
 
@@ -1578,13 +1644,24 @@ in `actions/merge-gate/gate.sh`. In short: a dependency bot's minor, patch or
 lock file update (`deps-intent`'s `kind`), `deps:verified` or `deps:fixed` with
 an approving `review / verdict`, the required check green on the head, only
 allowed commit authors, no `agent:no-touch`, and `DEPS_AUTOMERGE` not `false`.
-Majors never merge. The merge uses the org App's token, `--rebase`, pinned to
+Majors never merge, and neither does an update whose base is not the repo's
+default branch: a security update opened against the production branch is
+merged by a person, so only the default branch takes unattended dependency
+merges. The merge uses the org App's token, `--rebase`, pinned to
 the head it read. Minor and patch updates also wait three days after release,
 from the preset's `minimumReleaseAge`: the gate holds a PR while Renovate's
 `renovate/stability-days` status is pending, because no branch rule requires
 that status and GitHub would merge past it. A PR that conflicts with its base
 does not merge either; the gate ticks Renovate's rebase box with the App token,
 and the rebased head goes through deps-verify again.
+
+The second job, `backmerge`, merges the PR a hotfix release opens to bring the
+release branch back into the default branch (`chore/backmerge-<tag>`) under
+policy `backmerge`. Its rules are in `gate.sh`; it is a merge commit, never a
+squash or a rebase. `agent:no-touch` still stops it first, and
+`BACKMERGE_AUTOMERGE` set to `false` stops it without touching dependency
+merges (`DEPS_AUTOMERGE` is the other switch). A back-merge that fails any rule
+waits for a person.
 
 The caller listens for every event that can complete the evidence:
 
@@ -1601,7 +1678,8 @@ on:
   workflow_run:
     workflows: [PR Checks]
     types: [completed]
-    branches: ['renovate/**', 'dependabot/**']
+    # 'chore/backmerge-**' lets the back-merge job see its PR's checks finish.
+    branches: ['renovate/**', 'dependabot/**', 'chore/backmerge-**']
 jobs:
   merge:
     uses: dodi-smart/.github/.github/workflows/deps-automerge.yml@v1

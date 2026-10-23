@@ -274,11 +274,16 @@ jobs:
           # merge-gate: a factory PR is squashed, pinned to the head it read.
           mg = yaml.safe_load(open('actions/merge-gate/action.yml'))['runs']['steps']
           run = [x for x in mg if x.get('id') == 'merge'][0]['run']
-          factory, _, deps = run.partition('else')
+          head, _, deps = run.partition('else')
+          factory, _, backmerge = head.partition('elif')
           if '--squash' not in factory or 'factory' not in factory:
               bad.append('merge-gate must squash a factory PR')
           if '--rebase' not in deps or '--squash' in deps:
               bad.append('merge-gate must keep rebasing a dependency PR')
+          # A back-merge keeps the release commit and its tag reachable from the
+          # default branch, so it is a merge commit: never squashed, never rebased.
+          if 'backmerge' not in backmerge or '--merge' not in backmerge or '--squash' in backmerge or '--rebase' in backmerge:
+              bad.append('merge-gate must merge a back-merge PR with a merge commit, never squash or rebase')
           merges = [l for l in run.splitlines() if 'gh pr merge' in l]
           if not merges or any('--match-head-commit' not in l for l in merges):
               bad.append('merge-gate must pin every merge with --match-head-commit')
@@ -1083,6 +1088,7 @@ jobs:
           set -euo pipefail
           python3 -c "
           import glob, os, re, sys
+          from lib import load, uses
           bad = []
           # The merge jobs, named once. A workflow that merges calls merge-gate.
           allowed = {'actions/merge-gate/action.yml'}
@@ -1100,6 +1106,28 @@ jobs:
               bad.append('deps-automerge must not run an agent')
           if 'actions/merge-gate@' not in auto:
               bad.append('deps-automerge must decide through merge-gate')
+          # Two jobs, two policies, two kill switches, and neither takes the other's
+          # branches: the back-merge is a release branch coming back, not a dependency.
+          jobs = load('.github/workflows/deps-automerge.yml')['jobs']
+          def gate_with(job):
+              return [s.get('with') or {} for s in jobs[job]['steps'] if 'actions/merge-gate@' in uses(s)]
+          if set(jobs) != {'merge', 'backmerge'}:
+              bad.append('deps-automerge has jobs ' + ', '.join(sorted(jobs)) + ', expected merge and backmerge')
+          else:
+              g = gate_with('merge'); b = gate_with('backmerge')
+              if len(g) != 1 or g[0].get('policy') != 'deps' or 'DEPS_AUTOMERGE' not in str(g[0].get('kill-switch')):
+                  bad.append('the merge job must call merge-gate once with policy deps and the DEPS_AUTOMERGE kill switch')
+              if len(b) != 1 or b[0].get('policy') != 'backmerge' or 'BACKMERGE_AUTOMERGE' not in str(b[0].get('kill-switch')):
+                  bad.append('the backmerge job must call merge-gate once with policy backmerge and the BACKMERGE_AUTOMERGE kill switch')
+              bcond = str(jobs['backmerge'].get('if'))
+              for need in ('workflow_run.event == ', 'workflow_run.conclusion == ', 'head_repository.full_name == github.repository', 'startsWith(github.event.workflow_run.head_branch, ', 'chore/backmerge-'):
+                  if need not in bcond:
+                      bad.append('the backmerge job condition lacks ' + need)
+              if 'backmerge' in str(jobs['merge'].get('if')):
+                  bad.append('the merge job must not name the back-merge branches')
+              for name, job in jobs.items():
+                  if job.get('permissions') != {'contents': 'read', 'pull-requests': 'read', 'checks': 'read', 'statuses': 'read'}:
+                      bad.append(name + ' must hold read-only permissions')
           preset = re.sub(r'^\\s*//.*$', '', open('default.json').read(), flags=re.M)
           for label in ('deps:minor', 'deps:patch', 'deps:lockfile', 'deps:major'):
               if label not in preset:
@@ -1536,22 +1564,33 @@ jobs:
           sys.exit(bad)
           "
 
-      # The preset is only ever loaded if it is named `default.json`: for a bare
-      # `github>owner/repo` Renovate fetches that one path, and on a 404 falls
+      # A preset is only ever loaded if it is named exactly: for a bare
+      # `github>owner/repo` Renovate fetches `default.json`, and on a 404 falls
       # back to `renovate.json`, which here extends this preset and so resolves
-      # to nothing. That failure is silent -- Renovate keeps opening PRs, on
-      # stock defaults, in every repo extending the preset. Assert the filename,
-      # not just the contents. A JSONC object literal is also a valid JavaScript
-      # expression, so the contents parse without pulling in a parser.
-      - name: Renovate preset parses
+      # to nothing; `github>owner/repo:security-hotfix` fetches
+      # `security-hotfix.json` and no other spelling. That failure is silent --
+      # Renovate keeps opening PRs, on stock defaults, in every repo extending
+      # the preset. Assert the filename, not just the contents. A JSONC object
+      # literal is also a valid JavaScript expression, so the contents parse
+      # without pulling in a parser.
+      - name: Renovate presets parse
         run: |
           node -e '
             const fs = require("fs");
-            if (!fs.existsSync("default.json")) throw new Error("the preset must be named default.json; Renovate fetches no other filename");
-            for (const wrong of ["default.json5", "default.jsonc"]) {
-              if (fs.existsSync(wrong)) throw new Error(wrong + " is never fetched by Renovate, rename it to default.json");
-            }
-            const o = eval("(" + fs.readFileSync("default.json", "utf8") + ")");
+            const load = (name) => {
+              const file = name + ".json";
+              if (!fs.existsSync(file)) throw new Error("the preset must be named " + file + "; Renovate fetches no other filename");
+              for (const wrong of [name + ".json5", name + ".jsonc"]) {
+                if (fs.existsSync(wrong)) throw new Error(wrong + " is never fetched by Renovate, rename it to " + file);
+              }
+              const o = eval("(" + fs.readFileSync(file, "utf8") + ")");
+              for (const e of o.extends || []) {
+                if (e.includes("dodi-smart/.github")) throw new Error(file + " extends " + e + ", which resolves to nothing or pulls the default preset in a second time");
+              }
+              return o;
+            };
+
+            const o = load("default");
             if (!Array.isArray(o.packageRules)) throw new Error("packageRules missing");
             if (!o.labels.includes("deps:update")) throw new Error("deps:update label missing");
             if (o.dependencyDashboard !== true) throw new Error("dependencyDashboard is off, so no repo gets a dashboard issue");
@@ -1559,11 +1598,51 @@ jobs:
             if (o.rebaseWhen !== "conflicted") throw new Error("rebaseWhen must be conflicted: any other value rebases every open branch each time the base moves, and each push reruns the PR checks");
             const actions = o.packageRules.find(r => r.automerge === true && (r.matchManagers || []).includes("github-actions"));
             if (!actions || !actions.minimumReleaseAge) throw new Error("the github-actions automerge rule needs a minimumReleaseAge: without it an upstream tag reaches every consumer within minutes");
-            for (const e of o.extends || []) {
-              if (e.includes("dodi-smart/.github")) throw new Error("the preset extends itself: " + e + ", which resolves to nothing");
-            }
             console.log("preset OK:", Object.keys(o).join(", "));
+
+            const h = load("security-hotfix");
+            const va = h.vulnerabilityAlerts || {};
+            if (va.enabled !== true) throw new Error("vulnerabilityAlerts must be enabled");
+            if (va.semanticCommitType !== "fix") throw new Error("a security update must be a fix, or it cuts no patch release on main");
+            const off = (h.packageRules || []).find(r => (r.matchBaseBranches || []).includes("main") && r.enabled === false && !r.matchUpdateTypes && !r.matchPackageNames && !r.matchManagers);
+            if (!off) throw new Error("no packageRule disables every update on main, so main would get each routine bump too");
+            if (h.baseBranchPatterns) throw new Error("a preset cannot widen baseBranchPatterns, the repo setting wins; say so in the header instead");
+            console.log("security-hotfix preset OK");
           '
+
+      # The target guard is what makes a pull request into the release branch
+      # fail. It must run in `pick` (so a rejected PR books no build runner and
+      # turns `PR Checks` red), and `pick` needs the pull-requests read the
+      # commit list is fetched with.
+      - name: pr-checks runs the target guard in pick
+        run: |
+          python3 - <<'PY'
+          import sys
+          from lib import load, uses, D
+          doc = load('.github/workflows/pr-checks.yml')
+          pick = doc['jobs']['pick']
+          errors = []
+          steps = pick['steps']
+          guard = [i for i, s in enumerate(steps) if 'actions/target-guard@' in uses(s)]
+          if len(guard) != 1:
+              errors.append('the pick job must run actions/target-guard exactly once, found %d' % len(guard))
+          elif 'actions/runner-report@' not in uses(steps[guard[0] - 1]) or guard[0] != 1:
+              errors.append('the target guard must be the step right after the pick job runner-report')
+          else:
+              want = D + 'inputs.release-branch }}'
+              if (steps[guard[0]].get('with') or {}).get('release-branch') != want:
+                  errors.append('the target guard must be given release-branch: ' + want)
+          if pick.get('permissions', {}).get('pull-requests') != 'read':
+              errors.append('pick needs pull-requests: read, which the target guard reads the commits with')
+          inp = doc[True]['workflow_call']['inputs'].get('release-branch')
+          if not inp or inp.get('type') != 'string' or inp.get('default') != 'main':
+              errors.append('pr-checks needs a string input release-branch defaulting to main')
+          if 'pick' not in doc['jobs']['pr-checks']['needs']:
+              errors.append('the PR Checks summary must need pick, or a rejected pull request is not red')
+          if errors:
+              sys.exit('::error::' + ' '.join(errors))
+          print('pick runs the target guard right after runner-report, and PR Checks needs pick')
+          PY
 
       # A malformed release.config.mjs does not fail loudly, it just stops
       # cutting releases, and the next channel stops moving with it.
@@ -1657,17 +1736,30 @@ jobs:
           # App token and makes a second full clone.
           if 'backmerge' in doc['jobs']:
               bad.append('release.yml has a backmerge job again; it belongs in the release job, sharing its token and checkout')
-          merge = [s for s in steps if 'RESOLVE_EXTRA' in str(s.get('env', {}))]
-          if not merge:
-              bad.append('the backmerge step no longer wires backmerge-resolve-paths through as RESOLVE_EXTRA')
+          # The step is a call to actions/backmerge, which holds the mechanics.
+          merge = [s for s in steps if str(s.get('uses', '')).startswith('dodi-smart/.github/actions/backmerge@')]
+          if len(merge) != 1:
+              bad.append('the release job must call actions/backmerge exactly once, found %d' % len(merge))
           else:
-              if steps[-1] is not merge[0]:
+              m = merge[0]
+              if steps[-1] is not m:
                   bad.append('the backmerge step is no longer the last step of the release job, so it could run before the release finished')
-              if 'inputs.backmerge' not in str(merge[0].get('if')):
+              if 'inputs.backmerge' not in str(m.get('if')):
                   bad.append('the backmerge step lost its condition (inputs.backmerge on the backmerge-from branch)')
-              for f in ('package.json', 'package-lock.json', 'bun.lock', 'pnpm-lock.yaml', 'yarn.lock', 'CHANGELOG.md', '$RESOLVE_EXTRA'):
-                  if f not in merge[0]['run']:
-                      bad.append('the backmerge auto-resolve loop no longer names ' + f)
+              w = m.get('with') or {}
+              if w.get('resolve-extra') != D + 'inputs.backmerge-resolve-paths }}':
+                  bad.append('the backmerge step no longer passes backmerge-resolve-paths through as resolve-extra')
+              if w.get('tag') != D + 'steps.detect.outputs.tag }}':
+                  bad.append('the backmerge step no longer passes the detected release tag')
+              if 'steps.app-token.outputs.token' not in str(w.get('token')):
+                  bad.append('the backmerge step no longer passes the App token, so its pull request and issue are not created as the App')
+          # What the script does (the resolve list, a conflict exiting 0 so a deploy
+          # chained on release.yml still ships the fix) is asserted by
+          # actions/backmerge/test.sh; here, only that the action hands it the extra paths.
+          if 'RESOLVE_EXTRA' not in str(load('actions/backmerge/action.yml')['runs']['steps'][0].get('env', {})):
+              bad.append('actions/backmerge no longer wires resolve-extra through as RESOLVE_EXTRA')
+          if inputs['backmerge'].get('default') is not True:
+              bad.append('backmerge must default to true: the step is the one back-merge path, and it skips a repo without the target branch')
 
           # --- tooling in a private prefix
           if inputs['semantic-release-packages'].get('default') != '':

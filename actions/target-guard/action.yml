@@ -1,0 +1,45 @@
+# Fail a pull request aimed at the release branch unless it is a release (the
+# default branch merged in) or, in a repo that opted in, a security patch.
+# Thin wrapper; the rules and the reasons are in guard.sh. It reads the pull
+# request from the event, so there is nothing to pass but the release branch.
+name: Target guard
+description: Reject a pull request into the release branch unless it is a release or an opted-in security patch.
+
+inputs:
+  release-branch:
+    description: 'The branch that only receives releases'
+    default: main
+  repository:
+    description: 'owner/repo'
+    default: ${{ github.repository }}
+  token:
+    description: 'Token to read the repository and the pull request with. Needs metadata and pull-requests: read.'
+    default: ${{ github.token }}
+
+outputs:
+  verdict:
+    description: '`skip` (nothing to guard), `release`, `lane` (a security patch) or `reject`. A reject also fails the step.'
+    value: ${{ steps.guard.outputs.verdict }}
+  reason:
+    description: 'Why, for the log and the summary'
+    value: ${{ steps.guard.outputs.reason }}
+
+runs:
+  using: composite
+  steps:
+    - id: guard
+      shell: bash
+      env:
+        EVENT:          ${{ github.event_name }}
+        REPO:           ${{ inputs.repository }}
+        NUMBER:         ${{ github.event.pull_request.number }}
+        BASE:           ${{ github.event.pull_request.base.ref }}
+        HEAD:           ${{ github.event.pull_request.head.ref }}
+        FORK:           ${{ github.event.pull_request.head.repo.fork }}
+        TITLE:          ${{ github.event.pull_request.title }}
+        AUTHOR:         ${{ github.event.pull_request.user.login }}
+        RELEASE_BRANCH: ${{ inputs.release-branch }}
+        DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        GH_TOKEN:       ${{ inputs.token }}
+        ACTION_PATH:    ${{ github.action_path }}
+      run: '"$ACTION_PATH/guard.sh"'

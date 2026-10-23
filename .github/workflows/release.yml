@@ -52,7 +52,11 @@ on:
         type: boolean
         default: true
 
-      backmerge:      { type: boolean, default: false }
+      # On by default: the backmerge step below is the one back-merge path (the
+      # shared semantic-release config no longer back-merges), and it skips a
+      # repo that has no backmerge-to branch, so a repo with only the release
+      # branch is unaffected.
+      backmerge:      { type: boolean, default: true }
       backmerge-from: { type: string,  default: "main" }
       backmerge-to:   { type: string,  default: "develop" }
 
@@ -118,7 +122,8 @@ jobs:
       # repo outside the rulesets still releases without the App secrets.
       #
       # An App-authored push DOES retrigger workflows, unlike a GITHUB_TOKEN
-      # one. The release commit and the backmerge commit carry [skip ci], so
+      # one. The release commit and a direct backmerge commit carry [skip ci] (a
+      # backmerge pull request deliberately does not, so its checks run), so
       # this changes nothing for the callers that exist, but a caller adding
       # `on: push: tags:` now fires on the tag push and must expect that.
       - id: have-app
@@ -300,44 +305,14 @@ jobs:
       # minted another App token and made another full clone right after this
       # one did both. The checkout already carries the App token, so the push
       # at the end goes out as the App and past the same ruleset.
+      #
+      # What it does, and why a conflict never fails this job: actions/backmerge.
       - if: inputs.backmerge && github.ref == format('refs/heads/{0}', inputs.backmerge-from)
         name: Backmerge
-        env:
-          FROM: ${{ inputs.backmerge-from }}
-          TO:   ${{ inputs.backmerge-to }}
-          RESOLVE_EXTRA: ${{ inputs.backmerge-resolve-paths }}
-        run: |
-          set -euo pipefail
-          git config user.name  "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          # semantic-release just pushed a commit to $FROM, and another push may
-          # have landed since the checkout, so merge what the remote has now.
-          # --force drops release output that was never committed.
-          git fetch origin "$FROM" "$TO"
-          git checkout --force -B "$TO" "origin/$TO"
-          # [skip ci] so the merge does not trigger the release workflow again.
-          #
-          # A stable release after a prerelease ALWAYS conflicts on the version
-          # and lockfiles: the prerelease commit on $TO and the release commit
-          # on $FROM both rewrote them (observed on a bun repo's package.json,
-          # bun.lock and CHANGELOG.md). For those files $FROM is the truth
-          # after a release, so resolve them toward $FROM ("--theirs" during a
-          # merge) and continue; any OTHER conflict is a real one and still
-          # fails the job. The shared semantic-release git plugin's default
-          # assets cover the rest of the lockfile family; backmerge-resolve-
-          # paths adds a caller's own, e.g. a subdirectory manifest.
-          if ! git merge "origin/$FROM" --no-ff -m "chore(release): merge $FROM into $TO [skip ci]"; then
-            for f in package.json package-lock.json bun.lock pnpm-lock.yaml yarn.lock CHANGELOG.md $RESOLVE_EXTRA; do
-              if git status --porcelain=v1 -- "$f" | grep -q '^UU'; then
-                git checkout --theirs -- "$f"
-                git add -- "$f"
-              fi
-            done
-            if git diff --name-only --diff-filter=U | grep -q .; then
-              echo "::error::Backmerge conflicts beyond the version files:"
-              git diff --name-only --diff-filter=U
-              exit 1
-            fi
-            git commit --no-edit
-          fi
-          git push origin "$TO"
+        uses: dodi-smart/.github/actions/backmerge@v1
+        with:
+          from:          ${{ inputs.backmerge-from }}
+          to:            ${{ inputs.backmerge-to }}
+          resolve-extra: ${{ inputs.backmerge-resolve-paths }}
+          tag:           ${{ steps.detect.outputs.tag }}
+          token:         ${{ steps.app-token.outputs.token || secrets.GITHUB_TOKEN || github.token }}

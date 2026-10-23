@@ -1,0 +1,57 @@
+// Renovate preset for a repo that runs the security hotfix lane: a vulnerable
+// dependency can be patched straight on the release branch (`main`) without
+// waiting for everything on the integration branch (`develop`) to be ready.
+//
+// Use it IN ADDITION to the shared default, from the repo's own config:
+//   {
+//     extends: ["github>dodi-smart/.github", "github>dodi-smart/.github:security-hotfix"],
+//     baseBranchPatterns: ["develop", "main"],
+//   }
+//
+// The extending repo must set `baseBranchPatterns` itself. A repo's own setting
+// wins over any preset, and the shared default pins `["develop"]`, so a preset
+// cannot add `main` to it: without the repo's line, Renovate never looks at
+// `main` and this file does nothing.
+//
+// What it does:
+//   - A vulnerability alert is a `fix`, so its PR is titled `fix(deps): ...
+//     [SECURITY]` and cuts a patch release. The shared default types every other
+//     update `chore`.
+//   - `main` gets those security PRs and nothing else. Without the first rule below,
+//     Renovate would open every routine bump twice, once per base branch.
+//
+// What it needs:
+//   - Dependabot alerts enabled on the repo. Renovate reads the vulnerabilities
+//     of the repo from them; with alerts off there are none to patch.
+//   - The `security_hotfix` repository property set to `enabled`. This file
+//     does not read it: the PR Checks target guard does, and rejects a security
+//     PR into `main` otherwise.
+//
+// A security PR into `main` is never merged unattended: the shared dependency
+// automerge only merges into the default branch, so a person merges it.
+//
+// The filename is load-bearing. `github>owner/repo:security-hotfix` fetches
+// `security-hotfix.json` from the repo root, by exactly that name. Comments are
+// fine: Renovate parses a `.json` preset as JSONC.
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+
+  "vulnerabilityAlerts": {
+    "enabled": true,
+    "semanticCommitType": "fix"
+  },
+
+  "packageRules": [
+    {
+      "description": "main receives security updates only. A vulnerability alert is added to the rules after these, without a base branch, so it still applies on main and switches updates back on there for the vulnerable package",
+      "matchBaseBranches": ["main"],
+      "enabled": false
+    },
+    {
+      "description": "A lock file refresh is not a security fix, and would otherwise be the one update type to slip onto main",
+      "matchBaseBranches": ["main"],
+      "matchUpdateTypes": ["lockFileMaintenance"],
+      "enabled": false
+    }
+  ]
+}

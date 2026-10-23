@@ -55,6 +55,17 @@ on:
       light-weight: { type: string, default: "light" }
       heavy-weight: { type: string, default: "heavy" }
 
+      # The branch that only receives releases. A repo that develops on an
+      # integration branch (`develop`) and releases from `main` must keep `main`
+      # for that branch merged in, plus a security-critical patch in a repo that
+      # opted in through the `security_hotfix` repository property. Anything else
+      # aimed at it fails the `pick` job below, so `PR Checks` is red. That makes
+      # the pull request unmergeable only where a ruleset requires `checks / PR
+      # Checks` on the release branch: the check says no, the ruleset enforces it.
+      # Does nothing when the release branch is the repository default branch,
+      # and on any event that is not a pull request.
+      release-branch: { type: string, default: "main" }
+
       # Run every step in ONE job on the heavy runner instead of splitting light
       # work from heavy. Right for Gradle, where three jobs mean three
       # configuration phases and no shared daemon (one job gives one checkout and
@@ -176,6 +187,13 @@ jobs:
       key:       ${{ steps.key.outputs.key }}
     steps:
       - uses: dodi-smart/.github/actions/runner-report@v1
+      # A pull request aimed at the release branch that is neither a release nor
+      # an opted-in security patch fails HERE, so `PR Checks` goes red without
+      # booking a build runner. Does nothing on any other base, and where the
+      # release branch is the default branch.
+      - uses: dodi-smart/.github/actions/target-guard@v1
+        with:
+          release-branch: ${{ inputs.release-branch }}
       # Artifact names are per run and a caller may call this workflow twice, so
       # each call's names carry a hash of its inputs. Not `github.job`: both calls
       # have a job called `test`.

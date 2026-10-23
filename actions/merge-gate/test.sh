@@ -14,11 +14,11 @@ ok()  { printf '  ok   %s\n' "$1"; pass=$((pass + 1)); }
 bad() { printf '  FAIL %s\n' "$1"; fail=$((fail + 1)); }
 
 # $1 name, $2 want merge (true, false, or rebase), then env assignments. The default is a mergeable
-# verified minor with a green check and only allowed authors.
+# verified minor into the default branch with a green check and only allowed authors.
 decide() {
   local name="$1" want="$2" got m r; shift 2
   got="$(env -i PATH="$PATH" POLICY=deps LABELS='["deps:verified","deps:minor"]' TITLE='chore(deps): update x' \
-         CHECK=success REVIEW='' FOREIGN='' KILL='' "$@" "$HERE/gate.sh" decide)"
+         CHECK=success REVIEW='' FOREIGN='' KILL='' BASE_REF=develop DEFAULT_BRANCH=develop "$@" "$HERE/gate.sh" decide)"
   m=$(sed -n 's/^merge=//p' <<<"$got"); r=$(sed -n 's/^reason=//p' <<<"$got")
   [ "$(sed -n 's/^rebase=//p' <<<"$got")" = true ] && m=rebase
   if [ "$m" = "$want" ]; then ok "$(printf '%-58s -> %s (%s)' "$name" "$m" "$r")"
@@ -56,6 +56,40 @@ decide "a conflicted major is not rebased by the gate"            false MERGEABL
 decide "a conflicted needs-manual is not rebased by the gate"     false MERGEABLE=dirty 'LABELS=["deps:needs-manual","deps:minor"]'
 decide "the kill switch beats a rebase"                           false MERGEABLE=dirty KILL=false
 decide "factory ignores the deps age and conflict rules"          true  POLICY=factory 'LABELS=["agent:iterate"]' TIER=merge REVIEW=success AGE=pending
+
+# deps: only the default branch takes unattended dependency merges.
+decide "deps into a non-default base (a security update to main)" false BASE_REF=main
+decide "deps into a release branch, fixed and approved"           false BASE_REF=main 'LABELS=["deps:fixed","deps:patch"]' REVIEW=success
+decide "deps with the base unreadable"                            false BASE_REF=
+decide "deps with the default branch unreadable"                  false DEFAULT_BRANCH=
+decide "deps into main when main is the default branch"           true  BASE_REF=main DEFAULT_BRANCH=main
+decide "factory does not read the base"                           true  POLICY=factory 'LABELS=["agent:iterate"]' TIER=merge REVIEW=success BASE_REF=main
+
+# backmerge: a clean merge of the release branch into the default branch.
+B='POLICY=backmerge'; BL='LABELS=[]'
+decide "backmerge: clean merge, both parents in place, green"     true  "$B" "$BL" HEAD_REF=chore/backmerge-v1.2.3 PARENTS=2 P1_REL=ahead P2_REL=ahead
+decide "backmerge: parents equal to the branch heads"             true  "$B" "$BL" HEAD_REF=chore/backmerge-v1.2.3 PARENTS=2 P1_REL=identical P2_REL=identical
+decide "backmerge: the kill switch is 'false'"                    false "$B" "$BL" HEAD_REF=chore/backmerge-v1.2.3 PARENTS=2 P1_REL=ahead P2_REL=ahead KILL=false
+decide "backmerge: a head branch of another name"                 false "$B" "$BL" HEAD_REF=fix/security-x PARENTS=2 P1_REL=ahead P2_REL=ahead
+decide "backmerge: a branch that only resembles the prefix"       false "$B" "$BL" HEAD_REF=chore/backmerges PARENTS=2 P1_REL=ahead P2_REL=ahead
+decide "backmerge: the bare prefix with no tag"                   false "$B" "$BL" HEAD_REF=chore/backmerge- PARENTS=2 P1_REL=ahead P2_REL=ahead
+decide "backmerge: no head branch"                                false "$B" "$BL" PARENTS=2 P1_REL=ahead P2_REL=ahead
+decide "backmerge: the base is not the default branch"            false "$B" "$BL" HEAD_REF=chore/backmerge-v1 BASE_REF=main PARENTS=2 P1_REL=ahead P2_REL=ahead
+decide "backmerge: the default branch unreadable"                 false "$B" "$BL" HEAD_REF=chore/backmerge-v1 DEFAULT_BRANCH= PARENTS=2 P1_REL=ahead P2_REL=ahead
+decide "backmerge: the required check failed"                     false "$B" "$BL" HEAD_REF=chore/backmerge-v1 PARENTS=2 P1_REL=ahead P2_REL=ahead CHECK=failure
+decide "backmerge: the required check is still running"           false "$B" "$BL" HEAD_REF=chore/backmerge-v1 PARENTS=2 P1_REL=ahead P2_REL=ahead CHECK=in_progress
+decide "backmerge: the required check has not reported"           false "$B" "$BL" HEAD_REF=chore/backmerge-v1 PARENTS=2 P1_REL=ahead P2_REL=ahead CHECK=
+decide "backmerge: the branch conflicts with its base"            false "$B" "$BL" HEAD_REF=chore/backmerge-v1 PARENTS=2 P1_REL=ahead P2_REL=ahead MERGEABLE=dirty
+decide "backmerge: behind its base is not a conflict"             true  "$B" "$BL" HEAD_REF=chore/backmerge-v1 PARENTS=2 P1_REL=ahead P2_REL=ahead MERGEABLE=behind
+decide "backmerge: mergeable state not computed yet"              true  "$B" "$BL" HEAD_REF=chore/backmerge-v1 PARENTS=2 P1_REL=ahead P2_REL=ahead MERGEABLE=unknown
+decide "backmerge: a person pushed a commit on top (one parent)"  false "$B" "$BL" HEAD_REF=chore/backmerge-v1 PARENTS=1 P1_REL=ahead P2_REL=ahead
+decide "backmerge: an octopus merge (three parents)"              false "$B" "$BL" HEAD_REF=chore/backmerge-v1 PARENTS=3 P1_REL=ahead P2_REL=ahead
+decide "backmerge: the parents were not read"                     false "$B" "$BL" HEAD_REF=chore/backmerge-v1
+decide "backmerge: the first parent is not in the base"           false "$B" "$BL" HEAD_REF=chore/backmerge-v1 PARENTS=2 P1_REL=diverged P2_REL=ahead
+decide "backmerge: the first parent is ahead of the base"         false "$B" "$BL" HEAD_REF=chore/backmerge-v1 PARENTS=2 P1_REL=behind P2_REL=ahead
+decide "backmerge: the second parent is not in the release"       false "$B" "$BL" HEAD_REF=chore/backmerge-v1 PARENTS=2 P1_REL=ahead P2_REL=diverged
+decide "backmerge: the second parent could not be compared"       false "$B" "$BL" HEAD_REF=chore/backmerge-v1 PARENTS=2 P1_REL=ahead P2_REL=
+decide "backmerge: every author is allowed to have committed"     true  "$B" "$BL" HEAD_REF=chore/backmerge-v1 PARENTS=2 P1_REL=ahead P2_REL=ahead FOREIGN=someone
 
 F='POLICY=factory'; FL='LABELS=["agent:iterate"]'
 decide "factory: no agent:iterate"                                false "$F" 'LABELS=[]' TIER=merge REVIEW=success
@@ -103,37 +137,79 @@ check "squash-body of nothing is empty" test -z "$(: | "$HERE/gate.sh" squash-bo
 mkdir -p "$WORK/bin"
 printf '%s\n' '#!/usr/bin/env bash' 'echo "$*" >> "$STUB_CALLS"' 'case "$*" in' \
   '  *check-runs*) echo "$STUB_CHECK" ;;' \
+  '  */compare/p1...*) echo "$STUB_P1" ;;' \
+  '  */compare/p2...*) echo "$STUB_P2" ;;' \
+  '  */commits/abc\ --jq*) printf "%s\n" $STUB_PARENTS ;;' \
+  '  "api /repos/o/r --jq"*) echo "$STUB_DEFAULT" ;;' \
   '  *"/commits?"*) printf "%s\n" $STUB_AUTHORS ;;' \
   '  */status*) echo "$STUB_STATUSES" ;;' 'esac' > "$WORK/bin/gh"
 chmod +x "$WORK/bin/gh"
-# run LABELS AUTHORS CHECK REVIEW [AGE] [MERGEABLE]
+# run LABELS AUTHORS CHECK REVIEW AGE [VAR=value ...]. The defaults are a
+# mergeable deps PR into develop (the default branch), whose head has parents p1
+# and p2 that sit in place; trailing assignments override them, as in decide.
 run() {
   : > "$WORK/calls"; : > "$WORK/out"
-  local st; st=$(jq -cn --arg r "$4" --arg a "${5:-}" \
+  local labels="$1" authors="$2" check="$3" st; st=$(jq -cn --arg r "$4" --arg a "$5" \
     '[if $r != "" then {context: "review / verdict", state: $r} else empty end,
       if $a != "" then {context: "renovate/stability-days", state: $a} else empty end]')
-  env -i PATH="$WORK/bin:$PATH" STUB_CALLS="$WORK/calls" STUB_CHECK="$3" STUB_STATUSES="$st" STUB_AUTHORS="$2" \
-    MERGEABLE="${6:-clean}" \
-    POLICY=deps REPO=o/r PR=7 SHA=abc LABELS="$1" TITLE='chore(deps): update x' KILL='' \
+  shift 5
+  env -i PATH="$WORK/bin:$PATH" STUB_CALLS="$WORK/calls" STUB_CHECK="$check" STUB_STATUSES="$st" STUB_AUTHORS="$authors" \
+    STUB_DEFAULT=develop STUB_PARENTS='p1 p2' STUB_P1=ahead STUB_P2=ahead \
+    MERGEABLE=clean BASE_REF=develop DEFAULT_BRANCH=develop \
+    POLICY=deps REPO=o/r PR=7 SHA=abc LABELS="$labels" TITLE='chore(deps): update x' KILL='' \
     REQUIRED_CHECK='checks / PR Checks' ALLOWED_AUTHORS='renovate[bot],dependabot[bot],github-actions[bot]' \
-    GITHUB_OUTPUT="$WORK/out" "$HERE/gate.sh" run > /dev/null 2>&1
+    GITHUB_OUTPUT="$WORK/out" "$@" "$HERE/gate.sh" run > /dev/null 2>&1
 }
-run '["deps:fixed","deps:patch"]' 'renovate[bot] github-actions[bot]' success success
+run '["deps:fixed","deps:patch"]' 'renovate[bot] github-actions[bot]' success success ''
 check "run: a fixed, approved patch by allowed authors merges"   grep -qx 'merge=true' "$WORK/out"
 check "run: the check name is URL-encoded"                       grep -qF 'check_name=checks%20%2F%20PR%20Checks' "$WORK/calls"
-run '["deps:verified","deps:minor"]' 'renovate[bot] someone' success ''
+run '["deps:verified","deps:minor"]' 'renovate[bot] someone' success '' ''
 check "run: a stranger's commit stops it"                        grep -qx 'reason=a commit is by an author this policy does not merge: someone' "$WORK/out"
-run '["deps:minor"]' 'renovate[bot]' success success
+run '["deps:minor"]' 'renovate[bot]' success success ''
 check "run: no verdict label reads nothing else"                 bash -c '! grep -qE "check-runs|commits|status" "$1"' _ "$WORK/calls"
-run '["deps:verified","deps:minor"]' 'renovate[bot]' success ''
+run '["deps:verified","deps:minor"]' 'renovate[bot]' success '' ''
 check "run: verified reads the check and the statuses once"     bash -c 'grep -q check-runs "$1" && [ "$(grep -c "/status" "$1")" = 1 ]' _ "$WORK/calls"
 check "run: and merges"                                          grep -qx 'merge=true' "$WORK/out"
 run '["deps:verified","deps:patch"]' 'renovate[bot]' success '' pending
 check "run: a pending stability-days status holds the merge"     grep -qx 'merge=false' "$WORK/out"
-run '["deps:verified","deps:patch"]' 'renovate[bot]' success '' success dirty
+run '["deps:verified","deps:patch"]' 'renovate[bot]' success '' success MERGEABLE=dirty
 check "run: a conflicted PR asks for a rebase"                   grep -qx 'rebase=true' "$WORK/out"
 run '["deps:fixed","deps:patch"]' 'renovate[bot]' success success success
 check "run: the review is read from the same status read"        grep -qx 'merge=true' "$WORK/out"
+
+# The default branch arrives from pr-facts, and is read only when it is empty.
+# backmerge reads the head's parents and compares each, and no commit authors.
+run '["deps:verified","deps:minor"]' 'renovate[bot]' success '' ''
+check "run: deps takes the default branch it is given"           bash -c '! grep -q -- "^api /repos/o/r --jq" "$1"' _ "$WORK/calls"
+run '["deps:verified","deps:minor"]' 'renovate[bot]' success '' '' DEFAULT_BRANCH=
+check "run: an empty default branch is read from the API"        grep -q -- '^api /repos/o/r --jq' "$WORK/calls"
+check "run: and then merges"                                     grep -qx 'merge=true' "$WORK/out"
+run '["deps:verified","deps:minor"]' 'renovate[bot]' success '' '' BASE_REF=main
+check "run: deps into main (not the default) is held"            grep -qx 'merge=false' "$WORK/out"
+check "run: and says why"                                        grep -q '^reason=a dependency update into main waits for a person' "$WORK/out"
+
+# bm [VAR=value ...]: a back-merge from chore/backmerge-v1.2.3, no labels or statuses.
+bm() { run '[]' '' success '' '' POLICY=backmerge HEAD_REF=chore/backmerge-v1.2.3 "$@"; }
+bm
+check "run: a clean back-merge merges"                           grep -qx 'merge=true' "$WORK/out"
+check "run: it compares each parent with its branch"             bash -c 'grep -q "compare/p1...develop" "$1" && grep -q "compare/p2...main" "$1"' _ "$WORK/calls"
+check "run: it reads the check but no commit authors"            bash -c 'grep -q check-runs "$1" && ! grep -q "pulls/7/commits" "$1"' _ "$WORK/calls"
+bm STUB_P1=identical STUB_P2=identical
+check "run: parents equal to the branch heads merge"             grep -qx 'merge=true' "$WORK/out"
+bm STUB_P1=diverged
+check "run: a first parent outside the base is held"             grep -qx 'merge=false' "$WORK/out"
+bm STUB_P2=diverged
+check "run: a second parent outside the release is held"         grep -qx 'merge=false' "$WORK/out"
+bm STUB_PARENTS=p1
+check "run: a one-parent head is held"                           grep -qx 'merge=false' "$WORK/out"
+bm STUB_CHECK=failure
+check "run: a failed check holds it"                             grep -qx 'merge=false' "$WORK/out"
+bm HEAD_REF=fix/security-x
+check "run: another head branch reads no parents"                bash -c '! grep -q "commits/abc --jq" "$1"' _ "$WORK/calls"
+check "run: and is held"                                         grep -qx 'merge=false' "$WORK/out"
+bm BASE_REF=main
+check "run: a base that is not the default reads no parents"     bash -c '! grep -q "commits/abc --jq" "$1"' _ "$WORK/calls"
+check "run: and is held too"                                     grep -qx 'merge=false' "$WORK/out"
 
 # tick: the rebase request's edit to Renovate's PR body.
 tick() { printf '%b' "$1" | "$HERE/gate.sh" tick; }

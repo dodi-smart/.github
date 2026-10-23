@@ -190,21 +190,66 @@ test("default export shape: branches and plugin list", () => {
     "@semantic-release/npm",
     "@semantic-release/git",
     "@semantic-release/github",
-    "@kilianpaquier/semantic-release-backmerge",
   ]);
+  assert.ok(!names.includes("@kilianpaquier/semantic-release-backmerge"), "the shared release workflow's back-merge step replaces the plugin");
 
   // A consumer installs this package and semantic-release and nothing
   // else, so every plugin any export hands out must be a dependency here,
   // and every one is an absolute path into this package's own tree, so
   // whichever config names it, this copy is the one that loads.
-  for (const entry of [...config.plugins, changelog, npm, git(), github(), backmerge, exec]) {
+  for (const entry of [...config.plugins, changelog, npm, git(), git({ prerelease: true }), github(), backmerge, exec]) {
     const path = Array.isArray(entry) ? entry[0] : entry;
     const name = pluginName(entry);
     assert.ok(name in pkg.dependencies, `"${name}" is used by the config but missing from package.json dependencies`);
     assert.ok(path.startsWith("/"), `"${name}" is handed out as a bare name, which semantic-release resolves from its own directory`);
     assert.ok(existsSync(path), `"${name}" resolves to a file that does not exist: ${path}`);
     assert.notEqual(name, path, "pluginName maps a path back to its package name");
+    // A stable-only entry names the plugin it wraps by absolute path too.
+    if (Array.isArray(entry) && entry[1]?.plugin) {
+      assert.ok(entry[1].plugin.startsWith("/"), `"${name}" is wrapped by bare name`);
+      assert.ok(existsSync(entry[1].plugin), `the plugin wrapped for "${name}" does not exist: ${entry[1].plugin}`);
+    }
   }
+});
+
+test("changelog, npm and git() prepare on a stable release only; the rest run as themselves", () => {
+  const wrapperOf = (entry) => entry[0];
+  const stableOnlyPath = wrapperOf(changelog);
+  assert.ok(stableOnlyPath.endsWith("/stable-only.js"));
+  assert.ok(wrapperOf(npm).endsWith("/stable-only-publish.js"), "npm publishes, so it needs the entry that carries publish and addChannel");
+  assert.equal(wrapperOf(git()), stableOnlyPath);
+
+  // The wrapped plugin and its options are the ones the entries always had.
+  assert.equal(pluginName(changelog), "@semantic-release/changelog");
+  assert.equal(pluginName(npm), "@semantic-release/npm");
+  assert.equal(pluginName(git()), "@semantic-release/git");
+  const { plugin: wrapped, ...options } = changelog[1];
+  assert.equal(pluginName(wrapped), "@semantic-release/changelog");
+  assert.deepEqual(options, { changelogFile: "CHANGELOG.md" });
+  assert.equal(npm[1].npmPublish, false);
+  assert.deepEqual(Object.keys(git()[1]).sort(), ["assets", "message", "plugin"]);
+
+  // The default config uses the wrappers; the other plugins are bare paths or
+  // plain [path, options] entries.
+  const entries = Object.fromEntries(config.plugins.map((e) => [pluginName(e), e]));
+  assert.equal(entries["@semantic-release/changelog"], changelog);
+  assert.equal(entries["@semantic-release/npm"], npm);
+  assert.equal(pluginName(entries["@semantic-release/github"]), "@semantic-release/github");
+  assert.ok(!entries["@semantic-release/github"][0].endsWith("stable-only.js"));
+});
+
+test("git({ prerelease: true }) opts out: the raw plugin, so a prerelease commits", () => {
+  const entry = git({ prerelease: true, assets: ["Cargo.toml"] });
+  assert.equal(pluginName(entry), "@semantic-release/git");
+  assert.ok(entry[0].endsWith("/node_modules/@semantic-release/git/index.js"), entry[0]);
+  assert.deepEqual(entry[1], { assets: ["Cargo.toml"], message: commitMessage });
+  assert.ok(!("prerelease" in entry[1]) && !("plugin" in entry[1]), "options reach the git plugin as it knows them");
+});
+
+test("backmerge stays a named export for a composed config, and is not in the default list", () => {
+  assert.equal(pluginName(backmerge), "@kilianpaquier/semantic-release-backmerge");
+  assert.deepEqual(backmerge[1].targets, [{ from: "main", to: "develop" }]);
+  assert.ok(!config.plugins.includes(backmerge));
 });
 
 test("commitAnalyzer() overrides replace shared rules, so a shared rule can be switched off", async () => {
@@ -227,7 +272,9 @@ test("git() and github() take overrides, so a composed config never needs plugin
   const [, gitDefaults] = git();
   const [, gitOverridden] = git({ assets: ["Cargo.toml"], message });
   assert.equal(gitDefaults.message, commitMessage);
-  assert.deepEqual(gitOverridden, { assets: ["Cargo.toml"], message });
+  const { plugin: wrapped, ...gitOptions } = gitOverridden;
+  assert.equal(pluginName(wrapped), "@semantic-release/git", "git() runs the git plugin, behind the stable-only wrapper");
+  assert.deepEqual(gitOptions, { assets: ["Cargo.toml"], message });
 
   const [, githubDefaults] = github();
   const [, githubMuted] = github({ successComment: false, releasedLabels: false, assets: [] });

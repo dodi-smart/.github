@@ -30,7 +30,7 @@ SEMANTIC_RELEASE_CONFIG_PREFIX="$prefix" "$root/actions/semantic-release-config/
 # shellcheck disable=SC2016 # JavaScript, not shell
 node --input-type=module -e '
   import { createRequire } from "node:module";
-  import { realpathSync } from "node:fs";
+  import { realpathSync, existsSync } from "node:fs";
   const [consumer, given, root] = process.argv.slice(1);
   const prefix = realpathSync(given);
   const req = createRequire(consumer + "/");
@@ -42,13 +42,34 @@ node --input-type=module -e '
   for (const entry of entries) {
     const path = Array.isArray(entry) ? entry[0] : entry;
     if (!path.startsWith(prefix + "/")) throw new Error(`plugin outside the prefix: ${path}`);
+    // A stable-only entry names a wrapper that ships in the package itself and
+    // carries the plugin it wraps in its options; that one is checked against
+    // the pinned version, and the wrapper must exist in the install.
+    const wrapped = Array.isArray(entry) ? entry[1] && entry[1].plugin : undefined;
+    if (wrapped) {
+      if (!existsSync(path)) throw new Error(`wrapper missing from the install: ${path}`);
+      if (!wrapped.startsWith(prefix + "/")) throw new Error(`wrapped plugin outside the prefix: ${wrapped}`);
+    }
     const name = cfg.pluginName(entry);
-    const dir = path.slice(0, path.lastIndexOf(name) + name.length);
+    const target = wrapped || path;
+    const dir = target.slice(0, target.lastIndexOf(name) + name.length);
     const { version } = req(dir + "/package.json");
     if (pinned[name] === undefined) throw new Error(`${name} is not a dependency of the package`);
     if (/^\d/.test(pinned[name]) && version !== pinned[name]) throw new Error(`${name} is ${version}, package.json pins ${pinned[name]}`);
     console.log(`ok ${name} ${version}`);
   }
 ' -- "$consumer" "$prefix" "$root"
+
+# A second run on the same prefix reuses the install: `npm ci` would empty
+# node_modules, so a file left in it survives only when npm did not run. When
+# the manifests it was made from change, it installs again.
+touch "$prefix/node_modules/.sentinel"
+SEMANTIC_RELEASE_CONFIG_PREFIX="$prefix" "$root/actions/semantic-release-config/install.sh" "$root" "$consumer" >/dev/null
+[ -e "$prefix/node_modules/.sentinel" ] \
+  || { echo "FAIL: a second run reinstalled an unchanged prefix"; exit 1; }
+echo stale > "$prefix/.installed-from"
+SEMANTIC_RELEASE_CONFIG_PREFIX="$prefix" "$root/actions/semantic-release-config/install.sh" "$root" "$consumer" >/dev/null
+[ ! -e "$prefix/node_modules/.sentinel" ] \
+  || { echo "FAIL: a changed manifest did not reinstall"; exit 1; }
 
 echo "PASS: shared config links into a consumer"

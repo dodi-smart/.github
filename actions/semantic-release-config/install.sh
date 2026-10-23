@@ -32,10 +32,23 @@ mkdir -p "$prefix/semantic-release"
 # --ignore-scripts: nothing here needs a lifecycle script, and the checkout
 # is not the consumer's trust boundary.
 cp "$root/package.json" "$root/package-lock.json" "$prefix/"
-cp "$root/semantic-release/index.js" "$root/semantic-release/package.json" "$prefix/semantic-release/"
-# In a subshell with the prefix as cwd: `npm ci --prefix` does not reliably
-# read the prefix's own manifests and named the root after the directory.
-(cd "$prefix" && npm ci --omit=dev --ignore-scripts --no-audit --no-fund >/dev/null)
+# Every module the entry point imports ships with it: the stable-only wrappers
+# are loaded by absolute path, so a missing one fails the release, not the install.
+cp "$root"/semantic-release/*.js "$root/semantic-release/package.json" "$prefix/semantic-release/"
+# An install already in the prefix is reused while the manifests it was made
+# from are unchanged. The stamp is written only after `npm ci` succeeds, so a
+# failed install is never mistaken for a good one.
+stamp="$prefix/.installed-from"
+manifests() { cat "$root/package.json" "$root/package-lock.json" "$root/semantic-release/package.json"; }
+if [ -f "$prefix/node_modules/.package-lock.json" ] && cmp -s "$stamp" <(manifests); then
+  echo "semantic-release-config: reusing the install in $prefix"
+else
+  # In a subshell with the prefix as cwd: `npm ci --prefix` does not reliably
+  # read the prefix's own manifests and named the root after the directory.
+  rm -f "$stamp"
+  (cd "$prefix" && npm ci --omit=dev --ignore-scripts --no-audit --no-fund >/dev/null)
+  manifests > "$stamp"
+fi
 
 target="$consumer/node_modules/$name"
 mkdir -p "$(dirname "$target")"

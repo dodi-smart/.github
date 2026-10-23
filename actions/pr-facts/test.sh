@@ -17,9 +17,9 @@ mkdir -p "$WORK/bin"
 printf '%s\n' '#!/usr/bin/env bash' 'echo "$*" >> "$STUB_CALLS"' 'case "$*" in' \
   '  *"/pulls?state=open"*) echo "${STUB_BRANCH_PR:-}" ;;' \
   '  *"/commits/"*"/pulls"*) echo "${STUB_STATUS_PR:-}" ;;' \
-  '  *"/pulls/"*) jq -n --arg s "${STUB_STATE:-open}" --arg r "${STUB_HEAD_REPO:-o/r}" --arg h "${STUB_HEAD:-abc}" \
+  '  *"/pulls/"*) jq -n --arg s "${STUB_STATE:-open}" --arg r "${STUB_HEAD_REPO:-o/r}" --arg h "${STUB_HEAD:-abc}" --arg d "${STUB_DEFAULT_BRANCH:-develop}" \
        '"'"'{number: 7, state: $s, draft: false, title: "chore(deps): x\nmore", user: {login: "renovate[bot]"},
-         head: {sha: $h, ref: "renovate/x", repo: {full_name: $r}}, base: {ref: "develop"}, labels: [{name: "deps:minor"}], mergeable_state: "dirty"}'"'"' ;;' \
+         head: {sha: $h, ref: "renovate/x", repo: {full_name: $r}}, base: {ref: "develop", repo: {default_branch: $d}}, labels: [{name: "deps:minor"}], mergeable_state: "dirty"}'"'"' ;;' \
   'esac' > "$WORK/bin/gh"
 chmod +x "$WORK/bin/gh"
 
@@ -38,6 +38,7 @@ expect "and reads its fields"                           test "$(got head-sha) $(
 expect "the title is one line"                          test "$(got title)" = 'chore(deps): x more'
 expect "the labels are a JSON array"                    test "$(got labels)" = '["deps:minor"]'
 expect "the mergeable state is read from the same call"  test "$(got mergeable-state)" = dirty
+expect "and the default branch"                         test "$(got default-branch)" = develop
 
 facts workflow_run '{"workflow_run":{"event":"pull_request","head_sha":"abc","pull_requests":[{"number":7}]}}'
 expect "a workflow_run names its PR"                    test "$(got found)" = true

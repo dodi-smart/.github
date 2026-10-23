@@ -2,14 +2,21 @@
 # maintenance PR once the evidence says it is safe. Deterministic, no agent.
 #
 # The rules live in actions/merge-gate (policy `deps`), the one place any
-# unattended merge in the org is decided. Majors always wait for a person.
+# unattended merge in the org is decided. Majors always wait for a person, and
+# so does any dependency update whose base is not the default branch: a security
+# update opened against the production branch is merged by a person.
+#
+# A second job, `backmerge`, merges the clean back-merge PR a hotfix release
+# opens on a `chore/backmerge-*` branch (policy `backmerge`), once PR Checks
+# pass. It has its own kill switch, BACKMERGE_AUTOMERGE, so stopping dependency
+# merges does not stop the release branch coming back, and the reverse.
 #
 # The caller listens for every event that can complete the evidence, and each
 # run decides once and exits. Nothing waits:
 #   pull_request labeled        deps-verify set `deps:verified` or `deps:fixed`
 #   status                      pr-review posted `review / verdict`, or
 #                               Renovate's minimum release age was met
-#   workflow_run (PR Checks)    the required check finished
+#   workflow_run (PR Checks)    the required check finished (both jobs)
 name: Dependency Automerge
 
 on:
@@ -36,7 +43,9 @@ jobs:
     # that is not a verdict, a status other than an approving review or a met release age, a PR
     # Checks run that did not succeed, and any branch a dependency bot did not
     # name. It tests the SHAPE of a bot login and the bots' branch prefixes;
-    # the bot list stays in actions/agent-gate/gate.sh.
+    # the bot list stays in actions/agent-gate/gate.sh. A `chore/backmerge-`
+    # branch matches none of these prefixes, so it never reaches this job; the
+    # `backmerge` job below owns it.
     if: >-
       (github.event_name == 'pull_request'
         && endsWith(github.event.pull_request.user.login, '[bot]')
@@ -66,5 +75,37 @@ jobs:
           policy:         deps
           required-check: ${{ inputs.required-check }}
           kill-switch:    ${{ vars.DEPS_AUTOMERGE }}
+          client-id:      ${{ secrets.GH_APP_CLIENT_ID }}
+          private-key:    ${{ secrets.GH_APP_PRIVATE_KEY }}
+
+  backmerge:
+    # The back-merge PR a hotfix release opens. Only a green PR Checks run on a
+    # same-repo `chore/backmerge-` branch books a runner; the gate re-reads the
+    # PR, the head's two parents and the check before it merges anything. The
+    # `merge` job above never sees these branches, and this job never sees a
+    # dependency bot's.
+    if: >-
+      github.event_name == 'workflow_run'
+      && github.event.workflow_run.event == 'pull_request'
+      && github.event.workflow_run.conclusion == 'success'
+      && github.event.workflow_run.head_repository.full_name == github.repository
+      && startsWith(github.event.workflow_run.head_branch, 'chore/backmerge-')
+    runs-on: ${{ fromJSON((github.event.repository.private && !github.event.pull_request.head.repo.fork) && '["self-hosted","Linux","light"]' || '"ubuntu-latest"') }}
+    timeout-minutes: 10
+    permissions:
+      contents: read        # commits and the compare API
+      pull-requests: read   # the pull request and its labels
+      checks: read          # the required check run
+      statuses: read        # the head's commit statuses
+    steps:
+      - uses: dodi-smart/.github/actions/runner-report@v1
+        with:
+          selector: '["self-hosted","Linux","light"]'
+
+      - uses: dodi-smart/.github/actions/merge-gate@v1
+        with:
+          policy:         backmerge
+          required-check: ${{ inputs.required-check }}
+          kill-switch:    ${{ vars.BACKMERGE_AUTOMERGE }}
           client-id:      ${{ secrets.GH_APP_CLIENT_ID }}
           private-key:    ${{ secrets.GH_APP_PRIVATE_KEY }}

@@ -1,0 +1,61 @@
+# Merge a release branch back into the integration branch after a release.
+# Thin wrapper; the decisions and their reasoning are in backmerge.sh.
+name: Backmerge
+description: Merge the release branch back into the integration branch with a real merge commit. Skips a repo without the integration branch.
+
+inputs:
+  from:
+    description: 'Branch the release was cut from (the release branch)'
+    default: main
+  to:
+    description: 'Branch to merge it into (the integration branch)'
+    default: develop
+  resolve-extra:
+    description: >-
+      Extra paths to auto-resolve toward `from` when they conflict (the whole
+      file, the caller's explicit choice), appended to the built-in version and
+      lockfile list. Newline- or space-separated.
+    default: ""
+  tag:
+    description: >-
+      The release tag, for the branch, pull request and issue names. Empty
+      falls back to the short sha of `from`.
+    default: ""
+  repository:
+    description: 'owner/repo'
+    default: ${{ github.repository }}
+  token:
+    description: >-
+      Token for `gh` (pull request, issue and issue fields). The pushes go out
+      with the credentials the checkout already carries, so this should be the
+      same token: it must be the org App's where the rulesets name the App as a
+      bypass actor. Needs pull-requests: write and issues: write.
+    default: ${{ github.token }}
+
+outputs:
+  result:
+    description: >-
+      `merged`, `pull-request`, `conflict`, `up-to-date` or `skipped`. The step
+      succeeds on every one of them; backmerge.sh says when each applies.
+    value: ${{ steps.backmerge.outputs.result }}
+  pr:
+    description: 'URL of the pull request, when one exists'
+    value: ${{ steps.backmerge.outputs.pr }}
+  issue:
+    description: 'URL of the issue filed or reused, when a person is needed'
+    value: ${{ steps.backmerge.outputs.issue }}
+
+runs:
+  using: composite
+  steps:
+    - id: backmerge
+      shell: bash
+      env:
+        FROM:          ${{ inputs.from }}
+        TO:            ${{ inputs.to }}
+        RESOLVE_EXTRA: ${{ inputs.resolve-extra }}
+        TAG:           ${{ inputs.tag }}
+        REPO:          ${{ inputs.repository }}
+        GH_TOKEN:      ${{ inputs.token }}
+        ACTION_PATH:   ${{ github.action_path }}
+      run: '"$ACTION_PATH/backmerge.sh"'

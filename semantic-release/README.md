@@ -32,7 +32,8 @@ There are two ways to use it once it is linked.
 ### Extend
 
 For a repo that is a single package released from `main`, with `develop` as
-a prerelease channel:
+a prerelease channel (the default plugins: commit analyzer, release notes,
+changelog, npm, git and github):
 
 ```json
 // .releaserc.json
@@ -62,6 +63,42 @@ export default {
 };
 ```
 
+### Prereleases commit nothing
+
+`changelog`, `npm` and `git()` run their `prepare` on a stable release only.
+A prerelease on `develop` still gets its tag, its notes and its GitHub
+prerelease, but no release commit; `stable-only.js` says why. Each of the three is the plugin behind a small wrapper,
+`stable-only.js` (`stable-only-publish.js` for `npm`, which also has `publish`
+and `addChannel`). The wrapper takes the wrapped plugin's absolute path in a
+`plugin` option beside that plugin's own options, always delegates
+`verifyConditions` (a bad configuration fails on every branch), delegates
+`prepare` only when the release is stable, and logs one line when it skips. A
+release is not stable when its branch is a prerelease branch or when
+`nextRelease.channel` is set, except on a maintenance branch, whose channel is
+only its name.
+
+To commit on a prerelease anyway, `git({ prerelease: true })` returns the
+plain git plugin. `changelog` and `npm` stay constants; compose the plain
+plugin for them with `plugin()`:
+
+```js
+import { plugin } from "@dodi-smart/semantic-release-config";
+const changelogOnEveryBranch = [plugin("@semantic-release/changelog"), { changelogFile: "CHANGELOG.md" }];
+```
+
+A repo that turns this on gets the version-line conflict on every back-merge
+back, so it should have a reason.
+
+`pluginName()` of a wrapped entry names the plugin it wraps, so assertions
+that look for `@semantic-release/git` keep working. Code that reads the
+entry's options sees the wrapped plugin's options plus `plugin`.
+
+`backmerge` is no longer in the default config: the shared release
+workflow's back-merge step does that job, resolves the version and lock files
+exactly and turns a conflict into a pull request and an issue. The named
+`backmerge` export remains and is deprecated; a composed config that still
+lists it keeps working and gets both.
+
 A consumer never needs to install a plugin this package already names. Every
 plugin the config uses is a dependency of this package itself.
 
@@ -78,7 +115,7 @@ was loaded. `pluginName()` maps a path back to its package name for logs and
 assertions. Both usage modes, extended and composed, are covered by real dry
 runs in `semantic-release/test/e2e.test.mjs`, run through the installer.
 
-`npm` bumps `package.json`'s version and is always in the default config,
+`npm` bumps `package.json`'s version (on a stable release) and is always in the default config,
 because that config is for a Node package. A repo that is not a Node
 package, even one with an incidental `package.json`, composes and leaves
 `npm` out.
@@ -86,7 +123,7 @@ package, even one with an incidental `package.json`, composes and leaves
 `exec` is a plugin path with no options baked in; pass your own `*Cmd`
 entries as `[exec, { successCmd: "..." }]`.
 
-`git()` takes `{ assets, message }`. The default message is the shared
+`git()` takes `{ assets, message, prerelease }`. The default message is the shared
 `commitMessage`; a repo whose `tagFormat` prefixes the version, `v${version}`
 say, passes a message that prefixes it the same way, or the release commit
 and the tag disagree.

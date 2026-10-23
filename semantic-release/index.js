@@ -7,7 +7,9 @@
 // Two ways to use it.
 //
 //   1. Extend it whole, when the repo is a single package released from `main`
-//      with `develop` as a prerelease channel:
+//      with `develop` as a prerelease channel. The release commit (changelog,
+//      version, lockfile) is made on `main` only; a prerelease commits nothing,
+//      see `stable-only.js`:
 //
 //        // .releaserc.json
 //        { "extends": "@dodi-smart/semantic-release-config" }
@@ -24,6 +26,12 @@
 //          plugins: [commitAnalyzer(), releaseNotes(), changelog, git({ assets: ["pubspec.yaml", "CHANGELOG.md"] }), github],
 //        };
 //
+// `changelog`, `npm` and `git()` prepare on a stable release only. A repo that
+// does want a commit on its prerelease branch passes `git({ prerelease: true })`
+// and, for the other two, composes the raw plugin with `plugin()`, see below.
+// Merging the release branch back into the integration branch is the shared
+// release workflow's job, not a plugin in this list.
+//
 // Every plugin this file names is a dependency of this package, so a consumer
 // installs `semantic-release` and this package and nothing else.
 //
@@ -35,7 +43,8 @@
 // config itself lists, and is bypassed entirely by `--extends <file>` on the
 // command line. A path has none of those conditions: whatever config names it,
 // however it was loaded, the plugin this package pins is the one that runs.
-// `pluginName()` maps a path back to its package name for logs and tests.
+// `pluginName()` maps a path back to its package name for logs and tests; for a
+// stable-only entry it names the plugin that entry wraps.
 // `test/e2e.test.mjs` runs real dry runs over consumer configs, through the
 // installer, to hold that line.
 //
@@ -50,6 +59,7 @@
 import { fileURLToPath } from "node:url";
 
 const names = new Map();
+const wrappers = new Set();
 
 /**
  * The absolute path of a plugin this package depends on, so that whichever
@@ -62,9 +72,32 @@ export function plugin(name) {
   return path;
 }
 
-/** The package name behind a plugin entry, for logs and assertions. */
+/**
+ * The absolute path of a wrapper in this package. A wrapper is a plugin that
+ * takes another plugin's path in its `plugin` option, see `stable-only.js`.
+ */
+function wrapper(file) {
+  const path = fileURLToPath(import.meta.resolve(file));
+  wrappers.add(path);
+  return path;
+}
+
+const stableOnly = wrapper("./stable-only.js");
+const stableOnlyPublish = wrapper("./stable-only-publish.js");
+
+/**
+ * An entry that runs `name`'s `prepare` on a stable release only, see
+ * `stable-only.js`. `entry` is the wrapper to use: the publishing one for a
+ * plugin that publishes.
+ */
+function onlyStable(name, options, entry = stableOnly) {
+  return [entry, { plugin: plugin(name), ...options }];
+}
+
+/** The package name behind a plugin entry, for logs and assertions. A stable-only entry maps to the plugin it wraps. */
 export function pluginName(entry) {
-  const ref = Array.isArray(entry) ? entry[0] : entry;
+  let ref = Array.isArray(entry) ? entry[0] : entry;
+  if (wrappers.has(ref) && Array.isArray(entry)) ref = entry[1]?.plugin ?? ref;
   return names.get(ref) ?? ref;
 }
 
@@ -178,32 +211,45 @@ export function releaseNotes({ types: extra = [] } = {}) {
   ];
 }
 
-export const changelog = [plugin("@semantic-release/changelog"), { changelogFile: "CHANGELOG.md" }];
+/**
+ * Writes the release notes into CHANGELOG.md on a stable release; a prerelease
+ * leaves the file alone. To write it on a prerelease too, compose
+ * `[plugin("@semantic-release/changelog"), { changelogFile: "CHANGELOG.md" }]`.
+ */
+export const changelog = onlyStable("@semantic-release/changelog", { changelogFile: "CHANGELOG.md" });
 
 /**
- * Bumps `version` in package.json without publishing. It rewrites the file
- * whether or not the package is the thing being released, so it is part of
- * the default config only because that config is for Node packages; a repo
- * with an incidental package.json composes and leaves it out.
+ * Bumps `version` in package.json without publishing, on a stable release; a
+ * prerelease leaves the file alone. It rewrites the file whether or not the
+ * package is the thing being released, so it is part of the default config
+ * only because that config is for Node packages; a repo with an incidental
+ * package.json composes and leaves it out. To bump on a prerelease too,
+ * compose `[plugin("@semantic-release/npm"), { npmPublish: false }]`.
  */
-export const npm = [plugin("@semantic-release/npm"), { npmPublish: false }];
+export const npm = onlyStable("@semantic-release/npm", { npmPublish: false }, stableOnlyPublish);
 
 /** Run shell commands at release steps. Pass the `*Cmd` options yourself. */
 export const exec = plugin("@semantic-release/exec");
 
 /**
- * @param {{ assets?: string[], message?: string }} [overrides]
+ * The release commit, made on a stable release only (see `stable-only.js`).
+ *
+ * @param {{ assets?: string[], message?: string, prerelease?: boolean }} [overrides]
  *   `assets`: files to commit with the release. Globs, and a name that
  *   matches nothing is simply skipped, which is why the default can name
  *   every lockfile the org uses.
  *   `message`: the release commit. The default is `commitMessage`; a repo
  *   whose `tagFormat` prefixes the version passes a message that does too.
+ *   `prerelease`: commit on a prerelease too. Off by default; a repo that
+ *   turns it on gets the version-line conflict on every back-merge back.
  */
 export function git({
   assets = ["package.json", "bun.lock", "package-lock.json", "pnpm-lock.yaml", "CHANGELOG.md"],
   message = commitMessage,
+  prerelease = false,
 } = {}) {
-  return [plugin("@semantic-release/git"), { assets, message }];
+  const options = { assets, message };
+  return prerelease ? [plugin("@semantic-release/git"), options] : onlyStable("@semantic-release/git", options);
 }
 
 /**
@@ -217,7 +263,16 @@ export function github({ releasedLabels = ["release:<%= nextRelease.channel ? 's
   return [plugin("@semantic-release/github"), { releasedLabels, ...rest }];
 }
 
-/** Merge `main` back into `develop` after a release, opening a PR when it conflicts. */
+/**
+ * @deprecated The shared release workflow's back-merge step replaces this
+ * plugin. It resolves the version and lock files exactly instead of failing on
+ * them, and turns a conflict it cannot resolve into a pull request and an
+ * issue, where this plugin opens a pull request and nothing else. The default
+ * export no longer lists it; a config that still names it keeps working, and
+ * gets both, one merge attempt from each.
+ *
+ * Merge `main` back into `develop` after a release, opening a PR when it conflicts.
+ */
 export const backmerge = [
   plugin("@kilianpaquier/semantic-release-backmerge"),
   {
@@ -230,11 +285,12 @@ export const backmerge = [
 /**
  * The whole config for a Node package released from `main` with `develop` as
  * a prerelease channel. Order matters: `changelog` and `npm` prepare files
- * that `git` then commits, and `backmerge` runs last so it merges the release
- * commit rather than the one before it. A repo that is not a Node package
- * composes instead, because `npm` rewrites whatever package.json it finds.
+ * that `git` then commits, and all three do so on a stable release only. The
+ * back-merge of `main` into `develop` is the shared release workflow's job
+ * and is not in the list. A repo that is not a Node package composes instead,
+ * because `npm` rewrites whatever package.json it finds.
  */
 export default {
   branches,
-  plugins: [commitAnalyzer(), releaseNotes(), changelog, npm, git(), github(), backmerge],
+  plugins: [commitAnalyzer(), releaseNotes(), changelog, npm, git(), github()],
 };

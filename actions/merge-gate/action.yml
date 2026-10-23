@@ -7,7 +7,7 @@ description: Decide from labels, the required check, the review status and commi
 
 inputs:
   policy:
-    description: 'Which rule set decides: `deps` (a dependency bot''s minor, patch or lockfile update) or `factory` (an agent PR whose issue is on the merge tier). Add a policy in gate.sh, never a second gate.'
+    description: 'Which rule set decides: `deps` (a dependency bot''s minor, patch or lockfile update into the default branch), `factory` (an agent PR whose issue is on the merge tier) or `backmerge` (the clean back-merge PR a hotfix release opens, merged with a merge commit). Add a policy in gate.sh, never a second gate.'
     required: true
   number:
     description: 'PR number. Empty resolves it from a pull_request, workflow_run or status event.'
@@ -18,6 +18,9 @@ inputs:
   kill-switch:
     description: "An org variable's value. 'false' stops every merge through this gate."
     default: ''
+  release-branch:
+    description: 'backmerge only: the release branch whose commits the back-merge carries. Its head must contain the merge commit''s second parent.'
+    default: 'main'
   authors:
     description: 'Comma-separated logins, besides the dependency bots, that may author commits on a PR this merges (the fix identity)'
     default: 'github-actions[bot]'
@@ -46,7 +49,10 @@ runs:
 
     # agent:no-touch first, then draft and the author kind, from the one
     # dependency-bot list. The event's own label is not passed: a merge
-    # gate's labeled events are verdicts, not a request label.
+    # gate's labeled events are verdicts, not a request label. Only `deps`
+    # demands a dependency bot; the back-merge PR is opened by the org App
+    # (an `automation` author), which `allow` lets through, and `agent:no-touch`
+    # still stops it first.
     - id: gate
       if: steps.pr.outputs.found == 'true'
       uses: dodi-smart/.github/actions/agent-gate@v1
@@ -69,6 +75,10 @@ runs:
         LABELS:          ${{ steps.pr.outputs.labels }}
         TITLE:           ${{ steps.pr.outputs.title }}
         MERGEABLE:       ${{ steps.pr.outputs.mergeable-state }}
+        HEAD_REF:        ${{ steps.pr.outputs.head-ref }}
+        BASE_REF:        ${{ steps.pr.outputs.base-ref }}
+        DEFAULT_BRANCH:  ${{ steps.pr.outputs.default-branch }}
+        RELEASE_BRANCH:  ${{ inputs.release-branch }}
         KILL:            ${{ inputs.kill-switch }}
         REQUIRED_CHECK:  ${{ inputs.required-check }}
         ALLOWED_AUTHORS: ${{ steps.gate.outputs.dependency-bots }},${{ inputs.authors }}
@@ -87,7 +97,9 @@ runs:
     # Pinned to the commit the decision read: a push since then fails the
     # merge instead of merging what nobody verified. The App is the merge actor
     # the org rulesets accept. A dependency PR is rebased; an agent PR is squashed
-    # under the PR's title with its trailers (gate.sh squash-body).
+    # under the PR's title with its trailers (gate.sh squash-body); a back-merge
+    # is merged with a merge commit, never squashed or rebased, so the release
+    # commit and its tag stay reachable from the default branch.
     - id: merge
       if: steps.decide.outputs.merge == 'true'
       shell: bash
@@ -112,6 +124,8 @@ runs:
           body=$(GH_TOKEN="$APP_TOKEN" gh api --paginate "/repos/$REPO/pulls/$PR/commits?per_page=100" --jq '.[].commit.message | @base64' \
                    | "$ACTION_PATH/gate.sh" squash-body)
           GH_TOKEN="$APP_TOKEN" gh pr merge "$PR" --repo "$REPO" --squash --subject "$TITLE (#$PR)" --body "$body" --match-head-commit "$SHA"
+        elif [ "$POLICY" = backmerge ]; then
+          GH_TOKEN="$APP_TOKEN" gh pr merge "$PR" --repo "$REPO" --merge --subject "$TITLE (#$PR)" --match-head-commit "$SHA"
         else
           GH_TOKEN="$APP_TOKEN" gh pr merge "$PR" --repo "$REPO" --rebase --match-head-commit "$SHA"
         fi

@@ -12,8 +12,8 @@
 #   GITHUB_EVENT_PATH  the event payload
 #   EXPECTED_SHA    the head the caller acted on; empty takes the event's own
 #                   (workflow_run.head_sha, status sha), or skips the test
-# Outputs: found, why, number, head-sha, head-ref, base-ref, author, draft,
-# title, labels (JSON). `found=false` covers no PR, a closed PR, a fork, and a
+# Outputs: found, why, number, head-sha, head-ref, base-ref, default-branch,
+# author, draft, title, labels (JSON), mergeable-state. `found=false` covers no PR, a closed PR, a fork, and a
 # head that moved past EXPECTED_SHA; `why` says which.
 set -euo pipefail
 
@@ -50,7 +50,7 @@ f() { jq -r "$1" <<<"$pr" | tr -d '\r\n'; }
 head=$(f .head.sha)
 [ -z "$expected" ] || [ "$expected" = "$head" ] || none "#$n has moved from $expected to $head"
 jq -r '"found=true", "why=", "number=\(.number)", "head-sha=\(.head.sha)", "head-ref=\(.head.ref)",
-       "base-ref=\(.base.ref)", "author=\(.user.login)", "draft=\(.draft)",
+       "base-ref=\(.base.ref)", "default-branch=\(.base.repo.default_branch // "")", "author=\(.user.login)", "draft=\(.draft)",
        "title=\(.title | gsub("[\r\n]"; " "))", "labels=\([.labels[].name] | tojson)",
        "mergeable-state=\(.mergeable_state // "")"' <<<"$pr" >> "$GITHUB_OUTPUT"
 echo "#$n at $head"

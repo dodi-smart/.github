@@ -24,6 +24,7 @@ outputs:
   head-sha: { description: 'Head commit',                      value: '${{ steps.facts.outputs.head-sha }}' }
   head-ref: { description: 'Head branch',                      value: '${{ steps.facts.outputs.head-ref }}' }
   base-ref: { description: 'Base branch',                      value: '${{ steps.facts.outputs.base-ref }}' }
+  default-branch: { description: "The repository's default branch, read from the same call", value: '${{ steps.facts.outputs.default-branch }}' }
   author:   { description: 'PR author login',                  value: '${{ steps.facts.outputs.author }}' }
   draft:    { description: '"true" for a draft',               value: '${{ steps.facts.outputs.draft }}' }
   title:    { description: 'Title, on one line',               value: '${{ steps.facts.outputs.title }}' }

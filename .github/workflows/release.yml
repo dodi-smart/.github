@@ -75,6 +75,23 @@ on:
       sbom:         { type: boolean, default: false }
       sbom-exclude: { type: string,  default: "" }
 
+      # Build the iOS half of a kmm, flutter or xcode repo at the new tag, in an
+      # `ios` job on GitHub's hosted Mac, after the release job. Off by default,
+      # since hosted macOS minutes bill at ten times Linux ones. `ios-stack` is
+      # the app's stack when `stack` is only the release toolchain (empty takes
+      # `stack`); `ios` is the command ("@stack" is the stack's, see setup-stack);
+      # `ios-env` is KEY=VALUE lines for it, such as the SCHEME the xcode command
+      # reads. A caller job that needs this workflow waits for that build, and a
+      # red one holds it back: that is what asking for it means.
+      ios-build:         { type: boolean, default: false }
+      ios-stack:         { type: string,  default: "" }
+      ios:               { type: string,  default: "@stack" }
+      ios-env:           { type: string,  default: "" }
+      java-version:      { type: string,  default: "21" }
+      flutter-version:   { type: string,  default: "" }
+      xcode-version:     { type: string,  default: "" }
+      xcode-destination: { type: string,  default: "auto" }
+
       node-version:    { type: string, default: "lts/*" }
       bun-version:     { type: string, default: "auto" }
       timeout-minutes: { type: number, default: 30 }
@@ -334,3 +351,60 @@ jobs:
           resolve-extra: ${{ inputs.backmerge-resolve-paths }}
           tag:           ${{ steps.detect.outputs.tag }}
           token:         ${{ steps.app-token.outputs.token || secrets.GITHUB_TOKEN || github.token }}
+
+  # The iOS half at the tag just cut, on the hosted Mac, only when asked. Its own
+  # job, so the release job stays on Linux, and read-only: it builds, it pushes
+  # nothing.
+  ios:
+    name: iOS
+    needs: [release]
+    if: inputs.ios-build && needs.release.outputs.released == 'true'
+    runs-on: macos-latest
+    permissions:
+      contents: read
+    timeout-minutes: ${{ inputs.timeout-minutes }}
+    env:
+      STACK: ${{ inputs.ios-stack || inputs.stack }}
+    steps:
+      - uses: dodi-smart/.github/actions/runner-report@v1
+        with:
+          selector: macos-latest
+      # A stack with no iOS half resolves to an empty command, which would pass
+      # having built nothing. Asked before checkout and installs, which cost Mac
+      # minutes.
+      - id: cmd
+        uses: dodi-smart/.github/actions/setup-stack/resolve@v1
+        with:
+          stack: ${{ env.STACK }}
+          ios:   ${{ inputs.ios }}
+      - if: steps.cmd.outputs.ios == ''
+        run: |
+          echo "::error::ios-build is on, but stack '$STACK' has no iOS command. Set ios-stack to kmm, flutter or xcode, or set ios."
+          exit 1
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.release.outputs.tag }}
+          persist-credentials: false
+      - id: setup
+        uses: dodi-smart/.github/actions/setup-stack@v1
+        with:
+          stack:             ${{ env.STACK }}
+          cache:             auto
+          next-cache:        false
+          env:               ${{ inputs.ios-env }}
+          install:           ${{ inputs.install }}
+          ios:               ${{ inputs.ios }}
+          # flutter build ios needs no JDK, and a Mac minute costs ten Linux ones.
+          java-version:      ${{ env.STACK != 'flutter' && inputs.java-version || '' }}
+          node-version:      ${{ inputs.node-version }}
+          bun-version:       ${{ inputs.bun-version }}
+          flutter-version:   ${{ inputs.flutter-version }}
+          xcode-version:     ${{ inputs.xcode-version }}
+          xcode-destination: ${{ inputs.xcode-destination }}
+      - name: Run phases
+        uses: dodi-smart/.github/actions/run-phases@v1
+        with:
+          env-file:       ${{ steps.setup.outputs.env-file }}
+          build-env-file: ${{ steps.setup.outputs.build-env-file }}
+          install:        ${{ steps.setup.outputs.install }}
+          build:          ${{ steps.setup.outputs.ios }}

@@ -1,0 +1,3 @@
+#!/bin/sh
+# Stands in for the wrapper: the Gradle setup-gradle put on PATH.
+exec gradle "$@"

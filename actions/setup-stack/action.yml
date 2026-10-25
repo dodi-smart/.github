@@ -44,7 +44,7 @@ description: Install the toolchain for a stack and resolve its package-cache mod
 
 inputs:
   stack:
-    description: 'bun | node | gradle | android | flutter | rust | xcode | none'
+    description: 'bun | node | gradle | android | kmm | flutter | rust | xcode | none'
     required: true
   node-version:
     description: 'For stack=node, and for semantic-release on any stack'
@@ -58,7 +58,7 @@ inputs:
       Needs the repo checked out first.
     default: 'auto'
   java-version:
-    description: 'For gradle/android/flutter. Empty skips the JDK on flutter.'
+    description: 'For gradle/android/kmm/flutter. Empty skips the JDK on flutter.'
     default: '21'
   flutter-version:
     description: 'For stack=flutter. Empty takes the channel head.'
@@ -73,8 +73,15 @@ inputs:
     description: 'For stack=rust, e.g. "clippy, rustfmt"'
     default: 'clippy, rustfmt'
   xcode-version:
-    description: 'For stack=xcode. Empty takes the runner default.'
+    description: 'For xcode, and for kmm and flutter on macOS. Empty takes the runner default.'
     default: ''
+  xcode-destination:
+    description: >-
+      The xcodebuild -destination for xcode, kmm and flutter on macOS, exported
+      as XCODE_DESTINATION for every later step (the xcode commands read it).
+      `auto` takes the first iPhone of the newest iOS runtime the runner has, by
+      id; anything else is used as given, e.g. `platform=iOS Simulator,name=iPhone 17`.
+    default: 'auto'
   isolate:
     description: >-
       Pin package caches to RUNNER_TEMP and disable GitHub cache. Forced on for
@@ -132,6 +139,7 @@ inputs:
   typecheck: { description: 'Override the typecheck command', default: '@stack' }
   test:      { description: 'Override the test command',      default: '@stack' }
   build:     { description: 'Override the build command',     default: '@stack' }
+  ios:       { description: 'Override the iOS command (kmm, flutter, xcode; macOS only)', default: '@stack' }
   design-lint:
     description: >-
       Design-system lint command (e.g. `bun run lint:design` running oxlint +
@@ -189,6 +197,12 @@ outputs:
   design-lint:
     description: 'Resolved design-lint command. Empty means skip.'
     value: ${{ steps.defaults.outputs.design-lint }}
+  ios:
+    description: 'Resolved iOS command, for a macOS job. Empty means skip.'
+    value: ${{ steps.defaults.outputs.ios }}
+  xcode-destination:
+    description: 'The resolved XCODE_DESTINATION. Empty off macOS and for the other stacks.'
+    value: ${{ steps.xcode.outputs.destination }}
   lock:
     description: 'Resolved lock command. Empty means the stack has none.'
     value: ${{ steps.defaults.outputs.lock }}
@@ -255,8 +269,8 @@ runs:
       run: |
         set -euo pipefail
         case "$STACK" in
-          bun|node|gradle|android|flutter|rust|xcode|none) : ;;
-          *) echo "::error::unknown stack '$STACK' (expected bun|node|gradle|android|flutter|rust|xcode|none)"; exit 1 ;;
+          bun|node|gradle|android|kmm|flutter|rust|xcode|none) : ;;
+          *) echo "::error::unknown stack '$STACK' (expected bun|node|gradle|android|kmm|flutter|rust|xcode|none)"; exit 1 ;;
         esac
         case "$CACHE" in
           auto|true|false) : ;;
@@ -360,6 +374,26 @@ runs:
           echo "cache_dir=$cache_dir"
         } >> "$GITHUB_OUTPUT"
         echo "stack: $STACK, isolate=$do_isolate, cache=$cache_enabled, save=$cache_save, persistent=${persistent:-none} (input cache=$CACHE, env=${RUNNER_ENVIRONMENT:-unknown}/${RUNNER_OS:-unknown}/${RUNNER_ARCH:-unknown})"
+
+    # Conventional commands per stack, so a caller that has nothing unusual to
+    # say can name its stack and stop. Anything explicit wins over these. The
+    # table is defaults.sh, the one copy. Early, because its `ios` says which
+    # stacks have an iOS half (the Xcode steps below).
+    - id: defaults
+      shell: bash
+      env:
+        STACK:       ${{ inputs.stack }}
+        O_INSTALL:   ${{ inputs.install }}
+        O_LINT:      ${{ inputs.lint }}
+        O_TYPECHECK: ${{ inputs.typecheck }}
+        O_TEST:      ${{ inputs.test }}
+        O_BUILD:     ${{ inputs.build }}
+        O_DESIGN_LINT: ${{ inputs.design-lint }}
+        O_IOS:       ${{ inputs.ios }}
+        O_LOCK:      ${{ inputs.lock }}
+        O_VERSION_FILES: ${{ inputs.version-files }}
+        ACTION_PATH: ${{ github.action_path }}
+      run: '"$ACTION_PATH/defaults.sh"'
 
     # Next's build cache. `link` points .next/cache into resolve's cache_dir,
     # where checkout's clean cannot reach it; `actions` hands the two cache steps
@@ -467,18 +501,26 @@ runs:
         # action never uploads a package store under restore-keys.
 
     # Reads the checkout, never runs Gradle. The Kotlin version keys the
-    # Kotlin/Native cache, and only a multiplatform catalog has one to cache.
+    # Kotlin/Native cache, and only a multiplatform catalog has one to cache;
+    # kmm is multiplatform by definition, so it skips the grep.
     - id: gradle
-      if: inputs.stack == 'gradle' || inputs.stack == 'android' || inputs.stack == 'xcode'
+      if: contains(fromJSON('["gradle","android","kmm","xcode"]'), inputs.stack)
       shell: bash
+      env:
+        STACK: ${{ inputs.stack }}
       run: |
         [ -f gradlew ] && echo "gradle=true" >> "$GITHUB_OUTPUT"
-        cat=gradle/libs.versions.toml
-        if [ -f "$cat" ] && grep -q multiplatform "$cat"; then
-          sed -n 's/^[[:space:]]*kotlin[[:space:]]*=[[:space:]]*"\([^"]*\)".*/kotlin=\1/p' "$cat" | head -n 1 >> "$GITHUB_OUTPUT"
+        cat=gradle/libs.versions.toml kotlin=""
+        if [ -f "$cat" ] && { [ "$STACK" = kmm ] || grep -q multiplatform "$cat"; }; then
+          kotlin="$(sed -n 's/^[[:space:]]*kotlin[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' "$cat" | sed -n 1p)"
         fi
+        # A kmm build with no catalog version pins the plugin in its root script.
+        if [ -z "$kotlin" ] && [ "$STACK" = kmm ] && [ -f build.gradle.kts ]; then
+          kotlin="$(sed -En 's/.*(kotlin\("multiplatform"\)|"org\.jetbrains\.kotlin\.multiplatform"\))[[:space:]]*version[[:space:]]*"([^"]+)".*/\2/p' build.gradle.kts | sed -n 1p)"
+        fi
+        [ -z "$kotlin" ] || echo "kotlin=$kotlin" >> "$GITHUB_OUTPUT"
 
-    - if: (inputs.stack == 'gradle' || inputs.stack == 'android') || (inputs.stack == 'flutter' && inputs.java-version != '')
+    - if: contains(fromJSON('["gradle","android","kmm"]'), inputs.stack) || (inputs.stack == 'flutter' && inputs.java-version != '')
       uses: actions/setup-java@v6
       with:
         java-version: ${{ inputs.java-version }}
@@ -487,7 +529,7 @@ runs:
 
     # xcode joins when the repo has a gradlew: a KMP iOS job calls it itself.
     # setup-gradle only caches ~/.gradle here, so it needs no JDK.
-    - if: inputs.stack == 'gradle' || inputs.stack == 'android' || steps.gradle.outputs.gradle == 'true'
+    - if: contains(fromJSON('["gradle","android","kmm"]'), inputs.stack) || steps.gradle.outputs.gradle == 'true'
       uses: gradle/actions/setup-gradle@v6
       with:
         # Publishing a build scan from a verification job leaks the dependency
@@ -537,7 +579,9 @@ runs:
         key: ${{ steps.next.outputs.key }}
         restore-keys: ${{ steps.next.outputs.restore }}
 
-    - if: inputs.stack == 'android'
+    # kmm too: its Android modules need the SDK to configure. Not on GitHub's
+    # hosted Mac, whose image ships one: setup-android there costs Mac minutes.
+    - if: inputs.stack == 'android' || inputs.stack == 'kmm' && !(runner.os == 'macOS' && runner.environment == 'github-hosted')
       uses: android-actions/setup-android@v4
 
     - if: inputs.stack == 'flutter'
@@ -559,10 +603,22 @@ runs:
       with:
         save-if: ${{ steps.resolve.outputs.cache_save == 'true' }}
 
-    - if: inputs.stack == 'xcode' && inputs.xcode-version != ''
+    - if: inputs.xcode-version != '' && (inputs.stack == 'xcode' || runner.os == 'macOS' && steps.defaults.outputs.ios != '')
       uses: maxim-lobanov/setup-xcode@v1
       with:
         xcode-version: ${{ inputs.xcode-version }}
+
+    # After setup-xcode, so `auto` lists the simulators of the Xcode chosen.
+    # Never on Linux, which has no simulator to ask about.
+    - id: xcode
+      if: runner.os == 'macOS' && (inputs.stack == 'xcode' || steps.defaults.outputs.ios != '')
+      shell: bash
+      env:
+        DESTINATION: ${{ inputs.xcode-destination }}
+        ACTION_PATH: ${{ github.action_path }}
+      # The value written to GITHUB_ENV is one line; the script refuses any other.
+      # jactionlint ignore=github-env
+      run: '"$ACTION_PATH/xcode-destination.sh" "$DESTINATION"'
 
     # The caller's step environment, parsed once so every command step is a
     # one-line `source`. `env` and `build-env` go through the same script, so a
@@ -585,21 +641,3 @@ runs:
           echo "file=$file"
           echo "build-file=$build_file"
         } >> "$GITHUB_OUTPUT"
-
-    # Conventional commands per stack, so a caller that has nothing unusual to
-    # say can name its stack and stop. Anything explicit wins over these. The
-    # table is defaults.sh, the one copy.
-    - id: defaults
-      shell: bash
-      env:
-        STACK:       ${{ inputs.stack }}
-        O_INSTALL:   ${{ inputs.install }}
-        O_LINT:      ${{ inputs.lint }}
-        O_TYPECHECK: ${{ inputs.typecheck }}
-        O_TEST:      ${{ inputs.test }}
-        O_BUILD:     ${{ inputs.build }}
-        O_DESIGN_LINT: ${{ inputs.design-lint }}
-        O_LOCK:      ${{ inputs.lock }}
-        O_VERSION_FILES: ${{ inputs.version-files }}
-        ACTION_PATH: ${{ github.action_path }}
-      run: '"$ACTION_PATH/defaults.sh"'

@@ -50,16 +50,25 @@ case "$fail_on" in
 esac
 
 # The lockfiles osv-scanner can read, by file name, as of the pinned version. A
-# name it cannot read (go.sum, Podfile.lock) is not here, because passing it
-# makes the scanner fail rather than skip. This is the only list of names: the
-# action hands changed-files no patterns, so a name added here is picked up.
+# name it cannot read (go.sum) is not here, because passing it makes the scanner
+# fail rather than skip. This is the only list of names: the action hands
+# changed-files no patterns, so a name added here is picked up. Package.resolved
+# is SwiftPM's, matched against OSV's SwiftURL advisories.
 is_lockfile() {
   case "${1##*/}" in
     bun.lock|package-lock.json|pnpm-lock.yaml|yarn.lock|Cargo.lock|go.mod|gradle.lockfile|\
-    Gemfile.lock|poetry.lock|uv.lock|composer.lock|pubspec.lock|requirements*.txt) return 0 ;;
+    Gemfile.lock|poetry.lock|uv.lock|composer.lock|pubspec.lock|Package.resolved|requirements*.txt) return 0 ;;
   esac
   return 1
 }
+
+# Lockfiles that are named in the report as NOT checked, rather than silently
+# left out or reported clean. osv-scanner reads Podfile.lock only behind
+# `--x-plugins swift/podfilelock`, and then gives every pod no ecosystem and
+# drops it as unscannable: OSV has no CocoaPods advisories to match. Scanning
+# it would print "no known vulnerabilities" having checked nothing. Self test
+# asserts that this is still so of the pinned osv-scanner.
+not_checkable() { case "${1##*/}" in Podfile.lock) return 0 ;; esac; return 1; }
 
 # The band's weight against the `fail-on` threshold. `unknown` ranks as high
 # (see the top). `none` is 0 so it never meets a threshold, and a threshold of
@@ -79,9 +88,14 @@ finish() { # result new existing errors
   echo "dependency-check: result=$1 new=$2 existing=$3 errors=$4"
 }
 
+# What the scan does not cover: a notice now, and a summary bullet in the report
+# or the skip line, whichever ends the run.
+notes=""
+note() { echo "::notice::dependency-check: $1"; notes="$notes- $1"$'\n'; }
 skip() { # reason
   echo "::notice::dependency-check: $1"
   printf '**Dependency check:** skipped, %s.\n' "$1" >> "$summary"
+  printf '%s' "$notes" >> "$summary"
   finish skipped 0 0 0
   exit 0
 }
@@ -108,7 +122,7 @@ fi
 
 trim() { awk 'NF { gsub(/\r/, ""); sub(/^[ \t]+/, ""); sub(/[ \t]+$/, ""); print }'; }
 
-list=""
+list=""; unchecked=""; gradle_build=false
 if [ -n "$(printf '%s' "${LOCKFILES:-}" | tr -d '[:space:]')" ]; then
   list="$(printf '%s\n' "$LOCKFILES" | trim | sort -u)"
 elif [ -z "${NUMBER:-}" ]; then
@@ -125,11 +139,25 @@ else
     files="$(find . \( -name node_modules -o -name .git \) -prune -o -type f -print | sed 's|^\./||')"
   fi
   while IFS= read -r f; do
-    if is_lockfile "$f"; then list="$list$f"$'\n'; fi
+    if is_lockfile "$f"; then list="$list$f"$'\n'
+    elif not_checkable "$f"; then unchecked="$unchecked$f"$'\n'; fi
+    case "${f##*/}" in
+      build.gradle|build.gradle.kts|settings.gradle|settings.gradle.kts|libs.versions.toml) gradle_build=true ;;
+    esac
   done <<<"$files"
   list="$(printf '%s' "$list" | sort -u)"
 fi
-[ -n "$list" ] || skip "no lockfile changed"
+
+# Decided before any skip, so a pull request that changed only these still shows
+# why nothing was checked.
+while IFS= read -r f; do
+  [ -z "$f" ] || note "\`$f\` is not checked: osv-scanner reads its pods, but OSV has no CocoaPods advisories to match them against."
+done <<<"$(printf '%s' "$unchecked" | sort -u)"
+# A Gradle build without dependency locking has no lockfile to scan at all.
+if [ "$gradle_build" = true ] && ! grep -q 'gradle\.lockfile$' <<<"$list"; then
+  note "The Gradle build changed and no \`gradle.lockfile\` did: without dependency locking osv-scanner sees no Gradle dependencies. Submit the graph with \`gradle/actions/dependency-submission\` instead (README, Dependency check)."
+fi
+[ -n "$list" ] || skip "no lockfile it can check changed"
 
 : "${REPO:?}"
 [ -n "${BASE_SHA:-}" ] || cannot_run "the pull request's base commit is unknown"
@@ -285,6 +313,7 @@ done < "$rows"
     echo "**Could not check $errors:**"
     while IFS=$'\t' read -r what why; do echo "- \`$what\`: $why"; done < "$problems"
   fi
+  if [ -n "$notes" ]; then echo; printf '%s' "$notes"; fi
 } >> "$summary"
 
 # ---- verdict -----------------------------------------------------------------

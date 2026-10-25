@@ -10,7 +10,7 @@ description: Resolve a caller's commands against the stack's conventional ones, 
 
 inputs:
   stack:
-    description: 'bun | node | gradle | android | flutter | rust | xcode | none'
+    description: 'bun | node | gradle | android | kmm | flutter | rust | xcode | none'
     required: true
   install:     { description: 'Override the install command',     default: '@stack' }
   lint:        { description: 'Override the lint command',        default: '@stack' }
@@ -18,6 +18,7 @@ inputs:
   test:        { description: 'Override the test command',        default: '@stack' }
   build:       { description: 'Override the build command',       default: '@stack' }
   design-lint: { description: 'Override the design-lint command', default: '@stack' }
+  ios:         { description: 'Override the iOS command',         default: '@stack' }
 
 outputs:
   install:     { description: 'Resolved install command. Empty means skip.',     value: '${{ steps.defaults.outputs.install }}' }
@@ -26,6 +27,7 @@ outputs:
   test:        { description: 'Resolved test command. Empty means skip.',        value: '${{ steps.defaults.outputs.test }}' }
   build:       { description: 'Resolved build command. Empty means skip.',       value: '${{ steps.defaults.outputs.build }}' }
   design-lint: { description: 'Resolved design-lint command. Empty means skip.', value: '${{ steps.defaults.outputs.design-lint }}' }
+  ios:         { description: 'Resolved iOS command. Empty means skip.',         value: '${{ steps.defaults.outputs.ios }}' }
 
 runs:
   using: composite
@@ -40,4 +42,5 @@ runs:
         O_TEST:        ${{ inputs.test }}
         O_BUILD:       ${{ inputs.build }}
         O_DESIGN_LINT: ${{ inputs.design-lint }}
+        O_IOS:         ${{ inputs.ios }}
       run: '"$GITHUB_ACTION_PATH/../defaults.sh"'

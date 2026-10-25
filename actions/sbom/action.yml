@@ -1,7 +1,7 @@
 # CycloneDX SBOM of the checkout, attached to each GitHub release a run just cut.
-# Thin wrapper; the reasoning is in sbom.sh, the install in install.sh.
+# Thin wrapper; the reasoning is in sbom.sh, the installs in install.sh.
 name: SBOM
-description: Build a CycloneDX SBOM of the checkout with syft and attach it to the GitHub release of each new tag. Never fails the job.
+description: Build a CycloneDX SBOM of the checkout (a Gradle build's resolved graph, plus every lockfile syft reads) and attach it to the GitHub release of each new tag. Never fails the job.
 
 inputs:
   tags:
@@ -9,7 +9,7 @@ inputs:
     default: '[]'
   exclude:
     description: >-
-      Extra globs to leave out of the scan, newline-separated, on top of the
+      Extra globs to leave out of the syft scan, newline-separated, on top of the
       built-in list (dependency and build output directories). Relative to the
       checkout, e.g. `./fixtures/**`.
     default: ''
@@ -23,21 +23,9 @@ inputs:
 runs:
   using: composite
   steps:
-    - id: install
-      shell: bash
+    # The generators are installed inside, only the ones the checkout needs.
+    - shell: bash
       env:
-        ACTION_PATH: ${{ github.action_path }}
-      run: |
-        if path="$("$ACTION_PATH/install.sh")"; then
-          echo "path=$path" >> "$GITHUB_OUTPUT"
-        else
-          echo "::warning title=SBOM not attached::syft could not be installed, so no release got an SBOM."
-        fi
-
-    - if: steps.install.outputs.path != ''
-      shell: bash
-      env:
-        SYFT:        ${{ steps.install.outputs.path }}
         TAGS:        ${{ inputs.tags }}
         EXCLUDE:     ${{ inputs.exclude }}
         REPO:        ${{ inputs.repository }}

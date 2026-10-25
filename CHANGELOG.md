@@ -1,3 +1,9 @@
+## [1.43.0](https://github.com/dodi-smart/.github/compare/v1.42.0...v1.43.0) (2026-10-25)
+
+### ✨ Features
+
+* **setup-stack:** kmm stack, opt-in iOS job on a hosted Mac, Gradle-aware SBOM and Swift lockfiles in dependency-check ([ac79230](https://github.com/dodi-smart/.github/commit/ac7923044351334a81dab45e99a9249fa788f3d0))
+
 ## [1.42.0](https://github.com/dodi-smart/.github/compare/v1.41.0...v1.42.0) (2026-10-25)
 
 ### ✨ Features

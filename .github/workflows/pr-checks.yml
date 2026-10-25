@@ -225,6 +225,13 @@ jobs:
         with:
           patterns: ${{ inputs.docs-only-paths }}
 
+      # Fails a pull request that lowers a version its base already has, from
+      # the list just read (actions/version-guard).
+      - uses: dodi-smart/.github/actions/version-guard@v1
+        with:
+          files:    ${{ steps.docs.outputs.files }}
+          complete: ${{ steps.docs.outputs.complete }}
+
       - id: rd
         if: ${{ inputs.react-doctor }}
         uses: dodi-smart/.github/actions/changed-files@v1

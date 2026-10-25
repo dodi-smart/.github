@@ -187,19 +187,36 @@ eq "main is an ancestor of develop" "$(git -C "$O" merge-base --is-ancestor main
 eq "no gh call" "$LOG" ""
 eq "no backmerge branch" "$(git -C "$O" branch --list 'chore/backmerge-*')" ""
 
-echo "version file conflict: resolved toward main, no hotfix"
+# A changelog as semantic-release writes it: $1 is "version:note" pairs, newest first.
+gen_log() {
+  local p
+  printf '# Changelog\n'
+  for p in "$@"; do printf '\n## [%s](https://example.test/compare) (2026-10-22)\n\n* %s\n' "${p%%:*}" "${p#*:}"; done
+}
+
+echo "version file conflict: the release outranks the prerelease, both changelogs kept"
 mk versions
 commit_on develop package.json '{"version":"0.2.0-develop.1"}' "chore(release): 0.2.0-develop.1 [skip ci]"
-commit_on develop CHANGELOG.md '# develop notes' "chore(release): changelog [skip ci]"
+commit_on develop CHANGELOG.md "$(gen_log 0.2.0-develop.1:dev)" "chore(release): changelog [skip ci]"
 commit_on main package.json '{"version":"0.2.0"}' "chore(release): 0.2.0 [skip ci]"
-commit_on main CHANGELOG.md '# main notes' "chore(release): changelog main [skip ci]"
+commit_on main CHANGELOG.md "$(gen_log 0.2.0:rel)" "chore(release): changelog main [skip ci]"
 run v0.2.0
 eq "exits 0" "$RC" 0
 has "result is merged" "$OUTPUTS" "result=merged"
-eq "package.json is main's" "$(show develop package.json)" '{"version":"0.2.0"}'
-eq "CHANGELOG.md is main's" "$(show develop CHANGELOG.md)" '# main notes'
+eq "package.json is the release's" "$(show develop package.json)" '{"version":"0.2.0"}'
+eq "CHANGELOG.md has both, the release first" "$(show develop CHANGELOG.md)" "$(gen_log 0.2.0:rel 0.2.0-develop.1:dev)"
 eq "pushed with [skip ci]" "$(subj develop)" "chore(release): merge main into develop [skip ci]"
 eq "no gh call" "$LOG" ""
+
+echo "changelogs with no release heading to place by: a person, never main's whole file"
+mk nolog
+commit_on develop CHANGELOG.md '# develop notes' "chore(release): changelog [skip ci]"
+commit_on main CHANGELOG.md '# main notes' "chore(release): changelog main [skip ci]"
+dev_before=$(rev develop)
+run v0.2.0
+has "result is conflict" "$OUTPUTS" "result=conflict"
+eq "develop untouched" "$(rev develop)" "$dev_before"
+has "the issue lists the changelog" "$LOG" "- \`CHANGELOG.md\`"
 
 echo "extra resolve path from the caller"
 mk_app extra
@@ -476,6 +493,9 @@ has "pr body says no scripts ran" "$LOG" "no scripts run"
 lacks "no issue filed" "$LOG" "issues"
 lacks "never merges" "$LOG" "pr merge"
 
+has "the pull request is labelled for a review verdict" "$LOG" "pr edit https://example.test/o/r/pull/7 --repo o/r --add-label backmerge:regenerated"
+has "the label is created if missing" "$LOG" "label create backmerge:regenerated"
+
 echo "a lockfile genuinely in conflict, npm present: regenerated without scripts"
 mk regennpm; seed
 # shellcheck disable=SC2016  # evaluated by the stub, in the clone
@@ -526,6 +546,98 @@ edit_on main "fix: main deps" "gen_pkg 0.1.0 gamma > package.json; gen_bun 0.1.0
 PM_STUBS="$WORK/stubs-bun" run v0.1.1
 has "result is conflict" "$OUTPUTS" "result=conflict"
 eq "no package manager ran" "$(cat "$PM_LOG")" ""
+
+# ---------------------------------------------------------------------------
+# A version never goes backwards
+# ---------------------------------------------------------------------------
+
+echo "a hotfix behind develop's prerelease: develop keeps its version and its notes"
+mk behind
+(cd "$W" && gen_pkg 1.9.0 > package.json && gen_lock 1.9.0 > package-lock.json && gen_bun 1.9.0 > bun.lock \
+  && gen_log 1.9.0:old > CHANGELOG.md && git add -A && git commit -q -m "chore: 1.9.0" \
+  && git push -q origin main && git push -q -f origin main:develop)
+edit_on develop "chore(release): 1.10.0-develop.14 [skip ci]" "gen_pkg 1.10.0-develop.14 beta > package.json; gen_lock 1.10.0-develop.14 beta > package-lock.json; gen_bun 1.10.0-develop.14 beta > bun.lock; gen_log 1.10.0-develop.14:dev 1.9.0:old > CHANGELOG.md"
+commit_on main hotfix.txt fixed "fix(deps): patch a vulnerable dependency"
+edit_on main "chore(release): 1.9.1 [skip ci]" "gen_pkg 1.9.1 > package.json; gen_lock 1.9.1 > package-lock.json; gen_bun 1.9.1 > bun.lock; gen_log 1.9.1:hotfix 1.9.0:old > CHANGELOG.md"
+run v1.9.1
+eq "exits 0" "$RC" 0
+has "result is pull-request" "$OUTPUTS" "result=pull-request"
+b=chore/backmerge-v1.9.1
+eq "package.json keeps develop's version and dependency" "$(show $b package.json)" "$(gen_pkg 1.10.0-develop.14 beta)"
+eq "package-lock.json keeps develop's" "$(show $b package-lock.json)" "$(gen_lock 1.10.0-develop.14 beta)"
+eq "bun.lock keeps develop's" "$(show $b bun.lock)" "$(gen_bun 1.10.0-develop.14 beta)"
+eq "CHANGELOG.md keeps develop's notes and gains the hotfix's" "$(show $b CHANGELOG.md)" "$(gen_log 1.10.0-develop.14:dev 1.9.1:hotfix 1.9.0:old)"
+eq "the fix is on the branch" "$(show $b hotfix.txt)" fixed
+eq "it is a merge commit" "$(nparents $b)" 2
+
+echo "develop writes no prerelease: the hotfix's patch version wins"
+mk stableonly
+(cd "$W" && gen_pkg 1.9.0 > package.json && gen_log 1.9.0:old > CHANGELOG.md && git add -A && git commit -q -m "chore: 1.9.0" \
+  && git push -q origin main && git push -q -f origin main:develop)
+commit_on develop feature.txt new "feat: a feature"
+commit_on main hotfix.txt fixed "fix: patch"
+edit_on main "chore(release): 1.9.1 [skip ci]" "gen_pkg 1.9.1 > package.json; gen_log 1.9.1:hotfix 1.9.0:old > CHANGELOG.md"
+run v1.9.1
+has "result is pull-request" "$OUTPUTS" "result=pull-request"
+eq "package.json takes the patch" "$(show chore/backmerge-v1.9.1 package.json)" "$(gen_pkg 1.9.1)"
+eq "develop's feature is there" "$(show chore/backmerge-v1.9.1 feature.txt)" new
+
+# Per-module version files and changelogs, as a Gradle monorepo keeps them. $1
+# version, $2 versionCode.
+gen_props() { printf '# written by the release\nversion=%s\nversionCode=%s\n' "$1" "$2"; }
+
+echo "a Gradle monorepo: each module's version keys take the higher, its changelog both"
+mk gradle
+(cd "$W" && mkdir -p app-a && gen_props 1.2.0 10 > app-a/version.properties && gen_log 1.2.0:old > app-a/CHANGELOG.md \
+  && git add -A && git commit -q -m "chore: modules" && git push -q origin main && git push -q -f origin main:develop)
+edit_on develop "chore(release): a@1.3.0-develop.4 [skip ci]" "gen_props 1.3.0-develop.4 11 > app-a/version.properties; gen_log 1.3.0-develop.4:dev 1.2.0:old > app-a/CHANGELOG.md"
+commit_on main app-a/fix.kt fixed "fix(a): patch"
+edit_on main "chore(release): a@1.2.1 [skip ci]" "gen_props 1.2.1 12 > app-a/version.properties; gen_log 1.2.1:hotfix 1.2.0:old > app-a/CHANGELOG.md"
+run a@1.2.1
+eq "exits 0" "$RC" 0
+has "result is pull-request" "$OUTPUTS" "result=pull-request"
+b=chore/backmerge-a-1.2.1
+eq "version is develop's, versionCode main's: each key the higher" "$(show $b app-a/version.properties)" "$(gen_props 1.3.0-develop.4 12)"
+eq "the module changelog keeps both" "$(show $b app-a/CHANGELOG.md)" "$(gen_log 1.3.0-develop.4:dev 1.2.1:hotfix 1.2.0:old)"
+
+echo "listing a version file in resolve-extra does not roll it back"
+mk gradleextra
+(cd "$W" && mkdir -p app-a && gen_props 1.2.0 10 > app-a/version.properties && git add -A && git commit -q -m "chore: modules" \
+  && git push -q origin main && git push -q -f origin main:develop)
+edit_on develop "chore(release): a@1.3.0-develop.4 [skip ci]" "gen_props 1.3.0-develop.4 14 > app-a/version.properties"
+edit_on main "chore(release): a@1.2.1 [skip ci]" "gen_props 1.2.1 12 > app-a/version.properties"
+RESOLVE_EXTRA="app-a/version.properties" run a@1.2.1
+unset RESOLVE_EXTRA
+has "result is merged" "$OUTPUTS" "result=merged"
+eq "develop's version stays" "$(show develop app-a/version.properties)" "$(gen_props 1.3.0-develop.4 14)"
+
+echo "a pubspec and an Xcode project: version and build number take the higher"
+gen_pubspec() { printf 'name: app\nversion: %s\n\nenvironment:\n  sdk: ^3.5.0\n' "$1"; }
+gen_pbx() { printf '\t\t\t\tCURRENT_PROJECT_VERSION = %s;\n\t\t\t\tMARKETING_VERSION = %s;\n\t\t\t\tPRODUCT_NAME = App;\n\t\t\t\tCURRENT_PROJECT_VERSION = %s;\n\t\t\t\tMARKETING_VERSION = %s;\n' "$2" "$1" "$2" "$1"; }
+mk mobile
+(cd "$W" && mkdir -p ios/App.xcodeproj && gen_pubspec 1.0.0+5 > pubspec.yaml && gen_pbx 2.0 20 > ios/App.xcodeproj/project.pbxproj \
+  && git add -A && git commit -q -m "chore: app" && git push -q origin main && git push -q -f origin main:develop)
+edit_on develop "chore(release): 1.1.0-dev.1 [skip ci]" "gen_pubspec 1.1.0-dev.1+7 > pubspec.yaml; gen_pbx 2.1 22 > ios/App.xcodeproj/project.pbxproj"
+edit_on main "chore(release): 1.0.1 [skip ci]" "gen_pubspec 1.0.1+6 > pubspec.yaml; gen_pbx 2.0.1 21 > ios/App.xcodeproj/project.pbxproj"
+run v1.0.1
+has "result is merged" "$OUTPUTS" "result=merged"
+eq "pubspec keeps develop's" "$(show develop pubspec.yaml)" "$(gen_pubspec 1.1.0-dev.1+7)"
+eq "the Xcode project keeps develop's, every configuration" "$(show develop ios/App.xcodeproj/project.pbxproj)" "$(gen_pbx 2.1 22)"
+
+echo "a clean merge that would lower a version: a person, nothing reaches develop"
+mk lower
+(cd "$W" && mkdir -p app-a && gen_props 1.2.0 10 > app-a/version.properties && git add -A && git commit -q -m "chore: modules" \
+  && git push -q origin main && git push -q -f origin main:develop)
+edit_on main "chore(release): a@1.1.9 [skip ci]" "gen_props 1.1.9 10 > app-a/version.properties"
+dev_before=$(rev develop)
+run a@1.1.9
+eq "exits 0" "$RC" 0
+has "result is conflict" "$OUTPUTS" "result=conflict"
+eq "develop untouched" "$(rev develop)" "$dev_before"
+eq "the branch is main as released" "$(rev chore/backmerge-a-1.1.9)" "$(rev main)"
+has "the issue says why" "$LOG" "would move a version on \`develop\` backwards"
+has "the issue lists the lowered key" "$LOG" "- \`app-a/version.properties: version: 1.2.0 -> 1.1.9\`"
+eq "the work tree is not left mid-merge" "$(git -C "$W" rev-parse -q --verify MERGE_HEAD || echo clean)" clean
 
 echo "the target branch is missing: skipped, nothing pushed, nothing fetched"
 mk nodevelop

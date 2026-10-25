@@ -1633,8 +1633,20 @@ jobs:
               want = D + 'inputs.release-branch }}'
               if (steps[guard[0]].get('with') or {}).get('release-branch') != want:
                   errors.append('the target guard must be given release-branch: ' + want)
+          vguard = [i for i, s in enumerate(steps) if 'actions/version-guard@' in uses(s)]
+          if len(vguard) != 1:
+              errors.append('the pick job must run actions/version-guard exactly once, found %d' % len(vguard))
+          else:
+              docs = [i for i, s in enumerate(steps) if s.get('id') == 'docs']
+              vw = steps[vguard[0]].get('with') or {}
+              if not docs or vguard[0] != docs[0] + 1:
+                  errors.append('the version guard must be the step right after the docs changed-files step, whose list it reads')
+              elif vw.get('files') != D + 'steps.docs.outputs.files }}' or vw.get('complete') != D + 'steps.docs.outputs.complete }}':
+                  errors.append('the version guard must be given the docs step\'s files and complete outputs')
           if pick.get('permissions', {}).get('pull-requests') != 'read':
               errors.append('pick needs pull-requests: read, which the target guard reads the commits with')
+          if pick.get('permissions', {}).get('contents') != 'read':
+              errors.append('pick needs contents: read, which the version guard reads the version files with')
           inp = doc[True]['workflow_call']['inputs'].get('release-branch')
           if not inp or inp.get('type') != 'string' or inp.get('default') != 'main':
               errors.append('pr-checks needs a string input release-branch defaulting to main')

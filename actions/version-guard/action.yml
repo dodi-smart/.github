@@ -1,0 +1,40 @@
+# Fail a pull request that would move a version backwards on its base.
+# Thin wrapper; the rule and the reasons are in guard.sh.
+name: Version guard
+description: Fail a pull request that sets a version lower than its base already has.
+
+inputs:
+  files:
+    description: "The pull request's changed paths, one per line: actions/changed-files' `files` output."
+    required: true
+  complete:
+    description: "actions/changed-files' `complete` output. Anything but `true` skips the check with a warning."
+    required: true
+  repository:
+    description: 'owner/repo'
+    default: ${{ github.repository }}
+  token:
+    description: 'Token to read file contents with. Needs contents: read.'
+    default: ${{ github.token }}
+
+outputs:
+  verdict:
+    description: '`skip` (not a pull request, or the files could not be read), `pass` or `reject`. A reject also fails the step.'
+    value: ${{ steps.guard.outputs.verdict }}
+
+runs:
+  using: composite
+  steps:
+    - id: guard
+      shell: bash
+      env:
+        FILES:       ${{ inputs.files }}
+        COMPLETE:    ${{ inputs.complete }}
+        EVENT:       ${{ github.event_name }}
+        REPO:        ${{ inputs.repository }}
+        NUMBER:      ${{ github.event.pull_request.number }}
+        BASE_SHA:    ${{ github.event.pull_request.base.sha }}
+        HEAD_SHA:    ${{ github.event.pull_request.head.sha }}
+        GH_TOKEN:    ${{ inputs.token }}
+        ACTION_PATH: ${{ github.action_path }}
+      run: '"$ACTION_PATH/guard.sh"'

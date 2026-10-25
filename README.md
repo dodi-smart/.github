@@ -100,21 +100,34 @@ uses `modules` or a custom `release-command`.
 | `backmerge` | `true` | Merge `backmerge-from` into `backmerge-to` after releasing. This step is the one back-merge path (the shared semantic-release config no longer back-merges), and it skips a repo that has no `backmerge-to` branch; set `false` to turn it off |
 | `backmerge-from` | `"main"` | Branch the release was cut from |
 | `backmerge-to` | `"develop"` | Prerelease branch to merge into |
-| `backmerge-resolve-paths` | `""` | Extra paths to auto-resolve toward `backmerge-from` on conflict, newline- or space-separated (e.g. a subdirectory manifest and its lockfile) |
+| `backmerge-resolve-paths` | `""` | Extra paths to auto-resolve toward `backmerge-from` on conflict, whole file, newline- or space-separated; never a version file or a changelog |
 
 The backmerge is the last step of the `release` job, a call to
 `actions/backmerge`, so it reuses that job's token and checkout. A merge commit,
 never a squash or a rebase, so the release commit and its tag stay reachable
-from `backmerge-to`. The version and lock files a stable release after a
-prerelease always conflicts on are resolved exactly, so `backmerge-to`'s own
-dependency changes survive, and `backmerge-resolve-paths` adds paths resolved
-whole-file toward `backmerge-from`. A release branch carrying only release
-commits is pushed straight to `backmerge-to` with `[skip ci]`; one carrying a
-fix, or needing a regenerated lockfile, goes through a `chore/backmerge-<tag>`
-pull request so its checks run; a conflict beyond the version files opens that
-pull request and an issue for a person. It never fails the job, so a deploy
-chained on `release.yml` still ships the fix just released. The rules and their
-reasons are in `actions/backmerge/backmerge.sh`.
+from `backmerge-to`.
+
+A back-merge never moves a version backwards. The version files a stable
+release after a prerelease always conflicts on are resolved line by line: each
+version key takes the higher of the two branches, and git merges the rest of the
+file, so `backmerge-to`'s own dependency changes survive. After a hotfix,
+`backmerge-to` keeps a prerelease that is ahead of the patch (`1.10.0-develop.14`
+over `1.9.1`) and takes the patch where it writes no prerelease. Every
+`CHANGELOG.md`, at any depth, keeps `backmerge-to`'s entries and gains the
+release sections it lacks; no changelog is taken whole from `backmerge-from`.
+The version files (npm, Gradle, Flutter, Cargo and Xcode) are listed in
+`actions/version-guard/versions.pl`. A merge that would still lower one, even a
+clean one, goes to a person like a conflict.
+
+`backmerge-resolve-paths` adds paths resolved whole-file toward
+`backmerge-from`, never a version file or a changelog. A release branch carrying only release commits is pushed straight to
+`backmerge-to` with `[skip ci]`; one carrying a fix, or needing a regenerated
+lockfile, goes through a `chore/backmerge-<tag>` pull request so its checks run
+(a regenerated lockfile also labels it `backmerge:regenerated`); a conflict
+beyond the version files opens that pull request and an issue for a person. It
+never fails the job, so a deploy chained on `release.yml` still ships the fix
+just released. The rules and their reasons are in
+`actions/backmerge/backmerge.sh`.
 
 | `actions/backmerge` output | Meaning |
 |---|---|
@@ -374,6 +387,7 @@ Renovate marker, and a bump releases as `chore(deps)`.
 | `actions/hk-check` | Installs the repo's mise tools, runs `hk check --all --sarif`, appends the output to the job summary, warns on a SARIF file that is not valid JSON, and keeps the SARIF as an artifact. What `pr-checks.yml`'s `hk: true` runs |
 | `actions/changed-files` | A pull request's changed files through the API, with no checkout, and whether any, or every one, match a set of globs. Pure bash: it needs `gh` and nothing else |
 | `actions/target-guard` | Fails a pull request into the release branch (`main`, when it is not the default branch) unless it is the default branch merged in, or a security patch (`fix/security-*` or Renovate's `[SECURITY]` update, a conventional `fix`, no `feat` or breaking commit) in a repo whose `security_hotfix` property is `enabled`. Outputs `verdict` (`skip`, `release`, `lane`, `reject`) and `reason`. Anything it cannot read is a reject. Needs `gh`, `jq` and metadata plus pull-requests read. What `pr-checks.yml`'s `pick` job runs; see [The release branch only gets releases](#the-release-branch-only-gets-releases) |
+| `actions/version-guard` | Fails a pull request that sets a version lower than its base already has, for the version keys the pull request itself changes (so a branch cut before the base's last prerelease passes). Takes `actions/changed-files`' `files` and `complete`, reads the changed version files through the API, and treats an incomplete list or an unreadable file as a warning, not a block. Outputs `verdict` (`skip`, `pass`, `reject`). `versions.pl` holds the version files and the comparison, shared with `actions/backmerge`. What `pr-checks.yml`'s `pick` job runs after its docs-only listing |
 | `actions/migration-lint` | Lints the `*.sql` migrations a pull request added or changed with a pinned squawk, as annotations. Advisory unless `blocking: true`; squawk failing to install or run always fails it. What `supabase-checks.yml`'s `migration-lint` job calls. The caller checks out first |
 | `actions/dependency-check` | Scans the lockfiles a pull request changed with osv-scanner and reports only the vulnerabilities it introduced, as a job summary table, with an optional `fail-on` threshold (`none` by default). Skipped for dependency PRs (it classifies its `author` input with `agent-gate`'s `gate.sh kind`). Reports through the job summary; it has no outputs |
 | `actions/sbom` | Builds a CycloneDX SBOM of the checkout with syft and attaches it to the GitHub release of each tag a run cut, as `sbom-<tag>.cdx.json`. Used by `release.yml`'s `sbom` input. Never fails the job: every problem is a warning and a line in the job summary, and an SBOM with no components is not attached |

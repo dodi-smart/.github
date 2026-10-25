@@ -13,8 +13,8 @@ inputs:
   resolve-extra:
     description: >-
       Extra paths to auto-resolve toward `from` when they conflict (the whole
-      file, the caller's explicit choice), appended to the built-in version and
-      lockfile list. Newline- or space-separated.
+      file, the caller's explicit choice). Newline- or space-separated. Never
+      applies to a version file or a changelog; see backmerge.sh.
     default: ""
   tag:
     description: >-

@@ -16,7 +16,8 @@
 #                 Push the merge to chore/backmerge-<tag> and open a pull request,
 #                 WITHOUT [skip ci], so the checks run on it before anything
 #                 reaches TO.
-#   conflict      a conflict beyond the version files. Push FROM itself to the
+#   conflict      a conflict beyond the version files, or a merge that would
+#                 lower a version TO has. Push FROM itself to the
 #                 same branch so the pull request shows the conflict, and file an
 #                 issue. Exits 0, not 1: a deploy chained on the release job must
 #                 still ship the fix that was just released, and the issue and
@@ -88,6 +89,14 @@ open_pr() {
   PR_URL="$url"
 }
 
+# Label pull request $1 with $2, creating the label (description $3) if the
+# repository lacks it. A failure is a warning: the pull request stands.
+label_pr() {
+  gh label create "$2" --repo "$REPO" --color c5def5 --description "$3" >/dev/null 2>&1 || true
+  gh pr edit "$1" --repo "$REPO" --add-label "$2" >/dev/null \
+    || echo "::warning::Could not label $1 with $2."
+}
+
 # $1 is clean or conflict; $label is the release, set in main below.
 pr_body() {
   local kind="$1"
@@ -116,55 +125,69 @@ pr_body() {
 # Taking the whole file from FROM (`git checkout --theirs`) is what this used to
 # do, and it silently dropped every dependency change TO had made of its own:
 # certain to matter after a hotfix, when the branches have moved their
-# dependencies apart. What genuinely conflicts after a release is only the root
-# version line, which a prerelease commit on TO and the release commit on FROM
-# both rewrote. So make that line agree and let git merge the rest.
+# dependencies apart. What genuinely conflicts after a release is only the
+# version lines, which a prerelease commit on TO and the release commit on FROM
+# both rewrote. So make those lines agree and let git merge the rest.
+#
+# They agree on the HIGHER of the two, never on FROM's by default: a hotfix
+# release on FROM (1.9.1) is behind the prerelease TO already carries
+# (1.10.0-develop.14), and taking FROM's would move TO backwards. Where TO
+# writes no prerelease (the shared config's default), TO is still on the last
+# release and FROM's patch is the higher, so FROM's wins exactly when it should.
+# versions.pl holds the comparison and the version files it knows, shared with
+# actions/version-guard, which fails a pull request that lowers one.
 # ---------------------------------------------------------------------------
 
-# The root version of package.json at stage $1 of the merge (1 base, 2 ours,
-# 3 theirs); $2 is the commit to read it from when that stage is absent, which
-# is the case once package.json has merged cleanly or been resolved. Empty when
-# there is none (a private root with no version).
-stage_version() {
-  local n="$1" commit="$2" json
-  json=$(git show ":$n:package.json" 2>/dev/null || { [ -z "$commit" ] || git show "$commit:package.json" 2>/dev/null; }) || return 0
-  jq -r '.version // empty' <<<"$json" 2>/dev/null || true
+VERSIONS="$(cd "$(dirname "${BASH_SOURCE[0]}")/../version-guard" && pwd)/versions.pl"
+
+# The three stages of conflicted file $1 as $2/base, $2/ours and $2/theirs. A
+# missing stage (the file was added or deleted on one side) fails: that is a
+# real conflict, not a version line.
+stages() {
+  git show ":1:$1" > "$2/base"   2>/dev/null || return 1
+  git show ":2:$1" > "$2/ours"   2>/dev/null || return 1
+  git show ":3:$1" > "$2/theirs" 2>/dev/null || return 1
 }
 
-# stdin to stdout: replace the first $3 occurrences of `"version": "<$1>"` with
-# `"version": "<$2>"`, leaving everything else, spacing included, as it was. Only
-# an exact match is touched, so a dependency that happens to carry a different
-# version is never rewritten. perl is on every runner and on macOS; sed cannot
-# do a counted replacement portably.
-swap_version() {
-  OLD="$1" NEW="$2" COUNT="$3" perl -0777 -pe '
-    BEGIN { $n = 0 }
-    s/("version"\s*:\s*")\Q$ENV{OLD}\E(")/ $n++ < $ENV{COUNT} ? "$1$ENV{NEW}$2" : $& /ge'
-}
+# Stage $2/merged as file $1.
+stage_merged() { cp "$2/merged" "$1" && git add -- "$1"; }
 
-# Make a blob (file $1) carry version $3 at its root where it carries $2; $4 is
-# how many leading version lines are the root's: one in package.json and
-# bun.lock, two in package-lock.json (the root and packages[""]).
-normalise_version() {
-  local file="$1" old="$2" new="$3" count="$4"
-  { [ -n "$old" ] && [ -n "$new" ] && [ "$old" != "$new" ]; } || return 0
-  swap_version "$old" "$new" "$count" < "$file" > "$file.n" && mv "$file.n" "$file"
-}
-
-# Resolve one conflicted file $1 by three-way merge of its stages after
-# normalising the root version of the base and ours stages to theirs'. $2 is the
-# number of root version lines; $3 the temp dir. Succeeds, with the merge
-# staged, only when the merge is clean. A missing stage (the file was added or
-# deleted on one side) fails: that is a real conflict, not a version line.
-resolve_versioned() {
-  local f="$1" count="$2" d="$3"
-  git show ":1:$f" > "$d/base"   2>/dev/null || return 1
-  git show ":2:$f" > "$d/ours"   2>/dev/null || return 1
-  git show ":3:$f" > "$d/theirs" 2>/dev/null || return 1
-  normalise_version "$d/base" "$V1" "$V3" "$count"
-  normalise_version "$d/ours" "$V2" "$V3" "$count"
+# A version file: every version key, in all three stages, to the higher of ours
+# and theirs, then a three-way merge of the rest. Fails, leaving it conflicted,
+# when two values cannot be compared or the rest does not merge cleanly.
+resolve_keyed() {
+  local f="$1" d="$2"
+  stages "$f" "$d" || return 1
+  perl "$VERSIONS" align "$f" "$d/base" "$d/ours" "$d/theirs" || return 1
   git merge-file -p "$d/ours" "$d/base" "$d/theirs" > "$d/merged" || return 1
-  cp "$d/merged" "$f" && git add -- "$f"
+  stage_merged "$f" "$d"
+}
+
+# A changelog: TO's, with each release section of FROM's that TO lacks placed
+# before the first lower release. Never FROM's whole file, which would drop the
+# prerelease notes TO has written since the merge base.
+resolve_changelog() {
+  local f="$1" d="$2"
+  stages "$f" "$d" || return 1
+  perl "$VERSIONS" changelog "$d/ours" "$d/theirs" > "$d/merged" || return 1
+  stage_merged "$f" "$d"
+}
+
+# Whether $1 is one of the caller's resolve-extra paths.
+in_extra() { tr -s ' ' '\n' <<<"$RESOLVE_EXTRA" | grep -qxF -- "$1"; }
+
+# The version keys the merge at HEAD has LOWER than TO, as "path: key: a -> b"
+# lines; empty when none. Run on every merge, clean ones too: git takes FROM's
+# side of a line TO never touched, and no conflict means no resolution above.
+version_regressions() {
+  local d f
+  d=$(mktemp -d)
+  while IFS= read -r f; do
+    git show "origin/$TO:$f" > "$d/old" 2>/dev/null || continue
+    git show "HEAD:$f"       > "$d/new" 2>/dev/null || continue
+    perl "$VERSIONS" regress "$f" "$d/old" "$d/new"
+  done < <(git diff --name-only "origin/$TO" HEAD | perl "$VERSIONS" files)
+  rm -rf "$d"
 }
 
 # Rebuild lockfile $1 from the merged package.json, lockfile-only. It starts
@@ -203,14 +226,14 @@ regenerate() {
 # ---------------------------------------------------------------------------
 
 issue_body() {
-  local pr="$1" files="$2" why="$3"
+  local pr="$1" files="$2" why="$3" heading="${4:-Conflicted files:}"
   {
     echo "$why"
     echo
     [ -z "$pr" ] || echo "Pull request: $pr"
     if [ -n "$files" ]; then
       echo
-      echo "Conflicted files:"
+      echo "$heading"
       # shellcheck disable=SC2016  # backticks are Markdown here
       while IFS= read -r f; do [ -z "$f" ] || printf -- '- `%s`\n' "$f"; done <<<"$files"
     fi
@@ -314,48 +337,52 @@ msg="$subject"
 [ -n "$hotfix" ] || msg="$subject [skip ci]"
 
 conflicted=""
-# A stable release after a prerelease ALWAYS conflicts on the version and
-# lockfiles: the prerelease commit on $TO and the release commit on $FROM both
-# rewrote the root version line (observed on a bun repo's package.json, bun.lock
-# and CHANGELOG.md). Resolve exactly what that is, and nothing wider:
+regressed=""
+# A stable release after a prerelease ALWAYS conflicts on the version files: the
+# prerelease commit on $TO and the release commit on $FROM both rewrote the
+# version lines (observed on a bun repo's package.json, bun.lock and
+# CHANGELOG.md, and on a Gradle monorepo's per-module version.properties and
+# changelogs). Resolve exactly what that is, and nothing wider, so $TO's own
+# changes to the same files survive:
 #
-#   package.json, package-lock.json, bun.lock
-#                 make the root version agree across the stages, then three-way
-#                 merge, so $TO's own dependency changes survive (see above).
-#   CHANGELOG.md  $FROM's: the release notes are the release's.
+#   a version file versions.pl knows (package.json and its lockfiles,
+#   version.properties, pubspec.yaml, ...), at any depth
+#                 every version key to the higher of the two in every stage,
+#                 then three-way merge.
+#   CHANGELOG.md, at any depth
+#                 $TO's, plus the release sections of $FROM's it lacks.
 #   a lockfile still conflicted
 #                 a genuine dependency divergence. Take $FROM's, then rebuild it
 #                 from the merged package.json with the package manager. That
 #                 forces the pull request path, whatever $FROM carries.
-#   resolve-extra the caller's explicit choice, whole file toward $FROM.
+#   resolve-extra the caller's explicit choice, whole file toward $FROM. A
+#                 version file or a changelog is resolved as above even when it
+#                 is listed here (the one place this rule is stated): its whole
+#                 file toward $FROM is the rollback this exists to prevent.
 #
-# Anything else that conflicts is a real conflict and goes to a person. The
-# shared semantic-release git plugin's default assets cover the lockfile family.
+# Anything else that conflicts is a real conflict and goes to a person.
 if ! git merge "origin/$FROM" --no-ff -m "$msg"; then
   if ! git rev-parse -q --verify MERGE_HEAD >/dev/null; then
     echo "::error::git merge failed without a conflict to resolve."
     exit 1
   fi
-  # The root version at each stage, read before anything is resolved.
-  V1=$(stage_version 1 "$(git merge-base HEAD "origin/$FROM" 2>/dev/null || true)")
-  V2=$(stage_version 2 HEAD)
-  V3=$(stage_version 3 "origin/$FROM")
   scratch=$(mktemp -d)
-  set -f
-  # shellcheck disable=SC2086
-  for f in package.json package-lock.json bun.lock pnpm-lock.yaml yarn.lock CHANGELOG.md $RESOLVE_EXTRA; do
-    git status --porcelain=v1 -- "$f" | grep -q '^UU' || continue
+  unmerged=$(git diff --name-only --diff-filter=U)
+  versioned=$(perl "$VERSIONS" files <<<"$unmerged")
+  while IFS= read -r f; do
     case "$f" in
-      package.json|bun.lock)  resolve_versioned "$f" 1 "$scratch" || true ;;
-      package-lock.json)      resolve_versioned "$f" 2 "$scratch" || true ;;
-      pnpm-lock.yaml|yarn.lock) ;; # no root version line to align; rebuilt below if still conflicted
+      pnpm-lock.yaml|yarn.lock) ;; # no version line to align; rebuilt below if still conflicted
+      CHANGELOG.md|*/CHANGELOG.md) resolve_changelog "$f" "$scratch" || true ;;
       *)
-        git checkout --theirs -- "$f"
-        git add -- "$f"
+        if grep -qxF -- "$f" <<<"$versioned"; then
+          resolve_keyed "$f" "$scratch" || true
+        elif in_extra "$f"; then
+          git checkout --theirs -- "$f"
+          git add -- "$f"
+        fi
         ;;
     esac
-  done
-  set +f
+  done <<<"$unmerged"
   rm -rf "$scratch"
 
   # Only lockfiles left: rebuild them. Anything else still conflicted (a
@@ -381,6 +408,18 @@ if ! git merge "origin/$FROM" --no-ff -m "$msg"; then
   fi
 fi
 
+# However the merge came about, it must not lower a version $TO has. A lowered
+# version goes to a person exactly like a conflict: nothing reaches $TO.
+if [ -z "$conflicted" ]; then
+  regressed=$(version_regressions)
+  if [ -n "$regressed" ]; then
+    echo "::notice::The back-merge would move a version on $TO backwards:"
+    echo "$regressed"
+    git reset -q --hard "origin/$TO"
+    conflicted="$regressed"
+  fi
+fi
+
 if [ -z "$conflicted" ] && [ -z "$hotfix" ] && [ -z "$regenerated" ]; then
   git push origin "$TO"
   out result merged
@@ -395,12 +434,18 @@ fi
 if [ -z "$conflicted" ]; then
   src=HEAD kind=clean
   why="The back-merge of \`$FROM\` into \`$TO\` has to go through a pull request (a fix that \`$TO\` lacked, or a regenerated lockfile), but it could not be opened."
+elif [ -n "$regressed" ]; then
+  src="refs/remotes/origin/$FROM" kind=conflict
+  why="Merging \`$FROM\` into \`$TO\` after \`$label\` would move a version on \`$TO\` backwards, so it needs a person. Keep \`$TO\`'s version wherever it is the higher."
 else
   src="refs/remotes/origin/$FROM" kind=conflict
   why="Merging \`$FROM\` into \`$TO\` after \`$label\` conflicts beyond the version files, so it needs a person."
 fi
 if push_branch "$src" "$branch" && open_pr "$branch" "$subject after $label" "$(pr_body "$kind")"; then
   if [ "$kind" = clean ]; then
+    # The merge gate asks the review agent to look at a lockfile nobody wrote.
+    [ -z "$regenerated" ] || label_pr "$PR_URL" backmerge:regenerated \
+      "A back-merge whose lockfile was rebuilt: the merge gate wants a review verdict"
     out result pull-request
     out pr "$PR_URL"
     echo "Opened $PR_URL; the merge gate merges it once the checks pass."
@@ -411,7 +456,9 @@ else
 fi
 
 title="Back-merge of $FROM into $TO needs a person ($label)"
-ensure_issue "$title" "$(issue_body "$PR_URL" "$conflicted" "$why")" || true
+heading="Conflicted files:"
+[ -z "$regressed" ] || heading="Versions the merge would lower:"
+ensure_issue "$title" "$(issue_body "$PR_URL" "$conflicted" "$why" "$heading")" || true
 echo "::warning title=Back-merge needs a person::$FROM was released but not merged into $TO. ${ISSUE_URL:-No issue could be filed.} ${PR_URL}"
 out result conflict
 [ -z "$PR_URL" ] || out pr "$PR_URL"

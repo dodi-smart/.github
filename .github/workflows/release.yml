@@ -60,10 +60,9 @@ on:
       backmerge-from: { type: string,  default: "main" }
       backmerge-to:   { type: string,  default: "develop" }
 
-      # Extra paths to auto-resolve toward $FROM on a backmerge conflict,
-      # appended to the built-in list below. Newline- or space-separated,
-      # e.g. a subdirectory manifest and its lockfile. Additive: the default
-      # changes nothing about the built-in list.
+      # Extra paths to auto-resolve toward $FROM on a backmerge conflict, whole
+      # file. Newline- or space-separated. Additive: the default changes nothing.
+      # Never applies to a version file or a changelog (actions/backmerge).
       backmerge-resolve-paths:
         type: string
         default: ""

@@ -1,3 +1,13 @@
+## [1.42.0](https://github.com/dodi-smart/.github/compare/v1.41.0...v1.42.0) (2026-10-25)
+
+### ✨ Features
+
+* **merge-gate:** hotfix and standards-sync policies, and a review for a regenerated back-merge ([94dd2a1](https://github.com/dodi-smart/.github/commit/94dd2a1f26efcc4dc338b9d1093ca68b1a90259e))
+
+### 🐛 Bug Fixes
+
+* **backmerge:** a back-merge never moves a version backwards, and a PR check fails one that does ([d722b2a](https://github.com/dodi-smart/.github/commit/d722b2ac9ca93cfe0ba73547a88a52d1fd619614))
+
 ## [1.41.0](https://github.com/dodi-smart/.github/compare/v1.40.0...v1.41.0) (2026-10-23)
 
 ### ✨ Features

@@ -7,7 +7,7 @@ description: Decide from labels, the required check, the review status and commi
 
 inputs:
   policy:
-    description: 'Which rule set decides: `deps` (a dependency bot''s minor, patch or lockfile update into the default branch), `factory` (an agent PR whose issue is on the merge tier) or `backmerge` (the clean back-merge PR a hotfix release opens, merged with a merge commit). Add a policy in gate.sh, never a second gate.'
+    description: 'Which rule set decides: `deps` (a dependency bot''s minor, patch or lockfile update into the default branch), `factory` (an agent PR whose issue is on the merge tier), `backmerge` (the clean back-merge PR a hotfix release opens, merged with a merge commit), `hotfix` (an approved security patch on the hotfix lane into the release branch, squashed) or `standards-sync` (the org App''s pure, approved standards sync, squashed). Add a policy in gate.sh, never a second gate.'
     required: true
   number:
     description: 'PR number. Empty resolves it from a pull_request, workflow_run or status event.'
@@ -19,7 +19,7 @@ inputs:
     description: "An org variable's value. 'false' stops every merge through this gate."
     default: ''
   release-branch:
-    description: 'backmerge only: the release branch whose commits the back-merge carries. Its head must contain the merge commit''s second parent.'
+    description: 'backmerge: the release branch whose commits the back-merge carries; its head must contain the merge commit''s second parent. hotfix: the base a security patch must have.'
     default: 'main'
   authors:
     description: 'Comma-separated logins, besides the dependency bots, that may author commits on a PR this merges (the fix identity)'
@@ -50,9 +50,9 @@ runs:
     # agent:no-touch first, then draft and the author kind, from the one
     # dependency-bot list. The event's own label is not passed: a merge
     # gate's labeled events are verdicts, not a request label. Only `deps`
-    # demands a dependency bot; the back-merge PR is opened by the org App
-    # (an `automation` author), which `allow` lets through, and `agent:no-touch`
-    # still stops it first.
+    # demands a dependency bot; `allow` lets the rest through: the back-merge
+    # and the standards sync are the org App's (an `automation` author), and a
+    # security patch may be a person's. `agent:no-touch` still stops each first.
     - id: gate
       if: steps.pr.outputs.found == 'true'
       uses: dodi-smart/.github/actions/agent-gate@v1
@@ -64,6 +64,16 @@ runs:
         draft:      ${{ steps.pr.outputs.draft }}
         bots:       ${{ inputs.policy == 'deps' && 'only' || 'allow' }}
 
+    # standards-sync merges only the org App's own PR, so the gate needs the
+    # App's login before it decides. A read-only token is enough to learn it.
+    - id: app
+      if: steps.gate.outputs.proceed == 'true' && inputs.policy == 'standards-sync' && inputs.kill-switch != 'false'
+      uses: dodi-smart/.github/actions/app-token@v1
+      with:
+        client-id:   ${{ inputs.client-id }}
+        private-key: ${{ inputs.private-key }}
+        permissions: contents:read
+
     - id: decide
       if: steps.gate.outputs.proceed == 'true'
       shell: bash
@@ -74,6 +84,8 @@ runs:
         SHA:             ${{ steps.pr.outputs.head-sha }}
         LABELS:          ${{ steps.pr.outputs.labels }}
         TITLE:           ${{ steps.pr.outputs.title }}
+        AUTHOR:          ${{ steps.pr.outputs.author }}
+        APP_BOT:         ${{ steps.app.outputs.app-slug && format('{0}[bot]', steps.app.outputs.app-slug) || '' }}
         MERGEABLE:       ${{ steps.pr.outputs.mergeable-state }}
         HEAD_REF:        ${{ steps.pr.outputs.head-ref }}
         BASE_REF:        ${{ steps.pr.outputs.base-ref }}
@@ -97,9 +109,11 @@ runs:
     # Pinned to the commit the decision read: a push since then fails the
     # merge instead of merging what nobody verified. The App is the merge actor
     # the org rulesets accept. A dependency PR is rebased; an agent PR is squashed
-    # under the PR's title with its trailers (gate.sh squash-body); a back-merge
-    # is merged with a merge commit, never squashed or rebased, so the release
-    # commit and its tag stay reachable from the default branch.
+    # under the PR's title with its trailers (gate.sh squash-body); a security
+    # patch and a standards sync are squashed under the PR's title (for a patch,
+    # the `fix:` title target-guard checked, so the release is a patch); a
+    # back-merge is merged with a merge commit, never squashed or rebased, so the
+    # release commit and its tag stay reachable from the default branch.
     - id: merge
       if: steps.decide.outputs.merge == 'true'
       shell: bash
@@ -120,15 +134,18 @@ runs:
           echo "::warning title=Not merged::GH_APP_CLIENT_ID is not set, and only the org App may merge."
           exit 0
         fi
-        if [ "$POLICY" = factory ]; then
-          body=$(GH_TOKEN="$APP_TOKEN" gh api --paginate "/repos/$REPO/pulls/$PR/commits?per_page=100" --jq '.[].commit.message | @base64' \
-                   | "$ACTION_PATH/gate.sh" squash-body)
-          GH_TOKEN="$APP_TOKEN" gh pr merge "$PR" --repo "$REPO" --squash --subject "$TITLE (#$PR)" --body "$body" --match-head-commit "$SHA"
-        elif [ "$POLICY" = backmerge ]; then
-          GH_TOKEN="$APP_TOKEN" gh pr merge "$PR" --repo "$REPO" --merge --subject "$TITLE (#$PR)" --match-head-commit "$SHA"
-        else
-          GH_TOKEN="$APP_TOKEN" gh pr merge "$PR" --repo "$REPO" --rebase --match-head-commit "$SHA"
-        fi
+        case "$POLICY" in
+          factory)
+            body=$(GH_TOKEN="$APP_TOKEN" gh api --paginate "/repos/$REPO/pulls/$PR/commits?per_page=100" --jq '.[].commit.message | @base64' \
+                     | "$ACTION_PATH/gate.sh" squash-body)
+            GH_TOKEN="$APP_TOKEN" gh pr merge "$PR" --repo "$REPO" --squash --subject "$TITLE (#$PR)" --body "$body" --match-head-commit "$SHA" ;;
+          hotfix|standards-sync)
+            GH_TOKEN="$APP_TOKEN" gh pr merge "$PR" --repo "$REPO" --squash --subject "$TITLE (#$PR)" --match-head-commit "$SHA" ;;
+          backmerge)
+            GH_TOKEN="$APP_TOKEN" gh pr merge "$PR" --repo "$REPO" --merge --subject "$TITLE (#$PR)" --match-head-commit "$SHA" ;;
+          *)
+            GH_TOKEN="$APP_TOKEN" gh pr merge "$PR" --repo "$REPO" --rebase --match-head-commit "$SHA" ;;
+        esac
         echo "merged=true" >> "$GITHUB_OUTPUT"
         echo "::notice title=Merged::#$PR ($KIND): $REASON"
 
@@ -157,6 +174,17 @@ runs:
           3) echo "#$PR: the rebase box is already ticked; Renovate acts on it at its next run." ;;
           *) echo "#$PR has no Renovate rebase box; Dependabot rebases a conflict by itself." ;;
         esac
+
+    # A policy that needs `review / verdict` asks for it, like the rebase box
+    # above: a label with the App token, never a merge. pr-review clears
+    # `agent:review` when it finishes, so the gate asks again only after that.
+    - if: steps.decide.outputs.review-wanted == 'true'
+      uses: dodi-smart/.github/actions/request-review@v1
+      with:
+        number:      ${{ steps.pr.outputs.number }}
+        sha:         ${{ steps.pr.outputs.head-sha }}
+        client-id:   ${{ inputs.client-id }}
+        private-key: ${{ inputs.private-key }}
 
     - if: always()
       shell: bash

@@ -28,6 +28,9 @@ outputs:
   token:
     description: 'The installation token, or empty when no App is configured'
     value: ${{ steps.mint.outputs.token }}
+  app-slug:
+    description: "The App's slug, so its login is `<slug>[bot]`. Empty when no App is configured."
+    value: ${{ steps.mint.outputs.app-slug }}
 
 runs:
   using: composite

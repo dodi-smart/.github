@@ -27,8 +27,10 @@
 //     does not read it: the PR Checks target guard does, and rejects a security
 //     PR into `main` otherwise.
 //
-// A security PR into `main` is never merged unattended: the shared dependency
-// automerge only merges into the default branch, so a person merges it.
+// A security PR into `main` is not merged by the dependency policy, which only
+// merges into the default branch. The automerge workflow's `hotfix` job merges
+// it once the lane verdict, PR Checks and an approving review agree, unless the
+// HOTFIX_AUTOMERGE org variable is `false`; otherwise a person merges it.
 //
 // The filename is load-bearing. `github>owner/repo:security-hotfix` fetches
 // `security-hotfix.json` from the repo root, by exactly that name. Comments are

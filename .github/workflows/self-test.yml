@@ -274,16 +274,28 @@ jobs:
           # merge-gate: a factory PR is squashed, pinned to the head it read.
           mg = yaml.safe_load(open('actions/merge-gate/action.yml'))['runs']['steps']
           run = [x for x in mg if x.get('id') == 'merge'][0]['run']
-          head, _, deps = run.partition('else')
-          factory, _, backmerge = head.partition('elif')
-          if '--squash' not in factory or 'factory' not in factory:
+          # The merge step is one `case "$POLICY"`: each arm is a pattern line, then
+          # its commands up to `;;`.
+          arms = {}
+          for pat, body in re.findall(r'^\s*([a-z*|-]+)\)\n(.*?);;', run, re.S | re.M):
+              for p in pat.split('|'):
+                  arms[p] = body
+          def method(policy, want, never=()):
+              body = arms.get(policy, '')
+              return want in body and not any(n in body for n in never)
+          if not method('factory', '--squash'):
               bad.append('merge-gate must squash a factory PR')
-          if '--rebase' not in deps or '--squash' in deps:
+          if not method('*', '--rebase', ('--squash',)):
               bad.append('merge-gate must keep rebasing a dependency PR')
           # A back-merge keeps the release commit and its tag reachable from the
           # default branch, so it is a merge commit: never squashed, never rebased.
-          if 'backmerge' not in backmerge or '--merge' not in backmerge or '--squash' in backmerge or '--rebase' in backmerge:
+          if not method('backmerge', '--merge', ('--squash', '--rebase')):
               bad.append('merge-gate must merge a back-merge PR with a merge commit, never squash or rebase')
+          # A security patch is squashed under its `fix:` title, so it cuts a patch;
+          # a standards sync is squashed too.
+          for p in ('hotfix', 'standards-sync'):
+              if not method(p, '--squash', ('--rebase', '--merge')):
+                  bad.append('merge-gate must squash a ' + p + ' PR')
           merges = [l for l in run.splitlines() if 'gh pr merge' in l]
           if not merges or any('--match-head-commit' not in l for l in merges):
               bad.append('merge-gate must pin every merge with --match-head-commit')
@@ -1107,28 +1119,41 @@ jobs:
               bad.append('deps-automerge must not run an agent')
           if 'actions/merge-gate@' not in auto:
               bad.append('deps-automerge must decide through merge-gate')
-          # Two jobs, two policies, two kill switches, and neither takes the other's
-          # branches: the back-merge is a release branch coming back, not a dependency.
+          # One job per policy, each with its own kill switch, so stopping one kind
+          # of merge stops nothing else. The back-merge is a release branch coming
+          # back, not a dependency, so the merge job never names its branches.
           jobs = load('.github/workflows/deps-automerge.yml')['jobs']
           def gate_with(job):
               return [s.get('with') or {} for s in jobs[job]['steps'] if 'actions/merge-gate@' in uses(s)]
-          if set(jobs) != {'merge', 'backmerge'}:
-              bad.append('deps-automerge has jobs ' + ', '.join(sorted(jobs)) + ', expected merge and backmerge')
+          want = {'merge': ('deps', 'DEPS_AUTOMERGE'), 'backmerge': ('backmerge', 'BACKMERGE_AUTOMERGE'),
+                  'hotfix': ('hotfix', 'HOTFIX_AUTOMERGE'), 'sync': ('standards-sync', 'SYNC_AUTOMERGE')}
+          if set(jobs) != set(want):
+              bad.append('deps-automerge has jobs ' + ', '.join(sorted(jobs)) + ', expected ' + ', '.join(sorted(want)))
           else:
-              g = gate_with('merge'); b = gate_with('backmerge')
-              if len(g) != 1 or g[0].get('policy') != 'deps' or 'DEPS_AUTOMERGE' not in str(g[0].get('kill-switch')):
-                  bad.append('the merge job must call merge-gate once with policy deps and the DEPS_AUTOMERGE kill switch')
-              if len(b) != 1 or b[0].get('policy') != 'backmerge' or 'BACKMERGE_AUTOMERGE' not in str(b[0].get('kill-switch')):
-                  bad.append('the backmerge job must call merge-gate once with policy backmerge and the BACKMERGE_AUTOMERGE kill switch')
-              bcond = str(jobs['backmerge'].get('if'))
-              for need in ('workflow_run.event == ', 'workflow_run.conclusion == ', 'head_repository.full_name == github.repository', 'startsWith(github.event.workflow_run.head_branch, ', 'chore/backmerge-'):
-                  if need not in bcond:
-                      bad.append('the backmerge job condition lacks ' + need)
+              for job, (policy, switch) in want.items():
+                  g = gate_with(job)
+                  if len(g) != 1 or g[0].get('policy') != policy or switch not in str(g[0].get('kill-switch')):
+                      bad.append('the ' + job + ' job must call merge-gate once with policy ' + policy + ' and the ' + switch + ' kill switch')
+              # Every same-repo workflow_run arm, and each job's own branches.
+              for job, names in (('backmerge', ('chore/backmerge-',)), ('hotfix', ('fix/security-', 'inputs.release-branch')),
+                                 ('sync', ('chore/standards-sync',))):
+                  cond = str(jobs[job].get('if'))
+                  for need in ('workflow_run.event == ', 'workflow_run.conclusion == ', 'head_repository.full_name == github.repository') + names:
+                      if need not in cond:
+                          bad.append('the ' + job + ' job condition lacks ' + need)
               if 'backmerge' in str(jobs['merge'].get('if')):
                   bad.append('the merge job must not name the back-merge branches')
               for name, job in jobs.items():
                   if job.get('permissions') != {'contents': 'read', 'pull-requests': 'read', 'checks': 'read', 'statuses': 'read'}:
                       bad.append(name + ' must hold read-only permissions')
+          # A review the gate wants is requested inside merge-gate, for the PR
+          # and the head it read, never the event's.
+          mg = load('actions/merge-gate/action.yml')['runs']['steps']
+          rr = [s for s in mg if 'actions/request-review@' in uses(s)]
+          w = (rr[0].get('with') or {}) if len(rr) == 1 else {}
+          if (len(rr) != 1 or 'steps.decide.outputs.review-wanted' not in str(rr[0].get('if'))
+                  or 'steps.pr.outputs.number' not in str(w.get('number')) or 'steps.pr.outputs.head-sha' not in str(w.get('sha'))):
+              bad.append('merge-gate must request a review once, when decide says review-wanted, for the PR and head it read')
           preset = re.sub(r'^\\s*//.*$', '', open('default.json').read(), flags=re.M)
           for label in ('deps:minor', 'deps:patch', 'deps:lockfile', 'deps:major'):
               if label not in preset:

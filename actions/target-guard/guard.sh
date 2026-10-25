@@ -25,9 +25,10 @@
 #
 # `route` is steps 1-4 and `judge` steps 5-6; both are pure, set verdict and
 # reason from the environment, and `decide` is the two together, which test.sh
-# runs. `run` reads the property and the commits from the API, only when a lane
-# PR makes them matter, and writes verdict/reason to $GITHUB_OUTPUT. It exits 1
-# on `reject`.
+# runs. `verdict` reads the property and the commits from the API, only when a
+# lane PR makes them matter, and prints verdict/reason: merge-gate's `hotfix`
+# policy derives the verdict that way. `run` is `verdict` writing to
+# $GITHUB_OUTPUT with an annotation, and exits 1 on `reject`.
 set -euo pipefail
 
 # The one place that says who is a bot.
@@ -143,7 +144,8 @@ emit() {
   [ "$verdict" != reject ] || exit 1
 }
 
-run() {
+# Sets verdict and reason, reading the API for a lane-check.
+assess() {
   : "${REPO:?}"
   route
   if [ "$verdict" = lane-check ]; then
@@ -160,11 +162,14 @@ run() {
     fi
     judge
   fi
-  emit
 }
 
+run() { assess; emit; }
+print() { printf 'verdict=%s\nreason=%s\n' "$verdict" "$reason"; }
+
 case "${1:-run}" in
-  decide) decide; printf 'verdict=%s\nreason=%s\n' "$verdict" "$reason" ;;
-  run)    run ;;
-  *)      echo "usage: guard.sh [run|decide]" >&2; exit 2 ;;
+  decide)  decide; print ;;
+  verdict) assess; print ;;
+  run)     run ;;
+  *)       echo "usage: guard.sh [run|verdict|decide]" >&2; exit 2 ;;
 esac

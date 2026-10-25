@@ -178,11 +178,25 @@ check "defaults: a set override beats the stack"         'make t' "$(bare STACK=
 ml=$'bun run a\nbun run b "x y"\n  keeps $HOME `id` and = signs'
 check "defaults: a multi-line override round-trips"      "$ml" "$(defaults bun test "O_TEST=$ml")"
 check "defaults: ...and does not leak into the next output" 'bun run build' "$(defaults bun build "O_TEST=$ml")"
-check "defaults: ...and every output is still named"     'install lint typecheck test build design-lint lock version-files lockfiles' \
+check "defaults: ...and every output is still named"     'install lint typecheck test build design-lint ios lock version-files lockfiles' \
   "$(sed -n 's/<<__SETUP_STACK_EOF__$//p' "$TMP/defaults.out" | paste -sd' ' -)"
+check "kmm tests the JVM side and Android, not iOS"      './gradlew allTests testDebugUnitTest' "$(defaults kmm test)"
+check "kmm builds with assemble"                         './gradlew assemble' "$(defaults kmm build)"
+check "kmm's iOS half runs the simulator tests"          './gradlew iosSimulatorArm64Test' "$(defaults kmm ios)"
+check "kmm locks like gradle"                            "$(defaults gradle lock)" "$(defaults kmm lock)"
+check "kmm lists the version catalog"                    yes "$(listed kmm gradle/libs.versions.toml)"
+check "flutter's iOS half builds for the simulator"      'flutter build ios --simulator --debug' "$(defaults flutter ios)"
+# shellcheck disable=SC2016  # the variables are for the caller's shell
+check "xcode tests on the resolved destination"          'xcodebuild test -scheme "$SCHEME" -destination "$XCODE_DESTINATION"' "$(defaults xcode test)"
+check "xcode names no simulator"                         0 "$(grep -c 'iPhone' "$HERE/defaults.sh")"
+for st in bun node gradle android rust none; do
+  check "$st has no iOS half"                            '' "$(defaults "$st" ios)"
+done
+check "an explicit empty ios is empty"                   '' "$(defaults kmm ios O_IOS=)"
+check "an ios override is taken as given"                'make ios' "$(defaults flutter ios O_IOS='make ios')"
 bare STACK=nonesuch; rc=$?
 check "defaults: an unknown stack exits non-zero"        1 "$rc"
-check "defaults: ...with resolve's error wording"        1 "$(grep -c "::error::unknown stack 'nonesuch' (expected bun|node|gradle|android|flutter|rust|xcode|none)" "$TMP/defaults.log")"
+check "defaults: ...with resolve's error wording"        1 "$(grep -c "::error::unknown stack 'nonesuch' (expected bun|node|gradle|android|kmm|flutter|rust|xcode|none)" "$TMP/defaults.log")"
 check "defaults: ...and writes no output"                0 "$(wc -c < "$TMP/defaults.out" | tr -d ' ')"
 bare; rc=$?
 check "defaults: no stack at all is an unknown stack"    1 "$rc"
@@ -389,6 +403,55 @@ check "resolve: ...and no build"                  '' "$(rget build STACK=none)"
 check "resolve: a stack's build when unset"       'bun run build' "$(rget build STACK=bun)"
 check "resolve: an empty build is empty"          '' "$(rget build STACK=bun O_BUILD=)"
 check "resolve: ...and leaves test alone"         'bun run test:run' "$(rget test STACK=bun O_BUILD=)"
+check "resolve: kmm's iOS command"                './gradlew iosSimulatorArm64Test' "$(rget ios STACK=kmm O_IOS=@stack)"
+check "resolve: a stack with no iOS half has none" '' "$(rget ios STACK=node O_IOS=@stack)"
+
+# --- xcode-destination.sh, against a fake xcrun printing what simctl prints.
+mkdir -p "$TMP/xbin"
+cat > "$TMP/xbin/xcrun" <<'EOF'
+#!/usr/bin/env bash
+[ "$*" = "simctl list devices available" ] || exit 64
+cat "$XCRUN_OUT"
+EOF
+chmod +x "$TMP/xbin/xcrun"
+xdest() { # simctl-output input -> "exit XCODE_DESTINATION"
+  printf '%s' "$1" > "$TMP/simctl.txt"; : > "$TMP/x.env"; : > "$TMP/x.out"
+  local rc=0
+  env -i PATH="$TMP/xbin:$PATH" XCRUN_OUT="$TMP/simctl.txt" GITHUB_ENV="$TMP/x.env" GITHUB_OUTPUT="$TMP/x.out" \
+    "$HERE/xcode-destination.sh" "$2" > "$TMP/x.log" 2>&1 || rc=$?
+  printf '%s %s' "$rc" "$(sed -n 's/^XCODE_DESTINATION=//p' "$TMP/x.env")"
+}
+U1=11111111-1111-1111-1111-111111111111; U2=22222222-2222-2222-2222-222222222222; U3=33333333-3333-3333-3333-333333333333
+sims="== Devices ==
+-- iOS 18.6 --
+    iPad Pro 13-inch (M4) ($U3) (Shutdown)
+    iPhone 16 ($U1) (Shutdown)
+-- iOS 26.1 --
+    iPhone 17 Pro ($U2) (Shutdown)
+    iPhone 17 ($U3) (Booted)
+-- tvOS 26.0 --
+    Apple TV ($U1) (Shutdown)
+-- Unavailable: com.apple.CoreSimulator.SimRuntime.iOS-26-0 --"
+# simctl ends each device line with a space.
+sims="$(printf '%s' "$sims" | sed 's/)$/) /')"
+check "destination: auto takes the newest runtime's first iPhone, by id" "0 platform=iOS Simulator,id=$U2" "$(xdest "$sims" auto)"
+check "destination: ...and names it in the log"           1 "$(grep -c "iPhone 17 Pro ($U2)" "$TMP/x.log")"
+check "destination: ...and outputs it"                    "destination=platform=iOS Simulator,id=$U2" "$(cat "$TMP/x.out")"
+check "destination: empty input is auto"                  "0 platform=iOS Simulator,id=$U2" "$(xdest "$sims" '')"
+check "destination: runtimes compare as numbers, not text" "0 platform=iOS Simulator,id=$U1" \
+  "$(xdest "-- iOS 9.3 --
+    iPhone 6 ($U2) (Shutdown)
+-- iOS 18.0 --
+    iPhone 16 ($U1) (Shutdown)" auto)"
+check "destination: a runtime with no iPhone is passed over" "0 platform=iOS Simulator,id=$U1" \
+  "$(xdest "-- iOS 18.0 --
+    iPhone 16 ($U1) (Shutdown)
+-- iOS 26.0 --
+    iPad Air ($U2) (Shutdown)" auto)"
+check "destination: no iPhone falls back to generic, with a warning" "0 generic/platform=iOS Simulator" "$(xdest '' auto)"
+check "destination: ...the warning"                       1 "$(grep -c '::warning title=No iPhone simulator::' "$TMP/x.log")"
+check "destination: an explicit value is used as given"   "0 platform=iOS Simulator,name=iPhone 17" "$(xdest "$sims" 'platform=iOS Simulator,name=iPhone 17')"
+check "destination: a second line is refused"             "1 " "$(xdest "$sims" $'id=x\nEVIL=1')"
 
 echo "setup-stack: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

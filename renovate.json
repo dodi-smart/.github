@@ -54,14 +54,14 @@
       ]
     },
     {
-      "description": "The osv-scanner and syft versions actions/dependency-check and actions/sbom install: a renovate marker comment, then the pinned version on the next line",
+      "description": "The osv-scanner, syft and cdxgen versions actions/dependency-check and actions/sbom install: a renovate marker comment, then the pinned version on the next line",
       "customType": "regex",
       "managerFilePatterns": [
         "/^actions/dependency-check/install\\.sh$/",
         "/^actions/sbom/install\\.sh$/"
       ],
       "matchStrings": [
-        "# renovate: datasource=(?<datasource>[a-z-]+) depName=(?<depName>\\S+)\\n(?:OSV_SCANNER|SYFT)_VERSION=(?<currentValue>\\d+\\.\\d+\\.\\d+)\\n"
+        "# renovate: datasource=(?<datasource>[a-z-]+) depName=(?<depName>\\S+)\\n(?:OSV_SCANNER|SYFT|CDXGEN)_VERSION=(?<currentValue>\\d+\\.\\d+\\.\\d+)\\n"
       ],
       "extractVersionTemplate": "^v?(?<version>.+)$"
     }
@@ -91,7 +91,8 @@
         "firebase-tools",
         "react-doctor",
         "google/osv-scanner",
-        "anchore/syft"
+        "anchore/syft",
+        "CycloneDX/cdxgen"
       ],
       "semanticCommitType": "chore",
       "semanticCommitScope": "deps"

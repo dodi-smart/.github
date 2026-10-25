@@ -41,3 +41,32 @@ def first_step_is_report(job):
 def checkout_ok(step):
     """True for an actions/checkout step that leaves no token in .git/config."""
     return uses(step).startswith('actions/checkout@') and (step.get('with') or {}).get('persist-credentials') is False
+
+
+def conjuncts(expr):
+    """The terms an `if:` joins with a top-level `&&`, its opener and closer dropped.
+
+    Each term must hold for the job to run, so a job whose terms include X is
+    skipped whenever X is false. `&&` binds tighter than `||`, so an expression
+    with a top-level `||` is no conjunction and comes back as one whole term.
+    """
+    e = str(expr).strip()
+    if e.startswith(D.strip()) and e.endswith('}}'):
+        e = e[len(D.strip()):-2].strip()
+    terms, depth, quote, start, i = [], 0, None, 0, 0
+    while i < len(e):
+        c = e[i]
+        if quote:
+            quote = None if c == quote else quote
+        elif c in '\'"':
+            quote = c
+        elif c in '()':
+            depth += 1 if c == '(' else -1
+        elif depth == 0 and e[i:i + 2] in ('&&', '||'):
+            if e[i] == '|':
+                return [e]
+            terms.append(e[start:i].strip())
+            start = i + 2
+            i += 1
+        i += 1
+    return terms + [e[start:].strip()]

@@ -21,7 +21,7 @@ on:
 
       # WHICH TOOLCHAIN. One input, not one template per stack. See
       # actions/setup-stack for why.
-      #   bun | node | gradle | android | flutter | rust | xcode | none
+      #   bun | node | gradle | android | kmm | flutter | rust | xcode | none
       stack:
         type: string
         default: ""

@@ -808,6 +808,59 @@ jobs:
           print('dependency-check is an opt-in step of checks and all, after the phases and before commitlint')
           DC
 
+      # The iOS half of kmm, flutter and xcode runs on the hosted Mac and nowhere
+      # else, and only when asked: in pr-checks for a pull request with the label,
+      # in release.yml with ios-build. The `if:` is checked as a conjunction, so a
+      # term it holds is one the job cannot run without: no label, no Mac job.
+      - name: The iOS jobs run on a hosted Mac, only when asked
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import sys
+          from lib import load, conjuncts, checkout_ok, D
+          bad = []
+          pc = load('.github/workflows/pr-checks.yml')
+          inputs = pc[True]['workflow_call']['inputs']
+          jobs = pc['jobs']
+          ios = jobs.get('ios') or {}
+          terms = conjuncts(ios.get('if', ''))
+          label = 'contains(github.event.pull_request.labels.*.name, inputs.ios-label)'
+          if label not in terms:
+              bad.append('pr-checks ios: its if must require the label as a top-level && term (' + label + '), so the job is skipped without it; got ' + repr(terms))
+          if not any('inputs.stack' in t and all(x in t for x in ('kmm', 'flutter', 'xcode')) for t in terms):
+              bad.append('pr-checks ios: its if must require stack kmm, flutter or xcode')
+          if "needs.pick.outputs.docs_only != 'true'" not in terms:
+              bad.append('pr-checks ios: a docs-only change must skip it')
+          if (inputs.get('ios-label') or {}).get('default') != 'ios' or (inputs.get('ios') or {}).get('default') != '@stack':
+              bad.append('pr-checks: ios-label must default to ios and ios to @stack')
+          if 'ios' not in jobs['pr-checks']['needs']:
+              bad.append('the PR Checks summary must need ios, or a red iOS build stops failing the required context')
+          # Linux never gets the iOS command. Which jobs run on a Mac is the
+          # runner step's MACOS table.
+          for name, job in jobs.items():
+              if name != 'ios' and 'steps.setup.outputs.ios' in str(job.get('steps')):
+                  bad.append('pr-checks ' + name + ': runs the iOS command off the Mac job')
+          rel = load('.github/workflows/release.yml')
+          rel_inputs = rel[True]['workflow_call']['inputs']
+          rios = rel['jobs'].get('ios') or {}
+          rterms = conjuncts(rios.get('if', ''))
+          if (rel_inputs.get('ios-build') or {}).get('default') is not False:
+              bad.append('release.yml: ios-build must exist and default to false')
+          for t in ('inputs.ios-build', "needs.release.outputs.released == 'true'"):
+              if t not in rterms:
+                  bad.append('release.yml ios: its if must hold ' + t + ' as a top-level && term; got ' + repr(rterms))
+          if rios.get('needs') != ['release']:
+              bad.append('release.yml ios: must run after the release job')
+          if rios.get('permissions') != {'contents': 'read'}:
+              bad.append('release.yml ios: builds and pushes nothing, so contents: read only')
+          co = [st for st in rios.get('steps', []) if checkout_ok(st)]
+          if not co or (co[0].get('with') or {}).get('ref') != D + 'needs.release.outputs.tag }}':
+              bad.append('release.yml ios: must check out the tag the release cut, without persisting the token')
+          if bad:
+              sys.exit('::error::' + ' | '.join(bad))
+          print('the iOS jobs run only with the label (pr-checks) or ios-build (release), and Linux never runs the iOS command')
+          PY
+
       # A `test` or `build` with no command must not start a large runner, which
       # cost one caller 5 minutes of queue for 2 seconds of work. `pick` decides,
       # from the one command table and with no checkout (the step below asserts
@@ -1292,6 +1345,7 @@ jobs:
           }
           HOSTED = {
               ('self-test.yml', 'test'): 'this repo is public, and a public repo never touches a self-hosted runner',
+              ('self-test.yml', 'tools'): 'this repo is public, and a public repo never touches a self-hosted runner',
               ('publish-release.yml', 'release'): 'the public repo releases itself, so hosted like self-test',
               ('promote.yml', 'promote'): 'the public repo moves its own tag, so hosted like self-test',
               ('release-canary.yml', 'result'): 'the public repo posts its own status, so hosted like self-test',
@@ -1299,6 +1353,12 @@ jobs:
               ('supabase-checks.yml', 'deno'): 'starts Postgres, which needs the runner whose localhost the CLI polls',
               ('supabase-checks.yml', 'pgtap'): 'starts Postgres, which needs the runner whose localhost the CLI polls',
               ('supabase-deploy.yml', 'deploy'): 'holds a production Supabase token, which belongs on a throwaway VM',
+          }
+          # The iOS half: Apple targets link on macOS only, and these jobs run only
+          # when a pull request or a release asks (see the iOS step).
+          MACOS = {
+              ('pr-checks.yml', 'ios'): 'Apple targets build only on macOS; opt-in per pull request',
+              ('release.yml', 'ios'): 'Apple targets build only on macOS; opt-in per release',
           }
           seen = set()
           for path in sorted(glob.glob('.github/workflows/*.yml')):
@@ -1313,6 +1373,11 @@ jobs:
                       if ro != 'ubuntu-latest':
                           bad.append(where + ' is listed as hosted on purpose but runs on %r' % ro)
                       continue
+                  if (f, jid) in MACOS:
+                      seen.add((f, jid))
+                      if ro != 'macos-latest' or not first_step_is_report(job):
+                          bad.append(where + ' is listed as a hosted Mac job but runs on %r or does not start with runner-report' % ro)
+                      continue
                   if not first_step_is_report(job):
                       bad.append(where + ' must start with actions/runner-report')
                   want = POOLS.get((f, jid), 'light')
@@ -1326,7 +1391,7 @@ jobs:
                       rest = rest.replace(pool(p), '')
                   if 'ubuntu-latest' in rest:
                       bad.append(f + ': a hosted runner literal outside the runs-on expression')
-          for k in sorted(set(HOSTED) - seen):
+          for k in sorted((set(HOSTED) | set(MACOS)) - seen):
               bad.append('%s: job %s is listed as hosted on purpose but no longer exists' % k)
           if bad:
               sys.exit('::error::' + ' | '.join(bad))
@@ -1932,3 +1997,75 @@ jobs:
       - name: hk wrote valid SARIF
         if: ${{ !cancelled() }}
         run: jq -e '.version and (.runs | type == "array")' hk.sarif > /dev/null
+
+  # The pinned generators and scanner themselves, against the small projects in
+  # .github/selftest/__fixtures__ (README there), so a bump that stops reading one
+  # fails here instead of in a release. test.sh covers the logic with fakes; this
+  # covers that the real tools still produce what the logic expects. Its own job:
+  # Gradle and the Kotlin plugin download for a minute or two.
+  tools:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      FIXTURES: ${{ github.workspace }}/.github/selftest/__fixtures__
+    steps:
+      - uses: actions/checkout@v7
+        with: { persist-credentials: false }
+      - uses: actions/setup-java@v6
+        with:
+          java-version: '21'
+          distribution: temurin
+      # A Gradle on PATH for each fixture's gradlew to hand over to.
+      - uses: gradle/actions/setup-gradle@v6
+        with:
+          gradle-version: '8.14.3'
+          build-scan-publish: false
+          cache-read-only: ${{ github.ref != format('refs/heads/{0}', github.event.repository.default_branch) }}
+
+      # One SBOM per fixture through sbom.sh itself, with the real installs: the
+      # generator it picks, a non-zero count, and the components that prove each
+      # source was read.
+      - name: SBOMs of a Gradle, a KMM and a mobile sample
+        run: |
+          set -euo pipefail
+          fail=0
+          sbom() { # fixture, expected via, then purl prefixes that must be in it
+            local name="$1" via="$2" out="$RUNNER_TEMP/$1.cdx.json" verdict p; shift 2
+            verdict="$(cd "$FIXTURES/$name" && SBOM_ONLY="$out" "$GITHUB_WORKSPACE/actions/sbom/sbom.sh" | tee /dev/stderr | grep '^sbom: ')"
+            case "$verdict" in
+              *"result=written "*"via=$via") echo "$name: $verdict" ;;
+              *) echo "::error::$name: wanted an SBOM via $via, got: $verdict"; fail=1; return ;;
+            esac
+            for p in "$@"; do
+              if ! jq -e --arg p "$p" 'any(.components[]; (.purl // "") | startswith($p))' "$out" > /dev/null; then
+                echo "::error::$name: no component $p in the SBOM"; fail=1
+              fi
+            done
+          }
+          sbom gradle cyclonedx-gradle+syft pkg:maven/org.slf4j/slf4j-api@2.0.17
+          sbom kmm cdxgen+syft pkg:maven/org.jetbrains.kotlinx/kotlinx-coroutines-core pkg:cocoapods/Alamofire@5.10.2 pkg:swift/github.com/apple/swift-argument-parser@1.6.1
+          sbom mobile syft pkg:pub/collection@1.19.1
+          exit "$fail"
+
+      # dependency-check scans Package.resolved and reports Podfile.lock as not
+      # checked. Both rest on what the pinned osv-scanner does with them, so assert
+      # that: a SwiftURL package from the one, and pods with no ecosystem (dropped
+      # as unscannable) from the other.
+      - name: osv-scanner reads Package.resolved, and Podfile.lock without an ecosystem
+        run: |
+          set -euo pipefail
+          osv="$(actions/dependency-check/install.sh)"
+          cd "$FIXTURES/kmm/iosApp"
+          rc=0; "$osv" scan source --format json --all-packages -L Package.resolved > "$RUNNER_TEMP/spm.json" || rc=$?
+          [ "$rc" -le 1 ] || { echo "::error::osv-scanner could not read Package.resolved (exit $rc)"; exit 1; }
+          jq -e 'any(.results[].packages[].package; .ecosystem == "SwiftURL" and (.name | endswith("swift-argument-parser")))' "$RUNNER_TEMP/spm.json" > /dev/null \
+            || { echo "::error::osv-scanner read no SwiftURL package from Package.resolved"; exit 1; }
+          rc=0; "$osv" scan source --format json --all-packages --x-plugins swift/podfilelock -L Podfile.lock > "$RUNNER_TEMP/pods.json" || rc=$?
+          [ "$rc" -le 1 ] || { echo "::error::osv-scanner could not read Podfile.lock with swift/podfilelock (exit $rc)"; exit 1; }
+          jq -e '[.results[].packages[].package | select(.name == "Alamofire")] | length == 1' "$RUNNER_TEMP/pods.json" > /dev/null \
+            || { echo "::error::osv-scanner no longer reads the pods in Podfile.lock"; exit 1; }
+          if jq -e 'any(.results[].packages[].package; .ecosystem != "")' "$RUNNER_TEMP/pods.json" > /dev/null; then
+            echo "::error::osv-scanner now gives pods an ecosystem, so it can match them: move Podfile.lock from not_checkable into is_lockfile in actions/dependency-check, scanned with --x-plugins swift/podfilelock"
+            exit 1
+          fi
+          echo "Package.resolved: SwiftURL packages; Podfile.lock: pods read, no ecosystem, so not checkable"

@@ -29,7 +29,7 @@ on:
     inputs:
       stack:
         type: string
-        required: true      # bun | node | gradle | android | flutter | rust | xcode | none
+        required: true      # bun | node | gradle | android | kmm | flutter | rust | xcode | none
 
       # "@stack" = this stack's conventional command; "" = this repo has no such
       # step. See actions/setup-stack, which resolves these.
@@ -38,6 +38,15 @@ on:
       typecheck: { type: string, default: "@stack" }
       test:      { type: string, default: "@stack" }
       build:     { type: string, default: "@stack" }
+
+      # The `ios` job's command and label (see the job). "@stack" is the stack's
+      # iOS command, "" turns the job off. The label is read from the event, so
+      # one added after the last push needs `labeled` in the caller's types.
+      ios:               { type: string, default: "@stack" }
+      ios-label:         { type: string, default: "ios" }
+      xcode-version:     { type: string, default: "" }
+      # `auto` is the newest iPhone the runner has; see setup-stack.
+      xcode-destination: { type: string, default: "auto" }
 
       # Design-system verifier (oxlint + @shadcn/lint). Opt-in, no `@stack`
       # default (there is no conventional command). Runs on the light pool right
@@ -446,6 +455,46 @@ jobs:
           install:        ${{ steps.setup.outputs.install }}
           build:          ${{ steps.setup.outputs.build }}
 
+  # The iOS half, on GitHub's hosted Mac and nowhere else: a Linux runner cannot
+  # link an Apple target, and hosted macOS minutes bill at ten times Linux ones,
+  # so it runs only for a pull request with the `ios-label` label and is never
+  # part of `single-job`. Needs only `pick`, like `build`. Its command is the
+  # build phase, so `build-env` applies to it.
+  ios:
+    name: iOS
+    if: ${{ needs.pick.outputs.docs_only != 'true' && inputs.ios != '' && contains(fromJSON('["kmm","flutter","xcode"]'), inputs.stack) && contains(github.event.pull_request.labels.*.name, inputs.ios-label) }}
+    needs: [pick]
+    runs-on: macos-latest
+    timeout-minutes: ${{ inputs.timeout-minutes }}
+    steps:
+      - uses: dodi-smart/.github/actions/runner-report@v1
+        with:
+          selector: macos-latest
+      - *checkout
+      - id: setup
+        uses: dodi-smart/.github/actions/setup-stack@v1
+        with:
+          stack:             ${{ inputs.stack }}
+          isolate:           false
+          cache:             auto
+          next-cache:        false
+          env:               ${{ inputs.env }}
+          build-env:         ${{ inputs.build-env }}
+          install:           ${{ inputs.install }}
+          ios:               ${{ inputs.ios }}
+          # flutter build ios needs no JDK, and a Mac minute costs ten Linux ones.
+          java-version:      ${{ inputs.stack != 'flutter' && inputs.java-version || '' }}
+          flutter-version:   ${{ inputs.flutter-version }}
+          xcode-version:     ${{ inputs.xcode-version }}
+          xcode-destination: ${{ inputs.xcode-destination }}
+      - name: Run phases
+        uses: dodi-smart/.github/actions/run-phases@v1
+        with:
+          env-file:       ${{ steps.setup.outputs.env-file }}
+          build-env-file: ${{ steps.setup.outputs.build-env-file }}
+          install:        ${{ steps.setup.outputs.install }}
+          build:          ${{ steps.setup.outputs.ios }}
+
   # ---------------------------------------------------------------------------
   # Single-job shape: the same phases in the same order, with the same
   # skip-on-empty rule. Only the runner and the job boundaries differ.
@@ -547,7 +596,7 @@ jobs:
 
   pr-checks:
     name: PR Checks
-    needs: [pick, checks, test, build, all, coverage, zavet, react-doctor]
+    needs: [pick, checks, test, build, ios, all, coverage, zavet, react-doctor]
     if: always()
     runs-on: ${{ fromJSON((github.event.repository.private && !github.event.pull_request.head.repo.fork) && '["self-hosted","Linux","control"]' || '"ubuntu-latest"') }}
     timeout-minutes: 2

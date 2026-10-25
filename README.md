@@ -149,14 +149,42 @@ just released. The rules and their reasons are in
       sbom: true
 ```
 
-The SBOM is read from the lockfiles in the checkout (syft, pinned in
-`actions/sbom`), so it lists what the release declares, transitive dependencies
-included. A stack syft finds no lockfile for, such as a Gradle build without
-dependency locking, gets a warning and no attachment rather than an empty SBOM
-that would claim the release has no dependencies; build its SBOM in the build
-job instead. The step runs after the tags are pushed and never fails the job, so
-a missing SBOM never holds back a deploy chained on the release. Check the job
-summary, or the release assets, to confirm it was attached.
+The SBOM depends on what the checkout is, so it lists what the release
+declares, transitive dependencies included:
+
+| The checkout | Generator |
+|---|---|
+| A Gradle build (a root `gradlew` and settings or build script) that applies `org.cyclonedx.bom` in a build script or the version catalog | The build's own `./gradlew cyclonedxBom` (the CycloneDX Gradle plugin), which reads the resolved graph the way the build configured it |
+| A Gradle build without the plugin | cdxgen in Gradle mode, which runs the wrapper's `dependencies` |
+| Every checkout, Gradle or not | syft over the lockfiles: `bun.lock`, `package-lock.json`, `Cargo.lock`, `pubspec.lock`, `Podfile.lock`, `Package.resolved`, `gradle.lockfile` and the rest |
+
+A Gradle build gets both, merged: a KMM app's pods and Swift packages sit
+beside its Gradle graph, and a component both report is listed once. The Gradle
+generators need a JDK, so release with `stack: gradle`, `android` or `kmm`
+(`stack` is also the release job's toolchain); without one the step warns and
+the SBOM has syft's components alone. syft and cdxgen are release binaries
+pinned in `actions/sbom/install.sh` and checked against their release's
+checksums, and cdxgen is downloaded only for a Gradle build without the plugin.
+An SBOM with no components gets a warning and no attachment, rather than an
+SBOM that would claim the release has no dependencies. The step runs after the
+tags are pushed and never fails the job, so a missing SBOM never holds back a
+deploy chained on the release. Check the job summary, or the release assets, to
+confirm it was attached.
+
+`release.yml` can also build the iOS half of a `kmm`, `flutter` or `xcode` repo
+at the tag it cut, on the hosted Mac (see iOS builds):
+
+| Input | Default | Meaning |
+|---|---|---|
+| `ios-build` | `false` | Add an `iOS` job after the release job, run only when a tag was cut |
+| `ios-stack` | `""` | The app's stack, when `stack` is only the release toolchain. Empty takes `stack` |
+| `ios` | `"@stack"` | The iOS command |
+| `ios-env` | `""` | Newline `KEY=VALUE` for it, such as the `SCHEME` the `xcode` command reads |
+| `java-version`, `flutter-version`, `xcode-version`, `xcode-destination` | `21`, `""`, `""`, `auto` | As for setup-stack |
+
+A caller job that `needs` the release waits for that build, and a red one holds
+it back. That is what asking for it means; leave it off where a deploy must not
+wait on a Mac.
 
 When it drives semantic-release itself (no `release-command`), `release.yml`
 installs the tooling into a private prefix under `RUNNER_TEMP`, never into the
@@ -390,7 +418,7 @@ Renovate marker, and a bump releases as `chore(deps)`.
 | `actions/version-guard` | Fails a pull request that sets a version lower than its base already has, for the version keys the pull request itself changes (so a branch cut before the base's last prerelease passes). Takes `actions/changed-files`' `files` and `complete`, reads the changed version files through the API, and treats an incomplete list or an unreadable file as a warning, not a block. Outputs `verdict` (`skip`, `pass`, `reject`). `versions.pl` holds the version files and the comparison, shared with `actions/backmerge`. What `pr-checks.yml`'s `pick` job runs after its docs-only listing |
 | `actions/migration-lint` | Lints the `*.sql` migrations a pull request added or changed with a pinned squawk, as annotations. Advisory unless `blocking: true`; squawk failing to install or run always fails it. What `supabase-checks.yml`'s `migration-lint` job calls. The caller checks out first |
 | `actions/dependency-check` | Scans the lockfiles a pull request changed with osv-scanner and reports only the vulnerabilities it introduced, as a job summary table, with an optional `fail-on` threshold (`none` by default). Skipped for dependency PRs (it classifies its `author` input with `agent-gate`'s `gate.sh kind`). Reports through the job summary; it has no outputs |
-| `actions/sbom` | Builds a CycloneDX SBOM of the checkout with syft and attaches it to the GitHub release of each tag a run cut, as `sbom-<tag>.cdx.json`. Used by `release.yml`'s `sbom` input. Never fails the job: every problem is a warning and a line in the job summary, and an SBOM with no components is not attached |
+| `actions/sbom` | Builds a CycloneDX SBOM of the checkout (a Gradle build's resolved graph through its CycloneDX plugin or cdxgen, merged with every lockfile syft reads) and attaches it to the GitHub release of each tag a run cut, as `sbom-<tag>.cdx.json`. Used by `release.yml`'s `sbom` input. Never fails the job: every problem is a warning and a line in the job summary, and an SBOM with no components is not attached |
 | `actions/runner-report` | Writes which runner a job got (name, pool, labels, OS, image, queue time) to the job summary and a notice, or with `mode: run` a "Where it ran" table for every job of the run. Needs `actions: read` for queue time; without it the runner is still named. Never fails the job |
 | `actions/run-phases` | Runs a job's install, lint, design-lint, typecheck, test, build and smoke commands as timed phases, each in its own shell, and writes a timing and peak-memory table to the job summary. `log-dir` also writes each phase's output to a file; `keep-going: true` runs every phase and the `failed` output lists the ones that failed. The `peak-rss` output is the largest per-phase peak memory in MiB. What `pr-checks.yml` and `deps-verify.yml` run their commands with |
 | `actions/wait-for-deployment` | Waits for the frontend host's successful GitHub Deployment of the checked-out commit, or for a route to report its sha. What `supabase-deploy.yml`'s health check calls |
@@ -551,7 +579,25 @@ minutes of confident work on the wrong thing.
 ## Stacks
 
 The stack is an input, not a separate template: `bun`, `node`, `gradle`,
-`android`, `flutter`, `rust`, `xcode`, `none`.
+`android`, `kmm`, `flutter`, `rust`, `xcode`, `none`.
+
+| Stack | Pick it when the repo has | setup-stack installs | iOS half |
+|---|---|---|---|
+| `bun`, `node` | a `package.json` (bun when it pins bun or has `bun.lock`) | bun or Node | none |
+| `gradle` | a root `gradlew`, no Android modules | JDK, Gradle | none |
+| `android` | a `gradlew` and `com.android.*` plugins, no multiplatform | JDK, Gradle, Android SDK | none |
+| `kmm` | a `gradlew` and `kotlin("multiplatform")` (or `org.jetbrains.kotlin.multiplatform`) with Apple targets, usually beside an `iosApp/` | JDK, Gradle, Android SDK, the `~/.konan` cache | simulator tests |
+| `flutter` | a `pubspec.yaml` with `flutter:` | Flutter, a JDK unless `java-version` is empty | simulator build |
+| `rust` | a `Cargo.toml` | the pinned rust toolchain | none |
+| `xcode` | an `.xcodeproj` or `Package.swift` as the app itself | Xcode (`xcode-version`), Gradle too when a `gradlew` is there | unsigned simulator build |
+| `none` | nothing to install | nothing | none |
+
+The conventional commands per stack are in `actions/setup-stack/defaults.sh`,
+the one copy. A KMM repo used to call itself `android` or `gradle`; that still
+works on Linux, but `kmm` adds the `~/.konan` cache without the catalog having
+to name the multiplatform plugin, and gives the repo an iOS half. The `xcode`
+commands read `$SCHEME` (set it in `env`) and `$XCODE_DESTINATION`, which
+setup-stack resolves on macOS (`xcode-destination` below).
 
 ```yaml
 with:
@@ -568,6 +614,50 @@ have no install step.
 There used to be a caller template per stack. It failed the way templates fail:
 the Gradle one carried one product's task name, in a file every other Gradle repo
 was told to copy.
+
+### iOS builds
+
+The Linux runners run everything a mobile repo can build on Linux: a `kmm`
+repo's shared module (JVM side and host tests) and Android app, a Flutter
+app's Android side. They never try an Apple target, which cannot link off
+macOS. The iOS half (the stack's `ios` command in the table above) runs in a
+separate `iOS` job on GitHub's hosted `macos-latest`, and only for a pull request
+labelled `ios`, because hosted macOS minutes bill at ten times Linux ones:
+
+```yaml
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, labeled]   # `labeled`: the label works before the next push
+
+jobs:
+  pr-checks:
+    uses: dodi-smart/.github/.github/workflows/pr-checks.yml@v1
+    with:
+      stack: kmm
+      single-job: true
+      # Optional: the iOS command, here the framework tests and the app build.
+      ios: >-
+        ./gradlew iosSimulatorArm64Test &&
+        xcodebuild build -project iosApp/iosApp.xcodeproj -scheme "$SCHEME"
+        -destination "$XCODE_DESTINATION" CODE_SIGNING_ALLOWED=NO
+      env: |
+        SCHEME=iosApp
+```
+
+| Input | Default | Meaning |
+|---|---|---|
+| `ios` | `"@stack"` | The iOS command; `""` turns the job off |
+| `ios-label` | `"ios"` | The pull request label that runs it |
+| `xcode-version`, `xcode-destination` | `""`, `"auto"` | As for setup-stack |
+
+The job needs only `pick`, runs the install and then the `ios` command as its
+build phase (so `build-env` applies), and joins the `PR Checks` context: skipped
+without the label, red when the build fails. It is never part of `single-job`.
+The label is read from the event, so without `labeled` in the caller's types it
+takes effect on the next push.
+
+A release can build it too, at the tag it just cut: `ios-build: true` on
+`release.yml` adds the same job after the release job. See the release inputs.
 
 ### Design lint
 
@@ -645,6 +735,41 @@ pull request is skipped too, because `deps-verify` owns those. The findings are 
 the job summary. It never uses `dependency-review-action`: that needs GitHub Advanced Security on
 private repos and a `security-events` scope, which would fail every caller at
 startup.
+
+It reads `Package.resolved` (SwiftPM, against OSV's SwiftURL advisories) and
+`pubspec.lock` like the other lockfiles. A changed `Podfile.lock` is named in
+the summary as not checked: osv-scanner can read the pods, but OSV has no
+CocoaPods advisories to match them against, so a scan would report clean
+having checked nothing. `Self test` re-asserts that against the pinned
+osv-scanner.
+
+A Gradle build without dependency locking has no lockfile, so this step sees
+none of its dependencies, and says so when a build script changes. Turn locking
+on (`./gradlew dependencies --write-locks` writes `gradle.lockfile`, which the
+step reads), or submit the resolved graph to GitHub's dependency graph from the
+default branch, where Dependabot alerts on it. That needs `contents: write`,
+which no `pr-checks.yml` job holds, so it is a workflow of the repo's own:
+
+```yaml
+# .github/workflows/dependency-submission.yml
+name: Dependency submission
+on:
+  push:
+    branches: [main]
+permissions:
+  contents: write
+jobs:
+  submit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with: { persist-credentials: false }
+      - uses: actions/setup-java@v6
+        with: { distribution: temurin, java-version: '21' }
+      - uses: gradle/actions/dependency-submission@v6
+        with:
+          build-scan-publish: false
+```
 
 ### One job or three
 
@@ -959,10 +1084,14 @@ Inputs beyond `stack` and the command overrides:
 | `bun-version` | `auto` | See below. |
 | `rust-toolchain` | `stable` | Passed to the pinned rust toolchain action: `stable`, `nightly`, `1.89.0`, or any rustup specifier. |
 | `next-cache` | `auto` | Keep Next.js's `.next/cache` between jobs: `auto`, `true` or `false`. See Caches. |
+| `ios` | `@stack` | The iOS command for `kmm`, `flutter` and `xcode`, run only by a macOS job (see iOS builds). |
+| `xcode-version` | empty | For `xcode`, and for `kmm` and `flutter` on macOS. Empty takes the runner's default. |
+| `xcode-destination` | `auto` | On macOS, for `xcode`, `kmm` and `flutter`: exported as `XCODE_DESTINATION` for every later step. `auto` is the first iPhone of the newest iOS runtime the runner lists, by id, so no device name goes stale when an image drops it; with none it falls back to `generic/platform=iOS Simulator` (builds, no tests) and warns. Anything else is used as given. |
 
 Outputs: `env-file` and `build-env-file` (both always written, empty when
 nothing was given, so source them unconditionally), plus the resolved `install`,
-`lint`, `typecheck`, `test`, `build` and `design-lint` commands. `cache-enabled`
+`lint`, `typecheck`, `test`, `build`, `design-lint` and `ios` commands, and
+`xcode-destination` (empty off macOS). `cache-enabled`
 is `true` when the job uses the GitHub Actions cache (hosted, or self-hosted
 macOS without `RUNNER_PERSISTENT_CACHE`) and `false` when isolated, on
 self-hosted Linux, or with a runner cache directory. `cache-save` is `true`
@@ -1039,7 +1168,8 @@ branch (it publishes no version tags), and Renovate can still move that pin.
   the lockfiles and then the commit's tree. Always off when isolated.
 - **Gradle repos with a cache on** get `setup-gradle`, including `stack: xcode`
   when the repo has a root `gradlew`. A repo whose `gradle/libs.versions.toml`
-  names the multiplatform plugin and a `kotlin` version also caches `~/.konan`,
+  names the multiplatform plugin and a `kotlin` version (any `kmm` repo whose
+  catalog has a `kotlin` version) also caches `~/.konan`,
   Kotlin/Native's toolchain, keyed on OS, arch and that version alone. Both need
   the repo checked out before `setup-stack`.
 - **The `~/.konan` entry is saved only on a miss**, by `actions/cache`'s post

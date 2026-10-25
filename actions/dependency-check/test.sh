@@ -123,8 +123,39 @@ fresh; put $LOCK head-x
 run FILES=$'README.md\nsrc/a.ts' OSV_SCANNER=
 expect_rc "no lockfile changed passes" 0
 expect "no lockfile changed is skipped" result skipped
-expect_in "the summary says no lockfile changed" "$SUMM" "no lockfile changed"
+expect_in "the summary says no lockfile changed" "$SUMM" "no lockfile it can check changed"
 expect "nothing counted when skipped" new 0
+
+# SwiftPM's lockfile is scanned like any other.
+fresh; put ios/App.xcworkspace/xcshareddata/swiftpm/Package.resolved head-clean; fx head-clean 0
+run FILES=ios/App.xcworkspace/xcshareddata/swiftpm/Package.resolved
+expect_scans "Package.resolved is scanned" 1
+expect "and checked" result clean
+
+# Podfile.lock is named as not checked, never scanned and never reported clean.
+fresh; put ios/Podfile.lock head-clean; fx head-clean 0
+run FILES=ios/Podfile.lock FAIL_ON=critical OSV_SCANNER=
+expect_rc "a Podfile.lock alone passes, even with a threshold" 0
+expect "and is skipped, not clean" result skipped
+expect_scans "with no scan" 0
+expect_in "the summary names it as not checked" "$SUMM" '`ios/Podfile.lock` is not checked'
+expect_in "and says why" "$SUMM" "no CocoaPods advisories"
+expect_in "with a notice in the log" "$LOG" '::notice::dependency-check: `ios/Podfile.lock` is not checked'
+fresh; put ios/Podfile.lock head-clean; put $LOCK head-clean; fx head-clean 0
+run FILES=$'ios/Podfile.lock\n'"$LOCK"
+expect_scans "beside another lockfile, only that one is scanned" 1
+expect "and the result is that one's" result clean
+expect_in "and the report still names the Podfile.lock" "$SUMM" '`ios/Podfile.lock` is not checked'
+
+# A Gradle build without dependency locking is pointed at dependency submission.
+fresh
+run FILES=$'app/build.gradle.kts\nsrc/Main.kt' OSV_SCANNER=
+expect "a Gradle change with no lockfile is skipped" result skipped
+expect_in "and the summary points at dependency submission" "$SUMM" "gradle/actions/dependency-submission"
+fresh; put app/gradle.lockfile head-clean; fx head-clean 0
+run FILES=$'gradle/libs.versions.toml\napp/gradle.lockfile'
+expect "a locked Gradle build is scanned" result clean
+expect_not_in "and gets no pointer" "$SUMM" "dependency-submission"
 
 fresh; put $LOCK head-x
 run AUTHOR_KIND=dependency FILES=$LOCK FAIL_ON=critical OSV_SCANNER=

@@ -13,12 +13,15 @@ pass=0; fail=0
 ok()  { printf '  ok   %s\n' "$1"; pass=$((pass + 1)); }
 bad() { printf '  FAIL %s\n' "$1"; fail=$((fail + 1)); }
 
+# gd [VAR=value ...]: gate.sh decide on a green check into the default branch, nothing else set.
+gd() { env -i PATH="$PATH" LABELS='[]' TITLE='fix: x' CHECK=success REVIEW='' FOREIGN='' KILL='' \
+         BASE_REF=develop DEFAULT_BRANCH=develop "$@" "$HERE/gate.sh" decide; }
+
 # $1 name, $2 want merge (true, false, or rebase), then env assignments. The default is a mergeable
 # verified minor into the default branch with a green check and only allowed authors.
 decide() {
   local name="$1" want="$2" got m r; shift 2
-  got="$(env -i PATH="$PATH" POLICY=deps LABELS='["deps:verified","deps:minor"]' TITLE='chore(deps): update x' \
-         CHECK=success REVIEW='' FOREIGN='' KILL='' BASE_REF=develop DEFAULT_BRANCH=develop "$@" "$HERE/gate.sh" decide)"
+  got="$(gd POLICY=deps LABELS='["deps:verified","deps:minor"]' TITLE='chore(deps): update x' "$@")"
   m=$(sed -n 's/^merge=//p' <<<"$got"); r=$(sed -n 's/^reason=//p' <<<"$got")
   [ "$(sed -n 's/^rebase=//p' <<<"$got")" = true ] && m=rebase
   if [ "$m" = "$want" ]; then ok "$(printf '%-58s -> %s (%s)' "$name" "$m" "$r")"
@@ -106,6 +109,36 @@ decide "factory: the branch conflicts with its base"              false "$F" "$F
 decide "factory: behind its base is not a conflict"               true  "$F" "$FL" TIER=merge REVIEW=success MERGEABLE=behind
 decide "factory: mergeable state not computed yet"                true  "$F" "$FL" TIER=merge REVIEW=success MERGEABLE=unknown
 
+# The new policies' PR shapes, shared with the says and wants cases below: a
+# security patch into main, the App's pure sync, a regenerated back-merge.
+HF=(POLICY=hotfix 'LABELS=[]' BASE_REF=main)
+SY=(POLICY=standards-sync 'LABELS=[]' HEAD_REF=chore/standards-sync APP_BOT='app[bot]' AUTHOR='app[bot]' VERIFY=success RENDER=success)
+BR=(POLICY=backmerge 'LABELS=["backmerge:regenerated"]' HEAD_REF=chore/backmerge-v1 PARENTS=2 P1_REL=ahead P2_REL=ahead)
+
+# backmerge:regenerated: the rebuilt lock file needs an approving review too.
+decide "backmerge regenerated: approved, green"                   true  "${BR[@]}" REVIEW=success
+
+# hotfix: a security patch on the lane into the release branch.
+decide "hotfix: lane, approved, green"                            true  "${HF[@]}" LANE=lane REVIEW=success
+decide "hotfix: a person wrote it (no author rule)"               true  "${HF[@]}" LANE=lane REVIEW=success FOREIGN=someone
+decide "hotfix: another release branch name"                      true  "${HF[@]}" BASE_REF=release RELEASE_BRANCH=release LANE=lane REVIEW=success
+decide "hotfix: the base unreadable"                              false "${HF[@]}" BASE_REF= LANE=lane REVIEW=success
+decide "hotfix: verdict release"                                  false "${HF[@]}" LANE=release REVIEW=success
+decide "hotfix: verdict reject"                                   false "${HF[@]}" LANE=reject REVIEW=success
+decide "hotfix: a pending review"                                 false "${HF[@]}" LANE=lane REVIEW=pending
+decide "hotfix: approved, but the check failed"                   false "${HF[@]}" LANE=lane REVIEW=success CHECK=failure
+decide "hotfix: approved, but the check has not reported"         false "${HF[@]}" LANE=lane REVIEW=success CHECK=
+decide "hotfix: the branch conflicts with its base"               false "${HF[@]}" LANE=lane REVIEW=success MERGEABLE=dirty
+
+# standards-sync: the org App's pure sync into the default branch.
+decide "sync: pure, verified, approved, green"                    true  "${SY[@]}" REVIEW=success
+decide "sync: the App's login unreadable"                         false "${SY[@]}" APP_BOT= REVIEW=success
+decide "sync: a commit by someone else"                           false "${SY[@]}" REVIEW=success FOREIGN=someone
+decide "sync: no render status"                                   false "${SY[@]}" RENDER= REVIEW=success
+decide "sync: no verify status"                                   false "${SY[@]}" VERIFY= REVIEW=success
+decide "sync: approved, but the check failed"                     false "${SY[@]}" REVIEW=success CHECK=failure
+decide "sync: the branch conflicts with its base"                 false "${SY[@]}" REVIEW=success MERGEABLE=dirty
+
 decide "verified minor, green"                                    true
 decide "verified minor, release age met, mergeable"               true  AGE=success MERGEABLE=clean
 decide "verified minor, mergeable state not computed yet"         true  MERGEABLE=unknown
@@ -120,6 +153,47 @@ check() { local name="$1"; shift; if "$@"; then ok "$name"; else bad "$name"; fi
 check "factory dirty: the reason says the loop brings it up to date" \
   grep -qx 'reason=the branch conflicts with its base; the fix loop brings it up to date' <<<"$got"
 check "factory dirty: it is not a rebase request" grep -qx 'rebase=false' <<<"$got"
+
+# Each refusal of the new rules says exactly why (these cases are not repeated
+# above). says NAME REASON [VAR=value ...] asserts merge=false and that reason;
+# wants NAME true|false [...] asserts review-wanted (a missing review on a
+# candidate has merge-gate request one).
+says() { local name="$1" want="$2" got; shift 2; got="$(gd "$@")"
+  if grep -qx 'merge=false' <<<"$got" && grep -qxF "reason=$want" <<<"$got"; then ok "says: $name"
+  else bad "says: $name (wanted '$want', got '$(sed -n 's/^reason=//p' <<<"$got")')"; fi; }
+wants() { local name="$1" want="$2"; shift 2
+  check "review-wanted=$want: $name" grep -qx "review-wanted=$want" <<<"$(gd "$@")"; }
+says "hotfix, a non-lane verdict" "target-guard's verdict is skip, not lane: the base is not the release branch (main)" \
+  "${HF[@]}" LANE=skip LANE_REASON='the base is not the release branch (main)' REVIEW=success
+says "hotfix, no verdict read" "target-guard's verdict is unreadable, not lane" "${HF[@]}" REVIEW=success
+says "hotfix, no review" "a security patch on the hotfix lane waits for review / verdict, which the head does not have yet" "${HF[@]}" LANE=lane
+says "hotfix, a changes verdict" "a security patch on the hotfix lane: review / verdict asks for changes" "${HF[@]}" LANE=lane REVIEW=failure
+says "hotfix, the kill switch off" "the kill switch is 'false'" "${HF[@]}" LANE=lane REVIEW=success KILL=false
+says "hotfix, a wrong base" "the base is develop, not the release branch main" POLICY=hotfix LANE=lane REVIEW=success
+says "sync, a non-pure render" "the render is not pure (standards / render is failure): an agent-touched sync waits for a person" \
+  "${SY[@]}" RENDER=failure REVIEW=success
+says "sync, new verify failures" "standards / verify is failure: the sync may add verify failures, so a person merges it" \
+  "${SY[@]}" VERIFY=failure REVIEW=success
+says "sync, the kill switch off" "the kill switch is 'false'" "${SY[@]}" REVIEW=success KILL=false
+says "sync, a wrong head" "the head branch is chore/other, not chore/standards-sync" "${SY[@]}" HEAD_REF=chore/other REVIEW=success
+says "sync, a wrong base" "the base is main, not the default branch develop" "${SY[@]}" BASE_REF=main REVIEW=success
+says "sync, not the App's PR" "the PR is by someone, not the org App (app[bot])" "${SY[@]}" AUTHOR=someone REVIEW=success
+says "sync, no review" "a standards sync waits for review / verdict, which the head does not have yet" "${SY[@]}"
+says "backmerge regenerated, no review" \
+  "a back-merge whose lock file was regenerated (backmerge:regenerated) waits for review / verdict, which the head does not have yet" "${BR[@]}"
+says "backmerge regenerated, a changes verdict" \
+  "a back-merge whose lock file was regenerated (backmerge:regenerated): review / verdict asks for changes" "${BR[@]}" REVIEW=failure
+wants "a lane PR with no review"                    true  "${HF[@]}" LANE=lane
+wants "a lane PR with no review and a red check"    true  "${HF[@]}" LANE=lane CHECK=failure
+wants "a lane PR already reviewed"                  false "${HF[@]}" LANE=lane REVIEW=failure
+wants "a lane PR whose review is in flight"         false "${HF[@]}" LANE=lane 'LABELS=["agent:review"]'
+wants "a non-lane PR"                               false "${HF[@]}" LANE=skip
+wants "a lane PR with the kill switch off"          false "${HF[@]}" LANE=lane KILL=false
+wants "an agent-touched sync is still reviewed"     true  "${SY[@]}" RENDER=failure
+wants "a sync by someone else"                      false "${SY[@]}" AUTHOR=someone
+wants "a regenerated back-merge with no review"     true  "${BR[@]}"
+wants "a plain back-merge"                          false "${BR[@]}" 'LABELS=[]'
+wants "a deps:fixed PR (deps-verify asks for it)"   false POLICY=deps 'LABELS=["deps:fixed","deps:patch"]' TITLE='chore(deps): update x'
 
 # squash-body: the trailers of every commit on the PR, one base64 message per
 # line (as the API step feeds it), each once, in the order first seen.
@@ -137,6 +211,8 @@ check "squash-body of nothing is empty" test -z "$(: | "$HERE/gate.sh" squash-bo
 mkdir -p "$WORK/bin"
 printf '%s\n' '#!/usr/bin/env bash' 'echo "$*" >> "$STUB_CALLS"' 'case "$*" in' \
   '  *check-runs*) echo "$STUB_CHECK" ;;' \
+  '  *custom_properties*) echo "$STUB_HOTFIX" ;;' \
+  '  *commit.message*) echo "$STUB_MESSAGES" ;;' \
   '  */compare/p1...*) echo "$STUB_P1" ;;' \
   '  */compare/p2...*) echo "$STUB_P2" ;;' \
   '  */commits/abc\ --jq*) printf "%s\n" $STUB_PARENTS ;;' \
@@ -210,6 +286,48 @@ check "run: and is held"                                         grep -qx 'merge
 bm BASE_REF=main
 check "run: a base that is not the default reads no parents"     bash -c '! grep -q "commits/abc --jq" "$1"' _ "$WORK/calls"
 check "run: and is held too"                                     grep -qx 'merge=false' "$WORK/out"
+
+# hf [VAR=value ...]: a security patch from fix/security-x into main, on a repo
+# with the lane enabled, a fix commit and an approving review.
+APPROVED='[{"context":"review / verdict","state":"success"}]'
+hf() { run '[]' 'someone' success '' '' POLICY=hotfix BASE_REF=main HEAD_REF=fix/security-x TITLE='fix: patch x' \
+         STUB_HOTFIX=enabled STUB_MESSAGES='["fix: patch x"]' STUB_STATUSES="$APPROVED" "$@"; }
+hf
+check "run: an approved lane PR merges"                          grep -qx 'merge=true' "$WORK/out"
+check "run: it derives the lane verdict from the live PR"        bash -c 'grep -q custom_properties "$1" && grep -q "commit.message" "$1"' _ "$WORK/calls"
+check "run: and reads no commit authors"                         bash -c '! grep -q "author.login" "$1"' _ "$WORK/calls"
+hf STUB_HOTFIX=disabled
+check "run: a repo without the lane is held"                     grep -q "^reason=target-guard's verdict is reject, not lane: a security patch cannot target" "$WORK/out"
+hf STUB_MESSAGES='["feat: x"]'
+check "run: a feature commit on the patch is held"               grep -q "^reason=target-guard's verdict is reject, not lane: .*a commit is a feature" "$WORK/out"
+hf TITLE='chore: x'
+check "run: a non-fix title is held"                             grep -qx 'merge=false' "$WORK/out"
+hf STUB_STATUSES='[]'
+check "run: an unreviewed lane PR asks for a review"             bash -c 'grep -qx merge=false "$1" && grep -qx review-wanted=true "$1"' _ "$WORK/out"
+hf MERGEABLE=dirty
+check "run: a conflicted lane PR is held for the conflict"       grep -qx 'reason=the security patch conflicts with main: a person resolves it' "$WORK/out"
+hf KILL=false
+check "run: the kill switch off reads nothing"                   test ! -s "$WORK/calls"
+check "run: and the switch holds it"                            grep -qx "reason=the kill switch is 'false'" "$WORK/out"
+hf BASE_REF=develop
+check "run: a patch into develop reads no lane property"         bash -c '! grep -q custom_properties "$1"' _ "$WORK/calls"
+check "run: and is held"                                         grep -qx 'merge=false' "$WORK/out"
+
+# sy [VAR=value ...]: the App's pure, approved sync into develop.
+PURE='[{"context":"review / verdict","state":"success"},{"context":"standards / verify","state":"success"},{"context":"standards / render","state":"success"}]'
+sy() { run '[]' 'app[bot]' success '' '' POLICY=standards-sync HEAD_REF=chore/standards-sync AUTHOR='app[bot]' APP_BOT='app[bot]' \
+         STUB_STATUSES="$PURE" "$@"; }
+sy
+check "run: a pure, approved sync merges"                        grep -qx 'merge=true' "$WORK/out"
+sy STUB_AUTHORS='app[bot] github-actions[bot]'
+check "run: a sync allows the App alone as a commit author"      grep -qxF 'reason=a commit is by an author this policy does not merge: github-actions[bot]' "$WORK/out"
+sy STUB_STATUSES='[{"context":"standards / verify","state":"success"},{"context":"standards / render","state":"failure"}]'
+check "run: an agent-touched sync is held, and asks for a review" bash -c 'grep -qx merge=false "$1" && grep -qx review-wanted=true "$1"' _ "$WORK/out"
+
+run '["backmerge:regenerated"]' '' success success '' POLICY=backmerge HEAD_REF=chore/backmerge-v1.2.3
+check "run: an approved regenerated back-merge merges"           grep -qx 'merge=true' "$WORK/out"
+run '["backmerge:regenerated"]' '' success '' '' POLICY=backmerge HEAD_REF=chore/backmerge-v1.2.3
+check "run: an unreviewed one is held, and asks for a review"    bash -c 'grep -qx merge=false "$1" && grep -qx review-wanted=true "$1"' _ "$WORK/out"
 
 # tick: the rebase request's edit to Renovate's PR body.
 tick() { printf '%b' "$1" | "$HERE/gate.sh" tick; }

@@ -108,13 +108,16 @@ esac
 GH
 chmod +x "$WORK/bin/gh"
 
+# A lane PR on a repo with the lane enabled; `run` and `verdict` both start here.
+LANE_PR=(PATH="$WORK/bin:$PATH" EVENT=pull_request REPO=o/r NUMBER=7 BASE=main HEAD=fix/security-x
+         DEFAULT_BRANCH=develop FORK=false TITLE='fix(deps): bump x' AUTHOR=someone
+         FAKE_PROP=enabled FAKE_COMMITS='["fix: a"]')
+
 # $1 name, $2 want verdict, then env assignments.
 runit() {
   local name="$1" want="$2" out v rc; shift 2
   out="$WORK/out"; : > "$out"
-  env PATH="$WORK/bin:$PATH" GITHUB_OUTPUT="$out" EVENT=pull_request REPO=o/r NUMBER=7 BASE=main \
-      HEAD=fix/security-x DEFAULT_BRANCH=develop FORK=false TITLE='fix(deps): bump x' AUTHOR=someone \
-      FAKE_PROP=enabled FAKE_COMMITS='["fix: a"]' "$@" "$SCRIPT" > "$WORK/log" 2>&1
+  env GITHUB_OUTPUT="$out" "${LANE_PR[@]}" "$@" "$SCRIPT" > "$WORK/log" 2>&1
   rc=$?
   v=$(sed -n 's/^verdict=//p' "$out")
   if [ "$v" != "$want" ]; then bad "$(printf '%-62s -> %s (wanted %s)' "$name" "${v:-<none>}" "$want")"
@@ -141,6 +144,16 @@ grep -q 'against `develop`' "$WORK/log" && bad "a skip should not give instructi
 
 runit "run: the reject names the default branch"              reject HEAD=feat/x
 grep -q 'against `develop`' "$WORK/log" && ok "the reject says where to open it" || bad "the reject does not say where to open it"
+
+# verdict: the same reads, printed on stdout for merge-gate, with no annotation
+# and exit 0 whatever the verdict.
+vrun() { env -u GITHUB_OUTPUT "${LANE_PR[@]}" "$@" "$SCRIPT" verdict 2>&1; }
+got=$(vrun); rc=$?
+[ "$rc:$(sed -n 's/^verdict=//p' <<<"$got")" = 0:lane ] && ok "verdict: a lane PR prints lane, exit 0" || bad "verdict: a lane PR ($rc: $got)"
+got=$(vrun FAKE_PROP=disabled); rc=$?
+[ "$rc:$(sed -n 's/^verdict=//p' <<<"$got")" = 0:reject ] && ok "verdict: a reject prints reject, exit 0" || bad "verdict: a reject ($rc: $got)"
+grep -q '^::' <<<"$got" && bad "verdict: prints an annotation" || ok "verdict: prints no annotation"
+grep -q '^reason=a security patch cannot target' <<<"$got" && ok "verdict: prints the reason" || bad "verdict: no reason ($got)"
 
 echo
 echo "$pass passed, $fail failed"

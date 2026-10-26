@@ -1,3 +1,9 @@
+## [1.44.5](https://github.com/dodi-smart/.github/compare/v1.44.4...v1.44.5) (2026-10-26)
+
+### ⚡ Performance Improvements
+
+* **pr-checks:** reuse Dart build-hook output across jobs on self-hosted and hosted runners, so OpenCV is not rebuilt every time ([#214](https://github.com/dodi-smart/.github/issues/214)) ([8bd18ab](https://github.com/dodi-smart/.github/commit/8bd18ab96ca81c0782871bdb8a9abf0829f52b86))
+
 ## [1.44.4](https://github.com/dodi-smart/.github/compare/v1.44.3...v1.44.4) (2026-10-26)
 
 ### 🐛 Bug Fixes

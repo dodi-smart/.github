@@ -1,0 +1,38 @@
+# Reuse Dart build-hook output (native assets: OpenCV, SQLite and the like)
+# across jobs. The output records absolute paths, so it is reused only at the
+# path that built it (keep.sh has why):
+#
+#   self-hosted Linux   kept in place: the caller checks out with `clean: false`
+#                       and keep.sh cleans the rest. The slot's volume is the
+#                       cache there, never the Actions cache (AGENTS.md).
+#   everywhere else     the Actions cache, at the workspace path every run of
+#                       the repo gets. Exact key, no restore-keys, and only the
+#                       default branch saves, like the Gradle and Kotlin/Native caches.
+name: Dart build-hook cache
+description: Reuse Dart native-asset builds between jobs, kept in place on a self-hosted Linux slot and through the Actions cache elsewhere.
+
+inputs:
+  toolchain: { description: 'Flutter or Dart version, part of the Actions cache key', default: '' }
+  cap-mb:    { description: 'Self-hosted Linux: drop the kept builds once they are bigger than this', default: '3072' }
+
+runs:
+  using: composite
+  steps:
+    - if: runner.environment == 'self-hosted' && runner.os == 'Linux'
+      shell: bash
+      env:
+        CAP:         ${{ inputs.cap-mb }}
+        ACTION_PATH: ${{ github.action_path }}
+      run: '"$ACTION_PATH/keep.sh" "$CAP"'
+
+    - if: (runner.environment != 'self-hosted' || runner.os != 'Linux') && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+      uses: actions/cache@v6
+      with:
+        path: '**/.dart_tool/hooks_runner'
+        key: dart-hooks-${{ runner.os }}-${{ runner.arch }}-${{ inputs.toolchain }}-${{ hashFiles('**/pubspec.lock') }}
+
+    - if: (runner.environment != 'self-hosted' || runner.os != 'Linux') && github.ref != format('refs/heads/{0}', github.event.repository.default_branch)
+      uses: actions/cache/restore@v6
+      with:
+        path: '**/.dart_tool/hooks_runner'
+        key: dart-hooks-${{ runner.os }}-${{ runner.arch }}-${{ inputs.toolchain }}-${{ hashFiles('**/pubspec.lock') }}

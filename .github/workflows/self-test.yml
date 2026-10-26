@@ -151,6 +151,31 @@ jobs:
           print('deps-verify tells %d infrastructure lines from %d real failures' % (len(infra), len(code)))
           PY
 
+      # A Flutter checkout skips its clean exactly where dart-hooks-cache keeps
+      # the build in place and cleans instead (the action's own condition), and
+      # the action follows that checkout for every Flutter lane. One without the
+      # other leaves stale files in the tree, or rebuilds OpenCV in every job.
+      - name: pr-checks keeps Dart build hooks only where it cleans itself
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import sys
+          from lib import load, uses
+          keep = str(load('actions/dart-hooks-cache/action.yml')['runs']['steps'][0]['if'])
+          steps = load('.github/workflows/pr-checks.yml')['jobs']['lanes']['steps']
+          i = [n for n, s in enumerate(steps) if s.get('id') == 'checkout'][0]
+          clean = str((steps[i].get('with') or {}).get('clean', ''))
+          nxt = steps[i + 1]
+          bad = []
+          if "!(inputs.stack == 'flutter' && " + keep + ')' not in clean:
+              bad.append('the lanes checkout must clean unless a Flutter lane meets the action keep condition (' + keep + '), got ' + clean)
+          if 'actions/dart-hooks-cache@' not in uses(nxt) or "inputs.stack == 'flutter'" not in str(nxt.get('if', '')):
+              bad.append('dart-hooks-cache must follow the lanes checkout for every Flutter lane')
+          if bad:
+              sys.exit('::error::' + '; '.join(bad))
+          print('a Flutter lane reuses its build hooks, and only a kept tree skips the clean')
+          PY
+
       - name: Shell tests, four at a time
         env:
           REAL: "1"
@@ -882,8 +907,9 @@ jobs:
                   errors.append('the docs-only checks lane must carry commitlint and nothing else, got %r' % docs['checks'])
           # On that lane every step between the runner report and commitlint skips:
           # each is gated on something a commitlint-only lane has off.
+          # `steps.checkout.outcome` counts: the checkout itself needs a phase or zavet.
           GATES = ('matrix.phases', 'matrix.hk', 'matrix.zavet', 'matrix.react_doctor', 'matrix.dependency_check', 'matrix.coverage_upload',
-                   'steps.zavet.outputs', 'steps.react-doctor.outputs')
+                   'steps.zavet.outputs', 'steps.react-doctor.outputs', 'steps.checkout.outcome')
           for st in steps[1:-1]:
               if not any(g in str(st.get('if', '')) for g in GATES):
                   errors.append('lanes step %r must skip on a lane that only runs commitlint.' % (st.get('name') or st.get('uses')))

@@ -1162,6 +1162,15 @@ branch (it publishes no version tags), and Renovate can still move that pin.
   not verifying.
 - **Self-hosted Linux uses home dirs**, so the per-runner named volumes are
   actually read. GitHub cache stays off there.
+- **Dart build hooks are reused at the path that built them.** Flutter's
+  native-asset hooks (OpenCV, SQLite) compile for minutes per job, and their
+  output in `.dart_tool/hooks_runner` records absolute paths, so it is reusable
+  only at the same path. `actions/dart-hooks-cache` runs after the checkout of
+  every Flutter lane. On a self-hosted Linux slot, whose workspace path never
+  changes, the checkout does not clean and the action cleans everything else,
+  keeping that output until it passes 3 GB. On hosted runners and the Macs it is
+  the Actions cache, at the workspace path every run gets: an exact key (OS,
+  architecture, Flutter version, lockfiles), saved from the default branch only.
 - **Self-hosted macOS caches like hosted.** Those runners are image-based VMs
   that start every job with an empty home, so `cache: auto` is true there and
   nothing else would persist.

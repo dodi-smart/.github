@@ -1,5 +1,16 @@
 ## [1.43.2](https://github.com/dodi-smart/.github/compare/v1.43.1...v1.43.2) (2026-10-26)
 
+### 🐛 Bug Fixes
+
+* **renovate:** bump hk.pkl with the hk binary in every repo, and let deps-verify fix it ([#207](https://github.com/dodi-smart/.github/issues/207)) ([cf6cd7f](https://github.com/dodi-smart/.github/commit/cf6cd7f5a4bb096fedff00c5ecfa365ddf3243df))
+
+### ⬆️ Dependencies
+
+* **deps:** update commitlint monorepo to v21.2.4 ([d81c3b6](https://github.com/dodi-smart/.github/commit/d81c3b6fd6795a00ab68ced9f25792c2e84ea14e))
+* **deps:** update dependency anchore/syft to v1.55.0 ([3b01579](https://github.com/dodi-smart/.github/commit/3b01579b809c6f8e8e58713dfcf2f63968025ccb))
+
+## [1.43.2](https://github.com/dodi-smart/.github/compare/v1.43.1...v1.43.2) (2026-10-26)
+
 ### ⬆️ Dependencies
 
 * **deps:** update commitlint monorepo to v21.2.4 ([d81c3b6](https://github.com/dodi-smart/.github/commit/d81c3b6fd6795a00ab68ced9f25792c2e84ea14e))

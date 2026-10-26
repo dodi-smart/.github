@@ -138,14 +138,25 @@ runs:
           factory)
             body=$(GH_TOKEN="$APP_TOKEN" gh api --paginate "/repos/$REPO/pulls/$PR/commits?per_page=100" --jq '.[].commit.message | @base64' \
                      | "$ACTION_PATH/gate.sh" squash-body)
-            GH_TOKEN="$APP_TOKEN" gh pr merge "$PR" --repo "$REPO" --squash --subject "$TITLE (#$PR)" --body "$body" --match-head-commit "$SHA" ;;
+            how=(--squash --subject "$TITLE (#$PR)" --body "$body") ;;
           hotfix|standards-sync)
-            GH_TOKEN="$APP_TOKEN" gh pr merge "$PR" --repo "$REPO" --squash --subject "$TITLE (#$PR)" --match-head-commit "$SHA" ;;
+            how=(--squash --subject "$TITLE (#$PR)") ;;
           backmerge)
-            GH_TOKEN="$APP_TOKEN" gh pr merge "$PR" --repo "$REPO" --merge --subject "$TITLE (#$PR)" --match-head-commit "$SHA" ;;
+            how=(--merge --subject "$TITLE (#$PR)") ;;
           *)
-            GH_TOKEN="$APP_TOKEN" gh pr merge "$PR" --repo "$REPO" --rebase --match-head-commit "$SHA" ;;
+            how=(--rebase) ;;
         esac
+        rc=0
+        GH_TOKEN="$APP_TOKEN" gh pr merge "$PR" --repo "$REPO" "${how[@]}" --match-head-commit "$SHA" || rc=$?
+        # A caller may let runs overlap (a group would cancel the pending ones,
+        # each a red check), so two evidence events seconds apart can both decide
+        # to merge. The second merge fails on a PR the first merged at this head:
+        # that is done, not red.
+        if [ "$rc" -ne 0 ]; then
+          state=$(GH_TOKEN="$APP_TOKEN" gh api "/repos/$REPO/pulls/$PR" --jq '"\(.merged) \(.head.sha)"' 2>/dev/null || true)
+          [ "$state" = "true $SHA" ] || exit "$rc"
+          echo "::notice title=Already merged::#$PR was merged at $SHA by another run."
+        fi
         echo "merged=true" >> "$GITHUB_OUTPUT"
         echo "::notice title=Merged::#$PR ($KIND): $REASON"
 

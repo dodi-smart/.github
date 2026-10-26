@@ -1161,7 +1161,7 @@ jobs:
           set -euo pipefail
           python3 -c "
           import glob, os, re, sys
-          from lib import load, uses
+          from lib import conjuncts, load, uses
           bad = []
           # The merge jobs, named once. A workflow that merges calls merge-gate.
           allowed = {'actions/merge-gate/action.yml'}
@@ -1179,33 +1179,48 @@ jobs:
               bad.append('deps-automerge must not run an agent')
           if 'actions/merge-gate@' not in auto:
               bad.append('deps-automerge must decide through merge-gate')
-          # One job per policy, each with its own kill switch, so stopping one kind
-          # of merge stops nothing else. The back-merge is a release branch coming
-          # back, not a dependency, so the merge job never names its branches.
-          jobs = load('.github/workflows/deps-automerge.yml')['jobs']
-          def gate_with(job):
-              return [s.get('with') or {} for s in jobs[job]['steps'] if 'actions/merge-gate@' in uses(s)]
-          want = {'merge': ('deps', 'DEPS_AUTOMERGE'), 'backmerge': ('backmerge', 'BACKMERGE_AUTOMERGE'),
-                  'hotfix': ('hotfix', 'HOTFIX_AUTOMERGE'), 'sync': ('standards-sync', 'SYNC_AUTOMERGE')}
-          if set(jobs) != set(want):
-              bad.append('deps-automerge has jobs ' + ', '.join(sorted(jobs)) + ', expected ' + ', '.join(sorted(want)))
+          # One job, so an event shows one row, and one merge-gate step per
+          # policy, each with its own kill switch, so stopping one kind of merge
+          # stops nothing else. The back-merge is a release branch coming back,
+          # not a dependency, so the deps step never names its branches.
+          wf = load('.github/workflows/deps-automerge.yml')
+          jobs = wf['jobs']
+          if 'concurrency' in wf:
+              bad.append('deps-automerge must not set a concurrency group: GitHub cancels pending runs and each leaves a red check')
+          if set(jobs) != {'merge'}:
+              bad.append('deps-automerge has jobs ' + ', '.join(sorted(jobs)) + ', expected merge')
           else:
-              for job, (policy, switch) in want.items():
-                  g = gate_with(job)
-                  if len(g) != 1 or g[0].get('policy') != policy or switch not in str(g[0].get('kill-switch')):
-                      bad.append('the ' + job + ' job must call merge-gate once with policy ' + policy + ' and the ' + switch + ' kill switch')
-              # Every same-repo workflow_run arm, and each job's own branches.
-              for job, names in (('backmerge', ('chore/backmerge-',)), ('hotfix', ('fix/security-', 'inputs.release-branch')),
-                                 ('sync', ('chore/standards-sync',))):
-                  cond = str(jobs[job].get('if'))
-                  for need in ('workflow_run.event == ', 'workflow_run.conclusion == ', 'head_repository.full_name == github.repository') + names:
+              job = jobs['merge']
+              steps = [s for s in job['steps'] if 'actions/merge-gate@' in uses(s)]
+              gates = {(s.get('with') or {}).get('policy'): s for s in steps}
+              want = {'deps': 'DEPS_AUTOMERGE', 'backmerge': 'BACKMERGE_AUTOMERGE',
+                      'hotfix': 'HOTFIX_AUTOMERGE', 'standards-sync': 'SYNC_AUTOMERGE'}
+              if sorted(gates) != sorted(want) or len(steps) != len(want):
+                  bad.append('deps-automerge must call merge-gate once per policy: ' + ', '.join(sorted(want)))
+              else:
+                  for policy, switch in want.items():
+                      step = gates[policy]
+                      if switch not in str(step['with'].get('kill-switch')):
+                          bad.append('the ' + policy + ' step must use the ' + switch + ' kill switch')
+                      if '!cancelled()' not in conjuncts(step.get('if')):
+                          bad.append('the ' + policy + ' step must run whatever an earlier policy step did')
+                  # The job's pre-filter keeps every workflow_run to a green, same-repo PR run.
+                  cond = str(job.get('if'))
+                  # A status names any PR's head (pr-review posts a verdict on every
+                  # PR), so its arm must name the owned branches too.
+                  for need in ('workflow_run.event == ', 'workflow_run.conclusion == ', 'head_repository.full_name == github.repository',
+                               'chore/backmerge-', 'fix/security-', 'chore/standards-sync', 'branches[0].name, \\'renovate/\\''):
                       if need not in cond:
-                          bad.append('the ' + job + ' job condition lacks ' + need)
-              if 'backmerge' in str(jobs['merge'].get('if')):
-                  bad.append('the merge job must not name the back-merge branches')
-              for name, job in jobs.items():
-                  if job.get('permissions') != {'contents': 'read', 'pull-requests': 'read', 'checks': 'read', 'statuses': 'read'}:
-                      bad.append(name + ' must hold read-only permissions')
+                          bad.append('the merge job condition lacks ' + need)
+                  for policy, names in (('backmerge', ('chore/backmerge-',)), ('hotfix', ('fix/security-', 'inputs.release-branch')),
+                                        ('standards-sync', ('chore/standards-sync',))):
+                      for need in names:
+                          if need not in str(gates[policy].get('if')):
+                              bad.append('the ' + policy + ' step condition lacks ' + need)
+                  if 'backmerge' in str(gates['deps'].get('if')):
+                      bad.append('the deps step must not name the back-merge branches')
+              if job.get('permissions') != {'contents': 'read', 'pull-requests': 'read', 'checks': 'read', 'statuses': 'read'}:
+                  bad.append('the merge job must hold read-only permissions')
           # A review the gate wants is requested inside merge-gate, for the PR
           # and the head it read, never the event's.
           mg = load('actions/merge-gate/action.yml')['runs']['steps']

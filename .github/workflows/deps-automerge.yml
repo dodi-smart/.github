@@ -7,8 +7,8 @@
 # update opened against the production branch is merged by a person.
 #
 # The file kept its name when it took on more than dependencies: every caller
-# names it at @v1. Three more jobs, each with its own policy and kill switch, so
-# stopping one kind of merge stops nothing else:
+# names it at @v1. Three more policies, each its own merge-gate step with its
+# own kill switch, so stopping one kind of merge stops nothing else:
 #   backmerge  the clean back-merge PR a hotfix release opens on a
 #              `chore/backmerge-*` branch (policy `backmerge`), BACKMERGE_AUTOMERGE.
 #              One labelled `backmerge:regenerated` also needs an approving review.
@@ -44,157 +44,46 @@ on:
       GH_APP_CLIENT_ID:   { required: false }
       GH_APP_PRIVATE_KEY: { required: false }
 
-# One decision per PR at a time, keyed by its branch, which every event names.
-concurrency:
-  group: automerge-${{ github.repository }}-${{ github.event.pull_request.head.ref || github.event.workflow_run.head_branch || github.event.branches[0].name }}
-  cancel-in-progress: false
+# No concurrency group. A burst of events (a verdict label, a status and the
+# PR Checks run within seconds) made GitHub cancel the pending runs of one, and
+# every cancelled run left a red check on the pull request. Each run re-reads the
+# PR and merges pinned to its head, so a second run finds it merged and stops.
 
 permissions: {}
 
 jobs:
+  # One job, so an event shows one row on the pull request, never four with
+  # three skipped. Its `if:` is a payload-only pre-filter on the branches the
+  # policies own, so a person's push or review never books a runner; each
+  # merge-gate step below carries its policy's exact condition.
   merge:
-    # Payload-only pre-filter, so a person's push never books a runner. Every
-    # case it drops is one the gate would refuse: a PR by a non-bot or a label
-    # that is not a verdict, a status other than an approving review or a met release age, a PR
-    # Checks run that did not succeed, and any branch a dependency bot did not
-    # name. It tests the SHAPE of a bot login and the bots' branch prefixes;
-    # the bot list stays in actions/agent-gate/gate.sh. A `chore/backmerge-`
-    # branch matches none of these prefixes, so it never reaches this job; the
-    # `backmerge` job below owns it.
     if: >-
       (github.event_name == 'pull_request'
-        && endsWith(github.event.pull_request.user.login, '[bot]')
-        && (github.event.label.name == 'deps:verified' || github.event.label.name == 'deps:fixed'))
-      || (github.event_name == 'status'
-        && contains(fromJson('["review / verdict","renovate/stability-days"]'), github.event.context) && github.event.state == 'success'
-        && (startsWith(github.event.branches[0].name, 'renovate/') || startsWith(github.event.branches[0].name, 'dependabot/')))
+        && ((endsWith(github.event.pull_request.user.login, '[bot]')
+            && (github.event.label.name == 'deps:verified' || github.event.label.name == 'deps:fixed'))
+          || (github.event.label.name == 'backmerge:regenerated'
+            && github.event.pull_request.head.repo.full_name == github.repository
+            && startsWith(github.event.pull_request.head.ref, 'chore/backmerge-'))))
+      || (github.event_name == 'status' && github.event.state == 'success'
+        && contains(fromJson('["review / verdict","renovate/stability-days","standards / verify","standards / render"]'), github.event.context)
+        && (startsWith(github.event.branches[0].name, 'renovate/')
+          || startsWith(github.event.branches[0].name, 'dependabot/')
+          || startsWith(github.event.branches[0].name, 'chore/backmerge-')
+          || startsWith(github.event.branches[0].name, 'fix/security-')
+          || github.event.branches[0].name == 'chore/standards-sync'))
       || (github.event_name == 'workflow_run'
         && github.event.workflow_run.event == 'pull_request'
         && github.event.workflow_run.conclusion == 'success'
         && github.event.workflow_run.head_repository.full_name == github.repository
-        && (startsWith(github.event.workflow_run.head_branch, 'renovate/') || startsWith(github.event.workflow_run.head_branch, 'dependabot/')))
+        && (startsWith(github.event.workflow_run.head_branch, 'renovate/')
+          || startsWith(github.event.workflow_run.head_branch, 'dependabot/')
+          || startsWith(github.event.workflow_run.head_branch, 'chore/backmerge-')
+          || startsWith(github.event.workflow_run.head_branch, 'fix/security-')
+          || github.event.workflow_run.head_branch == 'chore/standards-sync'))
     runs-on: ${{ fromJSON((github.event.repository.private && !github.event.pull_request.head.repo.fork) && '["self-hosted","Linux","light"]' || '"ubuntu-latest"') }}
     timeout-minutes: 10
     permissions:
-      contents: read        # commits, statuses and the compare API
-      pull-requests: read   # the pull request and its labels
-      checks: read          # the required check run
-      statuses: read        # review / verdict
-    steps:
-      - uses: dodi-smart/.github/actions/runner-report@v1
-        with:
-          selector: '["self-hosted","Linux","light"]'
-
-      - uses: dodi-smart/.github/actions/merge-gate@v1
-        with:
-          policy:         deps
-          required-check: ${{ inputs.required-check }}
-          kill-switch:    ${{ vars.DEPS_AUTOMERGE }}
-          client-id:      ${{ secrets.GH_APP_CLIENT_ID }}
-          private-key:    ${{ secrets.GH_APP_PRIVATE_KEY }}
-
-  backmerge:
-    # The back-merge PR a hotfix release opens. Only a green PR Checks run, an
-    # approving review or `backmerge:regenerated` on a same-repo
-    # `chore/backmerge-` branch books a runner; the gate re-reads the PR, the
-    # head's two parents and the check before it merges anything. The `merge`
-    # job above never sees these branches, and this job never sees a
-    # dependency bot's.
-    if: >-
-      (github.event_name == 'workflow_run'
-        && github.event.workflow_run.event == 'pull_request'
-        && github.event.workflow_run.conclusion == 'success'
-        && github.event.workflow_run.head_repository.full_name == github.repository
-        && startsWith(github.event.workflow_run.head_branch, 'chore/backmerge-'))
-      || (github.event_name == 'status'
-        && github.event.context == 'review / verdict' && github.event.state == 'success'
-        && startsWith(github.event.branches[0].name, 'chore/backmerge-'))
-      || (github.event_name == 'pull_request'
-        && github.event.label.name == 'backmerge:regenerated'
-        && github.event.pull_request.head.repo.full_name == github.repository
-        && startsWith(github.event.pull_request.head.ref, 'chore/backmerge-'))
-    runs-on: ${{ fromJSON((github.event.repository.private && !github.event.pull_request.head.repo.fork) && '["self-hosted","Linux","light"]' || '"ubuntu-latest"') }}
-    timeout-minutes: 10
-    permissions:
-      contents: read        # commits and the compare API
-      pull-requests: read   # the pull request and its labels
-      checks: read          # the required check run
-      statuses: read        # the head's commit statuses
-    steps:
-      - uses: dodi-smart/.github/actions/runner-report@v1
-        with:
-          selector: '["self-hosted","Linux","light"]'
-
-      - uses: dodi-smart/.github/actions/merge-gate@v1
-        with:
-          policy:         backmerge
-          required-check: ${{ inputs.required-check }}
-          release-branch: ${{ inputs.release-branch }}
-          kill-switch:    ${{ vars.BACKMERGE_AUTOMERGE }}
-          client-id:      ${{ secrets.GH_APP_CLIENT_ID }}
-          private-key:    ${{ secrets.GH_APP_PRIVATE_KEY }}
-
-  hotfix:
-    # A security patch into the release branch: a `fix/security-` or Renovate
-    # branch whose PR targets the release branch. A green PR Checks run
-    # (target-guard already passed it) or an approving review books a runner; the gate derives target-guard's verdict again from the live PR,
-    # and asks for the review the merge needs. A status names no base, so the
-    # review arm takes Renovate's branches for the release base by name:
-    # Renovate prefixes a branch with its base when it watches several. A repo
-    # whose default branch is the release branch has no lane. The `merge` job
-    # may see the same Renovate PR and refuses it: its base is not the default.
-    if: >-
-      github.event.repository.default_branch != inputs.release-branch
-      && ((github.event_name == 'workflow_run'
-        && github.event.workflow_run.event == 'pull_request'
-        && github.event.workflow_run.conclusion == 'success'
-        && github.event.workflow_run.head_repository.full_name == github.repository
-        && github.event.workflow_run.pull_requests[0].base.ref == inputs.release-branch
-        && (startsWith(github.event.workflow_run.head_branch, 'fix/security-')
-          || startsWith(github.event.workflow_run.head_branch, 'renovate/')))
-      || (github.event_name == 'status'
-        && github.event.context == 'review / verdict' && github.event.state == 'success'
-        && (startsWith(github.event.branches[0].name, 'fix/security-')
-          || startsWith(github.event.branches[0].name, format('renovate/{0}-', inputs.release-branch)))))
-    runs-on: ${{ fromJSON((github.event.repository.private && !github.event.pull_request.head.repo.fork) && '["self-hosted","Linux","light"]' || '"ubuntu-latest"') }}
-    timeout-minutes: 10
-    permissions:
-      contents: read        # commits and the repository's properties
-      pull-requests: read   # the pull request, its labels and its commits
-      checks: read          # the required check run
-      statuses: read        # review / verdict
-    steps:
-      - uses: dodi-smart/.github/actions/runner-report@v1
-        with:
-          selector: '["self-hosted","Linux","light"]'
-
-      - uses: dodi-smart/.github/actions/merge-gate@v1
-        with:
-          policy:         hotfix
-          required-check: ${{ inputs.required-check }}
-          release-branch: ${{ inputs.release-branch }}
-          kill-switch:    ${{ vars.HOTFIX_AUTOMERGE }}
-          client-id:      ${{ secrets.GH_APP_CLIENT_ID }}
-          private-key:    ${{ secrets.GH_APP_PRIVATE_KEY }}
-
-  sync:
-    # The org App's standards sync. A green PR Checks run, or one of the sync's
-    # own statuses or pr-review's turning green, books a runner; the gate checks the
-    # author, the render, verify and the review, and asks for the review.
-    if: >-
-      (github.event_name == 'workflow_run'
-        && github.event.workflow_run.event == 'pull_request'
-        && github.event.workflow_run.conclusion == 'success'
-        && github.event.workflow_run.head_repository.full_name == github.repository
-        && github.event.workflow_run.head_branch == 'chore/standards-sync')
-      || (github.event_name == 'status'
-        && contains(fromJson('["review / verdict","standards / verify","standards / render"]'), github.event.context)
-        && github.event.state == 'success'
-        && github.event.branches[0].name == 'chore/standards-sync')
-    runs-on: ${{ fromJSON((github.event.repository.private && !github.event.pull_request.head.repo.fork) && '["self-hosted","Linux","light"]' || '"ubuntu-latest"') }}
-    timeout-minutes: 10
-    permissions:
-      contents: read        # commits
+      contents: read        # commits, statuses, the compare API and the repository's properties
       pull-requests: read   # the pull request, its labels and its commits
       checks: read          # the required check run
       statuses: read        # review / verdict and the standards statuses
@@ -203,7 +92,87 @@ jobs:
         with:
           selector: '["self-hosted","Linux","light"]'
 
-      - uses: dodi-smart/.github/actions/merge-gate@v1
+      # A dependency bot's minor, patch or lockfile update. Every case dropped
+      # here is one the gate would refuse: a non-bot PR or a label that is not a
+      # verdict, a status other than an approving review or a met release age,
+      # and any branch a dependency bot did not name. It tests the SHAPE of a
+      # bot login and the bots' branch prefixes; the bot list stays in
+      # actions/agent-gate/gate.sh. It never names the back-merge branches.
+      - if: >-
+          !cancelled() && ((github.event_name == 'pull_request'
+            && endsWith(github.event.pull_request.user.login, '[bot]')
+            && (github.event.label.name == 'deps:verified' || github.event.label.name == 'deps:fixed'))
+          || (github.event_name == 'status'
+            && contains(fromJson('["review / verdict","renovate/stability-days"]'), github.event.context)
+            && (startsWith(github.event.branches[0].name, 'renovate/') || startsWith(github.event.branches[0].name, 'dependabot/')))
+          || (github.event_name == 'workflow_run'
+            && (startsWith(github.event.workflow_run.head_branch, 'renovate/') || startsWith(github.event.workflow_run.head_branch, 'dependabot/'))))
+        uses: dodi-smart/.github/actions/merge-gate@v1
+        with:
+          policy:         deps
+          required-check: ${{ inputs.required-check }}
+          kill-switch:    ${{ vars.DEPS_AUTOMERGE }}
+          client-id:      ${{ secrets.GH_APP_CLIENT_ID }}
+          private-key:    ${{ secrets.GH_APP_PRIVATE_KEY }}
+
+      # The back-merge PR a hotfix release opens, on a same-repo
+      # `chore/backmerge-` branch. The gate re-reads the PR, the head's two
+      # parents and the check before it merges anything.
+      - if: >-
+          !cancelled() && ((github.event_name == 'workflow_run'
+            && startsWith(github.event.workflow_run.head_branch, 'chore/backmerge-'))
+          || (github.event_name == 'status'
+            && github.event.context == 'review / verdict'
+            && startsWith(github.event.branches[0].name, 'chore/backmerge-'))
+          || (github.event_name == 'pull_request'
+            && github.event.label.name == 'backmerge:regenerated'
+            && github.event.pull_request.head.repo.full_name == github.repository
+            && startsWith(github.event.pull_request.head.ref, 'chore/backmerge-')))
+        uses: dodi-smart/.github/actions/merge-gate@v1
+        with:
+          policy:         backmerge
+          required-check: ${{ inputs.required-check }}
+          release-branch: ${{ inputs.release-branch }}
+          kill-switch:    ${{ vars.BACKMERGE_AUTOMERGE }}
+          client-id:      ${{ secrets.GH_APP_CLIENT_ID }}
+          private-key:    ${{ secrets.GH_APP_PRIVATE_KEY }}
+
+      # A security patch into the release branch: a `fix/security-` or Renovate
+      # branch whose PR targets it. The gate derives target-guard's verdict
+      # again from the live PR and asks for the review the merge needs. A status
+      # names no base, so the review arm takes Renovate's branches for the
+      # release base by name: Renovate prefixes a branch with its base when it
+      # watches several. A repo whose default branch is the release branch has
+      # no lane. The deps step may see the same Renovate PR and refuses it: its
+      # base is not the default.
+      - if: >-
+          !cancelled() && github.event.repository.default_branch != inputs.release-branch
+          && ((github.event_name == 'workflow_run'
+            && github.event.workflow_run.pull_requests[0].base.ref == inputs.release-branch
+            && (startsWith(github.event.workflow_run.head_branch, 'fix/security-')
+              || startsWith(github.event.workflow_run.head_branch, 'renovate/')))
+          || (github.event_name == 'status'
+            && github.event.context == 'review / verdict'
+            && (startsWith(github.event.branches[0].name, 'fix/security-')
+              || startsWith(github.event.branches[0].name, format('renovate/{0}-', inputs.release-branch)))))
+        uses: dodi-smart/.github/actions/merge-gate@v1
+        with:
+          policy:         hotfix
+          required-check: ${{ inputs.required-check }}
+          release-branch: ${{ inputs.release-branch }}
+          kill-switch:    ${{ vars.HOTFIX_AUTOMERGE }}
+          client-id:      ${{ secrets.GH_APP_CLIENT_ID }}
+          private-key:    ${{ secrets.GH_APP_PRIVATE_KEY }}
+
+      # The org App's standards sync. The gate checks the author, the render,
+      # verify and the review, and asks for the review.
+      - if: >-
+          !cancelled() && ((github.event_name == 'workflow_run'
+            && github.event.workflow_run.head_branch == 'chore/standards-sync')
+          || (github.event_name == 'status'
+            && contains(fromJson('["review / verdict","standards / verify","standards / render"]'), github.event.context)
+            && github.event.branches[0].name == 'chore/standards-sync'))
+        uses: dodi-smart/.github/actions/merge-gate@v1
         with:
           policy:         standards-sync
           required-check: ${{ inputs.required-check }}

@@ -64,7 +64,7 @@ caller keeps working.
 |---|---|---|
 | `pr-checks.yml` | pull request | Lint, typecheck, test, build, per stack |
 | `deps-verify.yml` | Renovate/Dependabot PRs | Reads the PR checks result, reads upstream changelogs, fixes code the update broke, posts a one-comment verdict. Never merges. |
-| `deps-automerge.yml` | verdict labels, `review / verdict`, `renovate/stability-days`, PR Checks done | Merges a dependency bot's minor, patch or lock file PR once it is `deps:verified`, or `deps:fixed` and approved, and the required check is green, and only into the default branch. Three more jobs merge the clean back-merge PR a hotfix release opens on `chore/backmerge-*`, an approved security patch on the hotfix lane, and the org App's pure, approved standards sync. No agent decides a merge |
+| `deps-automerge.yml` | verdict labels, `review / verdict`, `renovate/stability-days`, PR Checks done | Merges a dependency bot's minor, patch or lock file PR once it is `deps:verified`, or `deps:fixed` and approved, and the required check is green, and only into the default branch. Three more policies, steps of the same one job, merge the clean back-merge PR a hotfix release opens on `chore/backmerge-*`, an approved security patch on the hotfix lane, and the org App's pure, approved standards sync. No agent decides a merge |
 | `pr-review.yml` | `ready_for_review`, `agent:review` | Second-opinion review, deeper on sensitive paths. Publishes the `review / verdict` status and a `review-verdict.json` artifact |
 | `issue-triage.yml` | issue opened or reopened, `agent:triage`, `@claude triage`, manual dispatch with `issue-number` | Classifies, sets fields, then plans or asks blocking questions |
 | `issue-implement.yml` | `agent:implement`, `@claude implement` | Holdout tests from the plan's acceptance criteria, then code. A step pushes one commit to `feat\|fix\|chore/<n>-<slug>` and opens a draft PR. Requires a plan. |
@@ -995,7 +995,7 @@ opts in. Enabling the lane also needs Dependabot alerts on, Renovate watching
 `main` (see [Renovate](#renovate)), and a way for the patch to flow back into
 `develop` after it releases.
 
-A lane PR can merge unattended, through `deps-automerge.yml`'s `hotfix` job
+A lane PR can merge unattended, through `deps-automerge.yml`'s `hotfix` step
 (policy `hotfix`, see [Dependency automerge](#dependency-automerge)). The gate
 derives the target guard's verdict again from the live PR and merges only on
 `lane`, with `checks / PR Checks` green (dependency-check included, where the
@@ -1680,7 +1680,7 @@ The repo has to set `baseBranchPatterns` itself: a repo's own setting wins over
 a preset, and the default preset pins `["develop"]`, so the preset cannot add
 `main`. Renovate takes vulnerabilities from Dependabot alerts, so those must be
 on. The `deps` policy never merges a security PR on `main`, since it only
-merges into the default branch; the `hotfix` job does, once the lane verdict,
+merges into the default branch; the `hotfix` step does, once the lane verdict,
 the checks and an approving review agree (see [The release branch only gets
 releases](#the-release-branch-only-gets-releases)). The filename is exact for the
 same reason as `default.json`: `github>owner/repo:security-hotfix` fetches

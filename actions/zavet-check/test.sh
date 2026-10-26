@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# Assert the three rules that live in scripts beside the action: which commits
+# Assert the four rules that live in scripts beside the action: which commits
 # the guard step skips as release commits (release-commit.sh), what needs
-# installing (need.sh) and which PRs are promotions (promotion.sh). Each half
+# installing (need.sh), which PRs are promotions (promotion.sh) and which files a
+# run changed, the scope of its checks (scope.sh). Each half
 # of a rule alone must still not trigger it, so the negatives come first.
 set -uo pipefail
 
@@ -95,6 +96,32 @@ promo_ "another branch than the configured one is walked" walk org/repo org/repo
 promo_ "develop into main is a promotion" promotion org/repo org/repo develop main develop
 promo_ "develop into a release branch is a promotion" promotion org/repo org/repo develop release/1 develop
 promo_ "a configured integration branch is honoured" promotion org/repo org/repo staging main staging
+
+# scope.sh: $1 case, $2 want scoped, $3 want changed files (space-joined, or
+# "-" for none), then event, base, head. Runs in a repo with two commits.
+S="$WORK/scope"
+git init -q "$S" && git -C "$S" config commit.gpgsign false
+# CI runners have no git identity; the test repo carries its own.
+git -C "$S" config user.name "Scope Test" && git -C "$S" config user.email scope@example.invalid
+mkdir -p "$S/lib" && echo a > "$S/lib/a.dart" && echo m > "$S/mise.toml"
+git -C "$S" add -A && git -C "$S" commit -qm one
+first=$(git -C "$S" rev-parse HEAD)
+echo b > "$S/lib/a.dart" && git -C "$S" mv mise.toml tools.toml && git -C "$S" commit -qam two
+second=$(git -C "$S" rev-parse HEAD)
+scope_() {
+  local out="$WORK/scope.out" got want="$2" files
+  got=$(cd "$S" && "$HERE/scope.sh" "$4" "$5" "$6" "$out" | sed -n 's/^scoped=//p')
+  files=$(sort "$out" | tr '\n' ' ' | sed 's/ $//'); [ -n "$files" ] || files=-
+  if [ "$got" = "$want" ] && [ "$files" = "$3" ]; then ok "$1"; else bad "$1" "got scoped=$got files=$files, wanted $want $3"; fi
+}
+scope_ "a pull request lists its diff, both sides of a rename" true "lib/a.dart mise.toml tools.toml" pull_request "$first" "$second"
+scope_ "a push lists the commits it added" true "lib/a.dart mise.toml tools.toml" push "$first" "$second"
+scope_ "a push that added nothing lists nothing" true - push "$second" "$second"
+scope_ "a dispatch is unscoped" false - workflow_dispatch "$first" "$second"
+scope_ "a schedule is unscoped" false - schedule "$first" "$second"
+scope_ "a new branch's zero base is unscoped" false - push 0000000000000000000000000000000000000000 "$second"
+scope_ "an empty base is unscoped" false - pull_request "" "$second"
+scope_ "a base the checkout cannot see is unscoped" false - pull_request 1234567890abcdef1234567890abcdef12345678 "$second"
 
 printf '%s passed, %s failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

@@ -29,7 +29,7 @@ name: Zavet check
 description: Run a repo's zavet decision checks, guard trailers and optional audit, and comment only on failure.
 
 inputs:
-  checks: { description: "Run every decision's `checks:`", default: 'true' }
+  checks: { description: "Run the `checks:` of the decisions and specs this run's changes touch (all of them on dispatch and schedule)", default: 'true' }
   guards: { description: 'Require trailers on guarded paths', default: 'true' }
   audit:  { description: 'Report-only health sweep', default: 'false' }
   zavet-dir:  { description: 'Directory holding the knowledge layer', default: '.zavet' }
@@ -139,12 +139,47 @@ runs:
         fi
         yq --version
 
+    # Which checks this run owes. A pull request verifies the records its diff
+    # touches and a push the records its commits touch (scope.sh has the rule
+    # and why). The same resolution `zavet verify --paths` uses, done here so
+    # that a run whose changes no checked record covers installs nothing.
+    # Unscoped events (dispatch, schedule) verify everything.
+    - id: targets
+      if: steps.present.outputs.yes == 'true' && inputs.checks == 'true' && steps.need.outputs.install == 'true'
+      shell: bash
+      env:
+        DIR: ${{ inputs.zavet-dir }}
+        ACTION_PATH: ${{ github.action_path }}
+        EVENT: ${{ github.event_name }}
+        BASE: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || github.event.before }}
+      run: |
+        set -euo pipefail
+        paths="$RUNNER_TEMP/zavet-changed-paths.txt"
+        scope=$("$ACTION_PATH/scope.sh" "$EVENT" "$BASE" HEAD "$paths")
+        printf '%s\n' "$scope" >> "$GITHUB_OUTPUT"
+        echo "paths=$paths" >> "$GITHUB_OUTPUT"
+        if ! grep -qx 'scoped=true' <<< "$scope"; then
+          echo "run=true" >> "$GITHUB_OUTPUT"
+          echo "verifying every decision and spec check ($EVENT)"
+          exit 0
+        fi
+        zavet="$DIR/bin/zavet"
+        ids=$("$zavet" match-batch < "$paths")
+        slugs=$("$zavet" spec-match < "$paths")
+        owed=$( { "$zavet" checks | awk -F'\t' 'NR==FNR { want[$0]; next } ($1 in want)' <(printf '%s\n' "$ids") -
+                  "$zavet" spec-checks | awk -F'\t' 'NR==FNR { want[$0]; next } ($1 in want)' <(printf '%s\n' "$slugs") -
+                } | wc -l | tr -d ' ')
+        changed=$(wc -l < "$paths" | tr -d ' ')
+        echo "owed=$owed" >> "$GITHUB_OUTPUT"
+        if [ "$owed" -gt 0 ]; then echo "run=true" >> "$GITHUB_OUTPUT"; else echo "run=false" >> "$GITHUB_OUTPUT"; fi
+        echo "$changed changed file(s); $owed check(s) owed by: ${ids//$'\n'/ } ${slugs//$'\n'/ }"
+
     # Installed before the checks run, because a `checks:` command is arbitrary
-    # and usually belongs to the repo's own toolchain. Only when `need` says a
-    # check will run. `none` is a real stack value, so once this runs it always
+    # and usually belongs to the repo's own toolchain. Only when `targets` says
+    # a check will run. `none` is a real stack value, so once this runs it always
     # writes the env file.
     - id: setup
-      if: steps.present.outputs.yes == 'true' && inputs.checks == 'true' && steps.need.outputs.install == 'true'
+      if: steps.present.outputs.yes == 'true' && inputs.checks == 'true' && steps.need.outputs.install == 'true' && steps.targets.outputs.run == 'true'
       uses: dodi-smart/.github/actions/setup-stack@v1
       with:
         stack:           ${{ inputs.stack }}
@@ -164,7 +199,7 @@ runs:
     # dependencies would fail for the same reason and blame a decision.
     - name: Install dependencies for the decision checks
       id: install
-      if: steps.present.outputs.yes == 'true' && inputs.checks == 'true' && steps.need.outputs.install == 'true' && steps.setup.outputs.install != ''
+      if: steps.present.outputs.yes == 'true' && inputs.checks == 'true' && steps.need.outputs.install == 'true' && steps.targets.outputs.run == 'true' && steps.setup.outputs.install != ''
       continue-on-error: ${{ steps.scope.outputs.report-only == 'true' }}
       uses: dodi-smart/.github/actions/run-phases@v1
       with:
@@ -181,6 +216,10 @@ runs:
         ENV_FILE: ${{ steps.setup.outputs.env-file }}
         CLI: ${{ steps.need.outputs.cli }}
         DECLARED: ${{ steps.need.outputs.declared }}
+        RUN: ${{ steps.targets.outputs.run }}
+        SCOPED: ${{ steps.targets.outputs.scoped }}
+        CHANGED: ${{ steps.targets.outputs.changed }}
+        PATHS_FILE: ${{ steps.targets.outputs.paths }}
       run: |
         # `set +e` is REQUIRED and must come first.
         #
@@ -218,6 +257,11 @@ runs:
           { echo "### Decision checks"; echo "Could not run: \`$zavet\` is missing or not executable, while $DECLARED decision or spec file(s) declare \`checks:\`."; } >> "$GITHUB_STEP_SUMMARY"
           exit 1
         fi
+        if [ "$RUN" = false ]; then
+          echo "::notice::no decision or spec with checks covers the $CHANGED changed file(s). Nothing to run, and nothing was installed."
+          { echo "### Decision checks"; echo "None owed: no decision or spec with \`checks:\` covers the $CHANGED changed file(s)."; } >> "$GITHUB_STEP_SUMMARY"
+          exit 0
+        fi
 
         # setup-stack always writes this, so the guard is for the case where
         # that step itself failed and left the output empty. The directive
@@ -226,7 +270,14 @@ runs:
         # line with the linter's name, or that line parses as a directive too.
         # shellcheck source=/dev/null
         [ -n "$ENV_FILE" ] && [ -f "$ENV_FILE" ] && . "$ENV_FILE"
-        out=$("$zavet" verify 2>&1); rc=$?
+        # Scoped to this run's changed files; `targets` already knows at least
+        # one check is owed. Unscoped runs verify everything.
+        args=()
+        if [ "$SCOPED" = true ]; then
+          mapfile -t changed < "$PATHS_FILE"
+          args=(--paths "${changed[@]}")
+        fi
+        out=$("$zavet" verify "${args[@]}" 2>&1); rc=$?
         printf '%s\n' "$out"
         # 127 is bash for "command not found". Reported apart from a real
         # failure, because the fix is a missing toolchain and not a decision

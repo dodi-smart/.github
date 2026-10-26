@@ -477,6 +477,15 @@ automation that opens PRs with `GITHUB_TOKEN` triggers no pull request workflows
 at all, so nothing here would run on its PR. Open them with the org App token
 (`actions/create-github-app-token`) instead.
 
+**`actions/zavet-check`: checks follow the change.** A decision's `checks:`
+prove it still holds after its guarded code changed, and a spec's after its
+paths changed. So a pull request runs only the checks of the records its diff
+touches (`zavet verify --paths`), and a push only those its commits touch. A
+change that no checked record covers, such as a dependency bump, runs nothing
+and installs no toolchain. A manual or scheduled run, a newly pushed branch and
+a base outside the checkout verify every record. The repo's test job runs the
+test suites; keep a check to what proves its own decision.
+
 **`actions/zavet-check`: lazy install and promotion PRs.** Nothing is installed
 unless a decision or spec declares `checks:` and the CLI is vendored: a repo
 whose decisions and specs carry no checks skips `setup-stack` and the install

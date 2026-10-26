@@ -1731,10 +1731,12 @@ Why it reads CI instead of building:
 - **A second build ran out of memory.** Building here as well ran a second full
   build of the same commit next to `pr-checks`, on the same runner hosts. The
   pair ran out of memory, and both reported a fine update as red.
-- **One failure on the runner gets a retry.** A `pr-checks` run that failed on
-  the runner (exit 137, a killed Gradle daemon, a lost runner, a full disk) is
-  re-run once, failed jobs only. A second failure like that is reported as
-  `red:infra`.
+- **One failure on infrastructure gets a retry.** A `pr-checks` run that failed
+  on the runner (exit 137, a killed Gradle daemon, a lost runner, a full disk) or
+  on a download (a curl, git, npm, Gradle or pub network error) is re-run once,
+  failed jobs only. A second failure like that is reported as `red:infra`. The
+  patterns match tool and runner messages, never a bare errno or HTTP status that
+  a failing test may print; Self test runs them against sample logs both ways.
 - **Only a repo with no `pr-checks` builds here.** When none of the repo's
   workflows calls `ci-workflow`, or it is set to `""`, the job builds the PR
   itself, isolated. That is read from the workflow files, not guessed from a

@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Assert the four rules that live in scripts beside the action: which commits
 # the guard step skips as release commits (release-commit.sh), what needs
-# installing (need.sh), which PRs are promotions (promotion.sh) and which files a
-# run changed, the scope of its checks (scope.sh). Each half
+# installing (need.sh), which PRs are promotions (promotion.sh), which files a
+# run changed, the scope of its checks (scope.sh), and the yq install
+# (install-yq.sh, against a fake curl and uname). Each half
 # of a rule alone must still not trigger it, so the negatives come first.
 set -uo pipefail
 
@@ -122,6 +123,47 @@ scope_ "a schedule is unscoped" false - schedule "$first" "$second"
 scope_ "a new branch's zero base is unscoped" false - push 0000000000000000000000000000000000000000 "$second"
 scope_ "an empty base is unscoped" false - pull_request "" "$second"
 scope_ "a base the checkout cannot see is unscoped" false - pull_request 1234567890abcdef1234567890abcdef12345678 "$second"
+
+# install-yq.sh: RUNNER_OS/ARCH say Linux X64, a fake python `yq` shadows any
+# real one, and a fake curl serves the asset and checksums-bsd (FAKE_SUM=bad
+# serves a wrong digest, FAKE_SUM=none an empty list) and logs every call.
+B="$WORK/yq-bin"; mkdir -p "$B"
+printf '#!/bin/sh\necho "yq 3.4.3 (python)"\n' > "$B/yq"
+cat > "$B/curl" <<'SH'
+#!/bin/sh
+echo "$*" >> "$CURL_LOG"
+out=""; url=""
+while [ $# -gt 0 ]; do case "$1" in -o) out=$2; shift ;; http*) url=$1 ;; esac; shift; done
+case "$url" in
+  */checksums-bsd)
+    sum=$(printf 'yq-binary' | { sha256sum 2>/dev/null || shasum -a 256; } | cut -d' ' -f1)
+    case "${FAKE_SUM:-good}" in bad) sum=0000 ;; none) : > "$out"; exit 0 ;; esac
+    echo "SHA256 (yq_linux_amd64) = $sum" > "$out" ;;
+  *) printf 'yq-binary' > "$out" ;;
+esac
+SH
+chmod +x "$B/yq" "$B/curl"
+expect() { local name=$1; shift; if "$@"; then ok "$name"; else bad "$name" "$(cat "$WORK/yq.out" "$WORK/curl.log" 2>/dev/null)"; fi; }
+yq_() { # $1 case, $2 want (ok|fail), env assignments follow
+  local name=$1 want=$2 got=ok; shift 2
+  : > "$WORK/curl.log"
+  env PATH="$B:/usr/bin:/bin" CURL_LOG="$WORK/curl.log" RUNNER_TOOL_CACHE="$WORK/tc" RUNNER_OS=Linux RUNNER_ARCH=X64 "$@" \
+    "$HERE/install-yq.sh" v4.0.0 > "$WORK/yq.out" 2>/dev/null || got=fail
+  if [ "$got" = "$want" ]; then ok "$name"; else bad "$name" "got $got, wanted $want"; fi
+}
+yq_ "a wrong checksum stops the install" fail FAKE_SUM=bad
+expect "a refused download leaves nothing in the cache" test ! -e "$WORK/tc/yq/v4.0.0/amd64/yq"
+yq_ "a release that lists no checksum stops the install" fail FAKE_SUM=none
+yq_ "a good download installs into the tool cache" ok
+expect "it installs an executable" test -x "$WORK/tc/yq/v4.0.0/amd64/yq"
+expect "it prints the directory to put on PATH" test "$(cat "$WORK/yq.out")" = "$WORK/tc/yq/v4.0.0/amd64"
+expect "downloads retry within a bounded time" grep -q -- '--retry-max-time' "$WORK/curl.log"
+yq_ "a cached version is reused" ok
+expect "the cached version downloads nothing" test ! -s "$WORK/curl.log"
+printf '#!/bin/sh\necho "yq (https://github.com/mikefarah/yq/) version v4.9.9"\n' > "$B/yq"
+yq_ "mikefarah yq already on PATH is used as it is" ok
+expect "it prints that yq's directory" test "$(cat "$WORK/yq.out")" = "$B"
+expect "and nothing is downloaded" test ! -s "$WORK/curl.log"
 
 printf '%s passed, %s failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

@@ -124,41 +124,16 @@ runs:
         ACTION_PATH: ${{ github.action_path }}
       run: '"$ACTION_PATH/need.sh" "$DIR" >> "$GITHUB_OUTPUT"'
 
-    # mikefarah yq specifically. zavet reads decision frontmatter with it,
-    # and the python `yq` of the same name takes different arguments. An
-    # easy and confusing way for every check to report NONE. Needed whenever
-    # the CLI runs (checks, guards and audit all read frontmatter), so it is
-    # gated on the CLI alone, not on declared checks.
+    # mikefarah yq, from PATH or the tool cache (install-yq.sh has why). Needed
+    # whenever the CLI runs: checks, guards and audit all read frontmatter.
     - id: yq
       if: steps.present.outputs.yes == 'true' && steps.need.outputs.cli == 'true'
       continue-on-error: ${{ steps.scope.outputs.report-only == 'true' }}
       shell: bash
       env:
         YQ: ${{ inputs.yq-version }}
-      run: |
-        set -euo pipefail
-        if ! command -v yq >/dev/null || ! yq --version 2>&1 | grep -q mikefarah; then
-          # Runner labels carry no architecture, so ask the machine. The
-          # checksum is verified before the binary is installed or run.
-          if [ "$(uname -s)" != Linux ]; then
-            echo "::error::yq is missing and only a Linux build is installed here"; exit 1
-          fi
-          case "$(uname -m)" in
-            x86_64)        arch=amd64 ;;
-            aarch64|arm64) arch=arm64 ;;
-            *) echo "::error::no yq build for $(uname -m)"; exit 1 ;;
-          esac
-          base="https://github.com/mikefarah/yq/releases/download/${YQ}"
-          tmp="$(mktemp -d "${RUNNER_TEMP:-/tmp}/yq.XXXXXX")"
-          curl -fsSL --retry 3 --retry-all-errors --connect-timeout 20 --max-time 120 -o "$tmp/yq_linux_${arch}" "$base/yq_linux_${arch}"
-          curl -fsSL --retry 3 --retry-all-errors --connect-timeout 20 --max-time 120 "$base/checksums-bsd" \
-            | sed -n "s/^SHA256 (yq_linux_${arch}) = //p" \
-            | sed "s|\$|  yq_linux_${arch}|" > "$tmp/sha256"
-          (cd "$tmp" && sha256sum -c sha256)
-          sudo install -m 0755 "$tmp/yq_linux_${arch}" /usr/local/bin/yq
-          rm -rf "$tmp"
-        fi
-        yq --version
+        ACTION_PATH: ${{ github.action_path }}
+      run: '"$ACTION_PATH/install-yq.sh" "$YQ" >> "$GITHUB_PATH"'
 
     # Which checks this run owes. A pull request verifies the records its diff
     # touches and a push the records its commits touch (scope.sh has the rule
@@ -299,13 +274,10 @@ runs:
           mapfile -t changed < "$PATHS_FILE"
           args=(--paths "${changed[@]}")
         fi
-        # A hung check must not eat the job: past the limit it is a check that
-        # could not run (124), and the comment and verdict steps still run.
         out=$(timeout -k 30s "${TIMEOUT}m" "$zavet" verify "${args[@]}" 2>&1); rc=$?
         printf '%s\n' "$out"
-        # Reported apart from a real failure: the fix is not a decision that
-        # stopped holding. 124 is the time limit, 127 bash's "command not found",
-        # which the `stack` input supplies.
+        # Could-not-run, not a decision that stopped holding: 124 is the time
+        # limit, 127 a command the `stack` input did not supply.
         case "$rc" in
           124) echo "::error title=Decision checks could not run::zavet verify ran past ${TIMEOUT} minutes and was stopped. A check this slow re-runs work the test job owns; point it at the one test that proves the decision." ;;
           127) echo "::error title=Decision check could not run::a check exited 127, command not found. Set the 'stack' input to the toolchain these checks need." ;;

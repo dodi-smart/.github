@@ -1,3 +1,10 @@
+## [1.43.3](https://github.com/dodi-smart/.github/compare/v1.43.2...v1.43.3) (2026-10-26)
+
+### ⬆️ Dependencies
+
+* **deps:** update dependency firebase-tools to v15.34.1 ([f61fc8f](https://github.com/dodi-smart/.github/commit/f61fc8f8ca8b935f7d988f3678e1f446763225dd))
+* **deps:** update gradle to v8.14.6 ([e989dd1](https://github.com/dodi-smart/.github/commit/e989dd17021006b7fe8e3f2f4d2db103884f2b9d))
+
 ## [1.43.2](https://github.com/dodi-smart/.github/compare/v1.43.1...v1.43.2) (2026-10-26)
 
 ### 🐛 Bug Fixes

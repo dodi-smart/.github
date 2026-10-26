@@ -6,7 +6,7 @@
 #
 # Severity, the report-only rule for dependency bots and the failure comment
 # are documented in actions/zavet-check, which holds the steps. pr-checks runs
-# the same action as its opt-in `zavet` job.
+# the same action as its opt-in zavet step.
 #
 # Some decision checks reach the GitHub API on purpose, because a decision
 # about a file in another repo should be verified rather than asserted. So this
@@ -67,7 +67,7 @@ jobs:
       - uses: actions/checkout@v7
         with: { fetch-depth: 0, persist-credentials: false }
 
-      # The steps live in a composite action so the `zavet` job in pr-checks
+      # The steps live in a composite action so the zavet step in pr-checks
       # runs the same code. The severity rules and the reasons behind them are
       # written there.
       - uses: dodi-smart/.github/actions/zavet-check@v1

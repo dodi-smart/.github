@@ -1,0 +1,58 @@
+# The lanes of a pr-checks run: the legs of its `lanes` matrix job, each listed
+# only when it has work. Thin wrapper; the rules are in plan.sh and test.sh runs
+# them as a table. Bash and jq, no checkout, so it runs inside `pick`.
+name: PR Checks plan
+description: Decide which pr-checks lanes (matrix legs) a run needs, each with its runner, phases and opt-in steps.
+
+inputs:
+  stack:            { description: 'The stack, as pr-checks takes it', required: true }
+  single-job:       { description: "'true' for one `all` lane on the heavy runner", default: 'false' }
+  docs-only:        { description: "changed-files `all-matched` over `docs-only-paths`", default: 'false' }
+  has-test:         { description: "'true' when the resolved test command is not empty", default: 'false' }
+  has-build:        { description: "'true' when the resolved build command is not empty", default: 'false' }
+  light:            { description: 'The light runner selector, as JSON (pick-runner `runner`)', default: '' }
+  heavy:            { description: 'The heavy runner selector, as JSON (pick-runner `runner`)', default: '' }
+  hk:               { description: "'true' to run hk in `checks` or `all`", default: 'false' }
+  dependency-check: { description: "'true' to run dependency-check in `checks` or `all`", default: 'false' }
+  commitlint:       { description: "'true' when commitlint is on and the event is a pull request", default: 'false' }
+  coverage:         { description: 'none | vitest | kover | lcov', default: 'none' }
+  zavet:            { description: "'true' to run the zavet checks", default: 'false' }
+  zavet-stack:      { description: 'The toolchain the decision checks run on', default: 'none' }
+  zavet-install:    { description: "The zavet install, when it is not the lane's", default: '' }
+  react-doctor:     { description: "'true' when React Doctor is on and the pull request changed its paths", default: 'false' }
+  ios:              { description: 'The raw `ios` input; empty turns the iOS lane off', default: '' }
+  ios-labelled:     { description: "'true' when the pull request carries `ios-label`", default: 'false' }
+
+outputs:
+  lanes:
+    description: 'A compact JSON array of lanes, for `strategy.matrix.include`. `[]` when nothing runs.'
+    value: ${{ steps.plan.outputs.lanes }}
+  coverage:
+    description: "'true' when a lane uploads a coverage report"
+    value: ${{ steps.plan.outputs.coverage }}
+
+runs:
+  using: composite
+  steps:
+    - id: plan
+      shell: bash
+      env:
+        STACK:            ${{ inputs.stack }}
+        SINGLE_JOB:       ${{ inputs.single-job }}
+        DOCS_ONLY:        ${{ inputs.docs-only }}
+        HAS_TEST:         ${{ inputs.has-test }}
+        HAS_BUILD:        ${{ inputs.has-build }}
+        LIGHT:            ${{ inputs.light }}
+        HEAVY:            ${{ inputs.heavy }}
+        HK:               ${{ inputs.hk }}
+        DEPENDENCY_CHECK: ${{ inputs.dependency-check }}
+        COMMITLINT:       ${{ inputs.commitlint }}
+        COVERAGE:         ${{ inputs.coverage }}
+        ZAVET:            ${{ inputs.zavet }}
+        ZAVET_STACK:      ${{ inputs.zavet-stack }}
+        ZAVET_INSTALL:    ${{ inputs.zavet-install }}
+        REACT_DOCTOR:     ${{ inputs.react-doctor }}
+        IOS:              ${{ inputs.ios }}
+        IOS_LABELLED:     ${{ inputs.ios-labelled }}
+        ACTION_PATH:      ${{ github.action_path }}
+      run: '"$ACTION_PATH/plan.sh"'

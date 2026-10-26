@@ -411,6 +411,7 @@ Renovate marker, and a bump releases as `chore(deps)`.
 | `actions/semantic-release-config` | Links the shared semantic-release config into a consumer's `node_modules` from a private prefix, never from a registry and never into the checkout it came with |
 | `actions/lcov-report` | Overall and changed-file line coverage from an LCOV file, posted as a sticky comment, with optional floors. What `pr-checks.yml`'s `coverage: lcov` calls |
 | `actions/kover-floor` | Fails when `kover-report`'s overall coverage is below a minimum, or missing, since that action only marks a breached minimum in its comment. What `pr-checks.yml`'s `coverage: kover` runs |
+| `actions/pr-checks-plan` | Decides which lanes (legs of the `lanes` matrix job) a `pr-checks.yml` run needs, each with its runner, phases and opt-in steps, from the inputs and what `pick` found. Bash and jq, no checkout. Internal to that workflow |
 | `actions/pr-checks-summary` | The verdict of `pr-checks.yml`'s `PR Checks` job: fails when a job in the `needs` context failed or was cancelled, leaves out named advisory jobs, and prints the result. Internal to that workflow |
 | `actions/hk-check` | Installs the repo's mise tools, runs `hk check --all --sarif`, appends the output to the job summary, warns on a SARIF file that is not valid JSON, and keeps the SARIF as an artifact. What `pr-checks.yml`'s `hk: true` runs |
 | `actions/changed-files` | A pull request's changed files through the API, with no checkout, and whether any, or every one, match a set of globs. Pure bash: it needs `gh` and nothing else |
@@ -424,8 +425,8 @@ Renovate marker, and a bump releases as `chore(deps)`.
 | `actions/wait-for-deployment` | Waits for the frontend host's successful GitHub Deployment of the checked-out commit, or for a route to report its sha. What `supabase-deploy.yml`'s health check calls |
 | `actions/supabase-start` | Starts the local Supabase database with the stack's Docker images restored from the cache, saved on a miss. What both jobs of `supabase-checks.yml` call |
 | `actions/android-distribute` | The steps after a signed Android build: resolves the APK glob (an unsigned APK never counts), attaches every APK to the tag's GitHub Release, and hands one to Firebase App Distribution with the Release body as its notes. What `android-deploy.yml` runs |
-| `actions/zavet-check` | Verifies a repo's `.zavet/` knowledge layer: decision checks, guard trailers, an optional audit, and a comment only on failure. What `zavet-check.yml` and `pr-checks.yml`'s `zavet` job run. The caller checks out with full history first. |
-| `actions/react-doctor` | Checks out with full history and runs React Doctor. What `react-doctor.yml` and `pr-checks.yml`'s `react-doctor` job run. |
+| `actions/zavet-check` | Verifies a repo's `.zavet/` knowledge layer: decision checks, guard trailers, an optional audit, and a comment only on failure. What `zavet-check.yml` and `pr-checks.yml`'s zavet step run. The caller checks out with full history first. `env-file` reuses a job's own setup and install; `comment: false` writes the report to a directory instead of posting it |
+| `actions/react-doctor` | Checks out with full history and runs React Doctor. What `react-doctor.yml` and `pr-checks.yml`'s React Doctor step run. `checkout: false` uses the caller's checkout; `comment: false` posts nothing (no comment, review comment or commit status) and writes a short report instead |
 | `actions/pick-model` | The model policy as one script, `pick.sh`: an agent stage, the issue's Effort, Priority and Risk, and the run's signals in, a model id and a turn cap out. run-agent runs it on every agent run; see [Models](#models). |
 | `actions/pick-runner` | Resolves a runner weight to a selector, statically: no API call, no token, no fleet listing. What `pick-runner.yml` calls, and what a job that already exists (like `pr-checks.yml`'s `pick`) calls directly to pick more than once without another job. |
 
@@ -630,7 +631,7 @@ The Linux runners run everything a mobile repo can build on Linux: a `kmm`
 repo's shared module (JVM side and host tests) and Android app, a Flutter
 app's Android side. They never try an Apple target, which cannot link off
 macOS. The iOS half (the stack's `ios` command in the table above) runs in a
-separate `iOS` job on GitHub's hosted `macos-latest`, and only for a pull request
+separate `iOS` lane on GitHub's hosted `macos-latest`, and only for a pull request
 labelled `ios`, because hosted macOS minutes bill at ten times Linux ones:
 
 ```yaml
@@ -659,9 +660,9 @@ jobs:
 | `ios-label` | `"ios"` | The pull request label that runs it |
 | `xcode-version`, `xcode-destination` | `""`, `"auto"` | As for setup-stack |
 
-The job needs only `pick`, runs the install and then the `ios` command as its
-build phase (so `build-env` applies), and joins the `PR Checks` context: skipped
-without the label, red when the build fails. It is never part of `single-job`.
+The lane starts beside the others, runs the install and then the `ios` command
+as its build phase (so `build-env` applies), and joins the `PR Checks` context:
+absent without the label, red when the build fails. It is never part of `single-job`.
 The label is read from the event, so without `labeled` in the caller's types it
 takes effect on the next push.
 
@@ -785,12 +786,27 @@ jobs:
 `pr-checks.yml` splits light work from heavy by default. `single-job: true`
 collapses it onto the heavy runner.
 
+Everything that runs your code is one matrix job, `lanes`, and `pick` lists only
+the lanes that have work, so a pull request's checks list has no skipped rows.
+Each lane keeps the name its job had:
+
+| Lane | Runner | Runs | When |
+|---|---|---|---|
+| `checks` | light | install, lint, design-lint, typecheck, then `hk`, `dependency-check`, zavet, React Doctor and `commitlint` when on | split shape; on a docs-only change only for commitlint and zavet |
+| `test` | heavy | install, test, and hands the coverage report over | split shape, with a test command |
+| `build` | heavy | install, build | split shape, with a build command |
+| `all` | heavy | everything `checks`, `test` and `build` do | `single-job: true` |
+| `iOS` | hosted Mac | install, the `ios` command | a labelled kmm, flutter or xcode pull request (see [iOS builds](#ios-builds)) |
+| `Zavet Check` | light | the zavet checks, with their own setup | `zavet: true` when `zavet-stack` is another stack or `zavet-install` is set |
+
+Each lane checks out once and sets the stack up once.
+
 Use it for Gradle. Three jobs mean three configuration phases and no shared
 daemon. One job keeps one checkout and one warm `GRADLE_USER_HOME`. The split
 stays the right default for a cheap, independent lint.
 
 A command that resolves to empty is skipped, and for `test` and `build` that
-means the job does not start at all, so no heavy runner is provisioned for it.
+means the lane is not listed at all, so no heavy runner is provisioned for it.
 
 `env` (newline `KEY=VALUE`) reaches every command step, which is where build
 tuning like `GRADLE_OPTS` belongs. `build-env` applies to the build step
@@ -812,9 +828,8 @@ with:
 ```
 
 Either shape runs behind ONE `pick` job, not two. It resolves both the light and
-the heavy runner (skipping whichever `single-job` does not need), so picking
-twice costs one job instead of two. It needs no checkout: it reads the changed
-files through the API. `pick` and the closing `PR Checks` summary run no caller
+the heavy runner and the lanes, so picking twice costs one job instead of two. It
+needs no checkout: it reads the changed files through the API. `pick` and the closing `PR Checks` summary run no caller
 code, so in a private repo they run on the control pool and bill no GitHub-hosted
 minutes (a public repo or fork PR keeps `ubuntu-latest`). `PR Checks` also writes
 a "Where it ran" table of every job's runner and queue time to its summary.
@@ -822,9 +837,10 @@ a "Where it ran" table of every job's runner and queue time to its summary.
 ### Coverage
 
 `coverage` picks how a coverage comment is made. It is `none` by default, which
-posts nothing and adds no job. Otherwise a small `coverage` job on the light pool
-posts the comment from the report your tests write, after they pass. It runs none
-of your code. `AGENTS.md` has the reasoning.
+posts nothing. Otherwise the `test` (or `all`) lane hands the report your tests
+write to the `PR Checks` job, which posts the comment once every lane has passed.
+`PR Checks` runs none of your code, so it is the only job holding the write token.
+`AGENTS.md` has the reasoning.
 
 | `coverage` | Your test command must write | `coverage-path` | Comment from |
 |---|---|---|---|
@@ -833,8 +849,8 @@ of your code. `AGENTS.md` has the reasoning.
 | `kover` | a Kover XML report | required, for example `app/build/reports/kover/reportDebug.xml` | `kover-report` |
 | `lcov` | an LCOV file | optional, default `coverage/lcov.info` | `actions/lcov-report` |
 
-`coverage-min-overall` and `coverage-min-changed` are percentages that fail the
-`coverage` job, and so `pr-checks`, when a figure is below them. `0`, the
+`coverage-min-overall` and `coverage-min-changed` are percentages that fail
+`PR Checks` when a figure is below them. `0`, the
 default, means no floor. `vitest` takes its floors from the vitest config
 instead. With `kover`, only `coverage-min-overall` fails the job;
 `coverage-min-changed` is marked in the comment but not enforced, because
@@ -865,8 +881,9 @@ with:
 
 ### When `build` starts
 
-In the split shape `build` starts right after `pick`, beside `checks` and
-`test`, so a push waits for the slowest of the three and not for two in a row.
+In the split shape `build` is a lane beside `checks` and `test`, so all three
+start right after `pick` and a push waits for the slowest of the three, not for
+two in a row.
 That takes about a minute off every PR, and a heavy job queues on its own pool
 instead of spilling onto light runners. The cost is one build spent on a push
 that then fails lint. The `pr-checks` summary needs `checks`, so a failed lint
@@ -874,10 +891,10 @@ fails the required context all the same. `single-job` is unaffected.
 
 ### Timings in the job summary
 
-`checks`, `test`, `build` and `all` run their commands through
-`actions/run-phases`. Each job's summary lists every phase that has a command,
-in order (`install`, `lint`, `design-lint`, `typecheck`, `test`, `build`, `smoke`), with
-its result, its seconds and its peak memory:
+Every lane runs its commands through `actions/run-phases`. Each lane's summary
+lists every phase that has a command, in order (`install`, `lint`, `design-lint`,
+`typecheck`, `test`, `build`, `smoke`), with its result, its seconds and its peak
+memory:
 
 | phase | result | seconds | peak memory |
 |---|---|---|---|
@@ -926,10 +943,10 @@ largest single process, so a build that forks many workers reads low.
 
 `pick` also decides whether the change is docs-only: every file the PR touches
 must match one of `docs-only-paths` (newline-separated globs, default `**.md`
-and `docs/**`), read from the pull request's file list through the API. When it is, `test`, `build` and
-`all` skip -- but `zavet` still runs, and with `commitlint: true` so does `checks`, for its
-commitlint step alone and on the light runner even with `single-job`, because the
-commit messages and the knowledge layer are not the files. The default catches a Markdown-only change; widen it
+and `docs/**`), read from the pull request's file list through the API. When it is, no lane
+runs but `checks`, and that only to carry `commitlint` and zavet when they are on,
+with no install or other phase, on the light runner even with `single-job`, because
+the commit messages and the knowledge layer are not the files. The default catches a Markdown-only change; widen it
 per caller for e.g. `docs/** design/**`.
 
 ```yaml
@@ -946,12 +963,12 @@ or more, where the API stops listing), `docs_only` is `false` and every job runs
 as normal.
 
 `pr-checks.yml` grants `contents: read` at the workflow level, so a job that
-needs more asks for it: `pick`, `checks` and `all` read pull requests (`checks` and `all` for commitlint and dependency-check), `zavet` and
-`react-doctor` write them for their comments, and only the `coverage` job
-writes them for the coverage comment, so `test` and `all` run your tests with no
-write token. A checkout in these workflows never keeps the job
-token in its git config, so a caller's install, test and build scripts cannot
-read it. Only `zavet` and `react-doctor` clone full history.
+needs more asks for it: `pick` and `lanes` read pull requests (the file list,
+commitlint, dependency-check, zavet's author, React Doctor), and only `PR Checks`
+writes them, for the zavet, React Doctor and coverage comments, so no lane runs
+your code beside a write token. A checkout in these workflows never keeps the job
+token in its git config, so a caller's install, test and build scripts cannot read
+it. Only a lane that runs zavet or React Doctor clones full history.
 
 This is also why a caller should **not** add `paths-ignore: ['**.md']` to its
 own `on: pull_request:` trigger to get the same effect. `paths-ignore` skips
@@ -961,15 +978,18 @@ waits on that pull request forever, because a check that was never created can
 never turn green. `docs-only-paths` gets the same skip without losing the
 context.
 
-That context is `pr-checks`, a summary job that runs unconditionally
-(`if: always()`) after everything else, whether or not anything was skipped.
-It fails if `checks`, `test`, `build`, `all` or `coverage` failed or was
-cancelled, and passes -- printing "docs-only change, checks skipped" -- when
-they were only skipped. It is the one job a branch ruleset should require:
-`<caller job id> / pr-checks` exists on every push in both single-job and
-split mode, where `checks / checks` and `checks / all` do not -- exactly one
-of those two is always skipped depending on `single-job`, so neither can be
-named in a ruleset that has to work for every caller.
+That context is `PR Checks`, a summary job that runs unconditionally
+(`if: always()`) after everything else, whether or not any lane ran. It fails
+if a lane failed or was cancelled, or a coverage floor is breached, and passes --
+printing "docs-only change, checks skipped" -- when no lane had work. It is the
+one job a branch ruleset should require: `<caller job id> / PR Checks` exists on
+every push in both single-job and split mode, while a lane's check run exists
+only when the plan lists it (`checks / checks` in one shape, `checks / all` in
+the other), so none can be named in a ruleset that has to work for every caller.
+The same goes for `checks / Zavet Check`, gone whenever zavet runs inside
+`checks` or `all`, and for `checks / Coverage` and `checks / React Doctor`, gone
+for good (with the `React Doctor` commit status), since both run inside a lane
+or `PR Checks` now.
 
 ### The release branch only gets releases
 
@@ -1011,10 +1031,14 @@ for a person.
 
 A repo that calls `pr-checks.yml`, `zavet-check.yml` and `react-doctor.yml`
 starts three workflow runs per push, and each of the last two starts its own
-runner picker job. `pr-checks.yml` already has one `pick` job, so `zavet` and
-`react-doctor` can be opt-in jobs beside `checks`, on the light pool. That saves
-two job starts per push, per repo that used both. `commitlint` is a step of `checks`
-and `all` rather than a job, so a repo with it enabled saves a third.
+runner picker job. `pr-checks.yml` already has one `pick` job, so zavet and
+React Doctor are opt-in steps there. React Doctor runs in `checks` (or `all`)
+when the pull request changes a file matching `react-doctor-paths`. Zavet is a step of `checks` (or `all`) when `zavet-stack` is `none` or
+the repo's stack and `zavet-install` is empty: it then reuses that lane's
+toolchain and install, and costs only a full-history checkout of it. Otherwise it
+gets its own light `Zavet Check` lane that sets itself up. `commitlint` is a step
+of `checks` and `all` rather than a job, so a repo with it enabled saves a job
+start too.
 
 ```yaml
 jobs:
@@ -1034,15 +1058,17 @@ jobs:
 Then delete the caller's `zavet-check` and `react-doctor` jobs, and their
 `paths:` filter if it existed only for React Doctor.
 
-`zavet-dir` sets where the layer lives and `react-doctor-directory` which project to scan. The React Doctor job uses React
-Doctor's defaults, so it stays advisory (`scope: changed`). A repo that needs to
+`zavet-dir` sets where the layer lives and `react-doctor-directory` which project to scan. The React Doctor step uses React
+Doctor's defaults, so it stays advisory (`scope: changed`). It posts no commit
+status: the `React Doctor` status context of the old job is gone, and its score
+is in the comment and the lane's job summary. A repo that needs to
 tune scope or version asks for that input on `pr-checks.yml`: `react-doctor.yml`
 is deprecated and removed at v2.
 
-**Neither result is part of the `pr-checks` summary unless you ask.** By default
-the `zavet` and `react-doctor` jobs are separate status contexts, and
-`<caller job id> / pr-checks` does not fail on them. A failed `Zavet Check` then
-turns the workflow red while the required context stays green and the PR stays
+**Neither result fails `PR Checks` unless you ask.** By default a failed zavet
+or React Doctor step leaves its lane green (`continue-on-error`) and reports
+through its annotations, the job summary and its comment, while
+`<caller job id> / PR Checks`, the required context, stays green and the PR stays
 mergeable. To make one block the merge, set its input:
 
 ```yaml
@@ -1052,11 +1078,10 @@ mergeable. To make one block the merge, set its input:
 
 Both default to `false`, because an advisory check that silently starts blocking
 merges is worse than one that reports. `react-doctor-blocking: true` also passes
-`blocking: error` to React Doctor, so an error-severity finding fails the job;
-warnings still report. A pull request touching no matching file shows a skipped
-React Doctor job, which counts as passing. `PR Checks` waits for both jobs even
-when they are advisory, because a job's `needs` cannot depend on an input; they
-run beside `checks` and are skipped when off, so the wait is usually short.
+`blocking: error` to React Doctor, so an error-severity finding fails its lane;
+warnings still report. A pull request touching no matching file runs no scan.
+Both comments are posted by `PR Checks`, from the report each lane uploads,
+because no lane holds a write token, and each is deleted once its check is clean.
 
 `commitlint` runs the commitlint CLI (`actions/commitlint`, pinned by lockfile)
 as the last step of `checks` (the light runner) or `all`, and it runs even when an

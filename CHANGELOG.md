@@ -1,3 +1,9 @@
+## [1.44.4](https://github.com/dodi-smart/.github/compare/v1.44.3...v1.44.4) (2026-10-26)
+
+### 🐛 Bug Fixes
+
+* **zavet-check,deps-verify:** yq from the tool cache, bounded downloads, and a tested infra classifier ([#213](https://github.com/dodi-smart/.github/issues/213)) ([46a7b19](https://github.com/dodi-smart/.github/commit/46a7b195514f25c16ef6d86fe5b5ad2fd383c3e1)), references [#210](https://github.com/dodi-smart/.github/issues/210)
+
 ## [1.44.3](https://github.com/dodi-smart/.github/compare/v1.44.2...v1.44.3) (2026-10-26)
 
 ### ⚡ Performance Improvements

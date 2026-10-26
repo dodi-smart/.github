@@ -1,3 +1,9 @@
+## [1.44.0](https://github.com/dodi-smart/.github/compare/v1.43.3...v1.44.0) (2026-10-26)
+
+### ✨ Features
+
+* **zavet-check:** run only the checks a change owes ([d79c712](https://github.com/dodi-smart/.github/commit/d79c7124311bd1389dfbaff5d40a8bd664e931df)), references [#9](https://github.com/dodi-smart/.github/issues/9) [#10](https://github.com/dodi-smart/.github/issues/10)
+
 ## [1.43.3](https://github.com/dodi-smart/.github/compare/v1.43.2...v1.43.3) (2026-10-26)
 
 ### ⬆️ Dependencies

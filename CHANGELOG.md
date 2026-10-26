@@ -1,3 +1,9 @@
+## [1.43.1](https://github.com/dodi-smart/.github/compare/v1.43.0...v1.43.1) (2026-10-26)
+
+### 🐛 Bug Fixes
+
+* **pr-checks:** skip the kover report and floor on events kover-report rejects ([62f0ecb](https://github.com/dodi-smart/.github/commit/62f0ecb19e78dd9025266381414f49bd647c28cd))
+
 ## [1.43.0](https://github.com/dodi-smart/.github/compare/v1.42.0...v1.43.0) (2026-10-25)
 
 ### ✨ Features

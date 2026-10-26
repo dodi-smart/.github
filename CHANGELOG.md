@@ -1,3 +1,10 @@
+## [1.43.2](https://github.com/dodi-smart/.github/compare/v1.43.1...v1.43.2) (2026-10-26)
+
+### ⬆️ Dependencies
+
+* **deps:** update commitlint monorepo to v21.2.4 ([d81c3b6](https://github.com/dodi-smart/.github/commit/d81c3b6fd6795a00ab68ced9f25792c2e84ea14e))
+* **deps:** update dependency anchore/syft to v1.55.0 ([3b01579](https://github.com/dodi-smart/.github/commit/3b01579b809c6f8e8e58713dfcf2f63968025ccb))
+
 ## [1.43.1](https://github.com/dodi-smart/.github/compare/v1.43.0...v1.43.1) (2026-10-26)
 
 ### 🐛 Bug Fixes

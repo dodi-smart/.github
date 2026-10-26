@@ -1,3 +1,9 @@
+## [1.44.3](https://github.com/dodi-smart/.github/compare/v1.44.2...v1.44.3) (2026-10-26)
+
+### ⚡ Performance Improvements
+
+* **pr-checks:** run caller code as one lanes matrix, with zavet and React Doctor as lane steps ([#212](https://github.com/dodi-smart/.github/issues/212)) ([dac82d9](https://github.com/dodi-smart/.github/commit/dac82d900bb35777097ba7804e4834e0998d74dd))
+
 ## [1.44.2](https://github.com/dodi-smart/.github/compare/v1.44.1...v1.44.2) (2026-10-26)
 
 ### 🐛 Bug Fixes

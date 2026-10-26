@@ -34,7 +34,7 @@ runs:
   using: composite
   steps:
     - id: changed
-      uses: dodi-smart/.github/actions/changed-files@v1
+      uses: dodi-smart/.github/actions/changed-files@pinned/v1.44.2
       with:
         token: ${{ inputs.token }}
 

@@ -151,7 +151,7 @@ jobs:
       # renovate: datasource=npm depName=firebase-tools
       FIREBASE_TOOLS_VERSION: 15.34.1
     steps:
-      - uses: dodi-smart/.github/actions/runner-report@v1
+      - uses: dodi-smart/.github/actions/runner-report@pinned/v1.44.2
         with:
           selector: '["self-hosted","Linux","large"]'
 
@@ -169,7 +169,7 @@ jobs:
 
       # Empty when the caller has no App; the job's own token is used then.
       - id: app
-        uses: dodi-smart/.github/actions/app-token@v1
+        uses: dodi-smart/.github/actions/app-token@pinned/v1.44.2
         with:
           client-id:   ${{ secrets.GH_APP_CLIENT_ID }}
           private-key: ${{ secrets.GH_APP_PRIVATE_KEY }}
@@ -188,7 +188,7 @@ jobs:
       # request builds on this pool share. Slower by one dependency download per
       # release, which is the price of not signing with what a PR build left.
       - id: setup
-        uses: dodi-smart/.github/actions/setup-stack@v1
+        uses: dodi-smart/.github/actions/setup-stack@pinned/v1.44.2
         with:
           stack:        android
           isolate:      true
@@ -276,7 +276,7 @@ jobs:
           # shellcheck disable=SC2086
           ./gradlew $GRADLE_TASK
 
-      - uses: dodi-smart/.github/actions/android-distribute@v1
+      - uses: dodi-smart/.github/actions/android-distribute@pinned/v1.44.2
         with:
           tag: ${{ inputs.tag }}
           apk-glob: ${{ inputs.apk-glob }}

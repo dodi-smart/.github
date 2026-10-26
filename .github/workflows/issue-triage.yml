@@ -78,7 +78,7 @@ jobs:
       && (github.event.action != 'labeled' || github.event.label.name == 'agent:triage')
       && (github.event_name != 'issue_comment' || contains(github.event.comment.body, '@claude'))
     runs-on: ${{ fromJSON((github.event.repository.private && !github.event.pull_request.head.repo.fork) && '["self-hosted","Linux","light"]' || '"ubuntu-latest"') }}
-    timeout-minutes: 10   # the picker calls the org API and may retry
+    timeout-minutes: 10
     permissions:
       contents: read
       issues: read
@@ -157,15 +157,13 @@ jobs:
           echo "mode=${MODE:-triage}"      >> "$GITHUB_OUTPUT"
 
       # Only when the run above is still proceeding: a no-op dispatch or a
-      # kill-switched issue must never pay for a hosted picker.
+      # kill-switched issue picks no runner.
       - id: pick
         if: steps.bots.outputs.proceed == 'true'
         uses: dodi-smart/.github/actions/pick-runner@v1
         with:
           weight:             ${{ inputs.runner-weight }}
           labels:             ${{ inputs.runner-labels }}
-          gh-app-client-id:   ${{ secrets.GH_APP_CLIENT_ID }}
-          gh-app-private-key: ${{ secrets.GH_APP_PRIVATE_KEY }}
 
   triage:
     needs: [gate]

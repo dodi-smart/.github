@@ -1,3 +1,4 @@
 node_modules/
 /actionlint
 hk.local.pkl
+__pycache__/

@@ -1322,8 +1322,8 @@ never land on a small host (exit 137). `fell-back` is always `false`.
 
 `fallback` and `fallback-when` are deprecated: they change nothing, and a caller
 that still passes either gets a warning naming it. They are removed once no
-caller passes them. The `gh-app-client-id` and `gh-app-private-key` inputs, and
-the two `GH_APP_*` secrets of `pick-runner.yml`, are accepted and ignored.
+caller passes them. The two `GH_APP_*` secrets of `pick-runner.yml` are accepted
+and ignored; the action takes no credentials at all.
 
 ### No run-time switch
 

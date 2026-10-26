@@ -191,8 +191,7 @@ jobs:
           fi
 
       # The secrets context is not available in a step-level `if:` (see
-      # AGENTS.md); hoist the presence check into an env var and a step output,
-      # the way pick-runner.yml does for GH_APP_CLIENT_ID.
+      # AGENTS.md); hoist the presence check into an env var and a step output.
       - id: have-function-secrets
         env:
           FUNCTION_SECRETS: ${{ secrets.FUNCTION_SECRETS }}

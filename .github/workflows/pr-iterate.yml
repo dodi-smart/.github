@@ -156,8 +156,6 @@ jobs:
         with:
           weight:             ${{ inputs.runner-weight }}
           labels:             ${{ inputs.runner-labels }}
-          gh-app-client-id:   ${{ secrets.GH_APP_CLIENT_ID }}
-          gh-app-private-key: ${{ secrets.GH_APP_PRIVATE_KEY }}
 
       # Everything that is not a fix round happens here, on the decision just
       # made. A merge goes through actions/merge-gate, which reads the PR, the

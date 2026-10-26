@@ -87,6 +87,32 @@ jobs:
           fi
           echo "every shipped curl retries or is time-limited"
 
+      # A composite action only warns on an input it does not declare, and
+      # jactionlint cannot resolve these refs offline, so a dead or misspelled
+      # input (or a credential handed to an action that takes none) goes unseen.
+      - name: Every call to this repo's actions passes only declared inputs
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import glob, re, sys
+          from lib import load, uses
+          bad = []
+          files = sorted(glob.glob('.github/workflows/*.yml')) + sorted(glob.glob('actions/*/action.yml'))
+          for f in files:
+              doc = load(f)
+              steps = [st for job in (doc.get('jobs') or {}).values() for st in job.get('steps') or []]
+              steps += (doc.get('runs') or {}).get('steps') or []
+              for st in steps:
+                  m = re.match(r'dodi-smart/\.github/actions/([^@]+)@', uses(st))
+                  if m:
+                      extra = set(st.get('with') or {}) - set(load('actions/%s/action.yml' % m.group(1)).get('inputs') or {})
+                      if extra:
+                          bad.append('%s passes %s to actions/%s' % (f, ', '.join(sorted(extra)), m.group(1)))
+          if bad:
+              sys.exit('::error::' + '; '.join(bad))
+          print('every call to this repo\'s actions passes only declared inputs')
+          PY
+
       - name: Shell tests, four at a time
         env:
           REAL: "1"
@@ -579,7 +605,7 @@ jobs:
           print('track-progress passes through the guard')
           "
 
-      # One hosted picker job, one summary job. Both drifted back once already:
+      # One picker job, one summary job. Both drifted back once already:
       # a second picker job crept in as "just for this one caller", and a
       # summary job with a wrong `if:` reports green while its dependencies are
       # still running. Assert the shape rather than trust it stays this way.
@@ -596,7 +622,7 @@ jobs:
                             for step in (job.get('steps') or []))]
           if len(pickers) != 1:
               sys.exit('::error::pr-checks.yml must call the pick-runner action from exactly one job, found: '
-                        + repr(pickers) + '. Two picker jobs bill two hosted minutes before any real work runs.')
+                        + repr(pickers) + '. Two picker jobs queue twice before any real work runs.')
 
           summary = jobs.get('pr-checks')
           if summary is None:

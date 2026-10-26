@@ -65,7 +65,7 @@ fetch_jobs() {
   local page=1 pages="" resp n hit
   while [ "$page" -le 10 ]; do
     resp="$(printf 'header = "Authorization: Bearer %s"\n' "$TOKEN" \
-      | curl -fsS -K - -H 'Accept: application/vnd.github+json' \
+      | curl -fsS --max-time 10 -K - -H 'Accept: application/vnd.github+json' \
           "${GITHUB_API_URL:-https://api.github.com}$path?per_page=100&page=$page" 2>/dev/null)" || return 1
     pages="$pages$resp"$'\n'
     read -r n hit < <(jq -r --arg r "$NAME" \

@@ -260,12 +260,12 @@ jobs:
 
           # One verdict string: green | red:<failed jobs> | red:infra (the runner
           # failed twice). Decided here so `verify` can pick its runner from it.
-          # A runner failure on the first attempt is re-run ONCE, failed jobs
-          # only, and that run's completion brings the verdict.
+          # A runner or network failure on the first attempt is re-run ONCE,
+          # failed jobs only, and that run's completion brings the verdict.
           v=green
           if [ "$conclusion" != success ]; then
             gh run view "$id" --repo "$REPO" --log-failed > "$LOGS/ci.log" 2>&1 || true
-            if grep -qE 'exit code 137|signal SIGKILL|daemon disappeared unexpectedly|received a shutdown signal|lost communication with the server|No space left on device|ENOSPC|JavaScript heap out of memory' "$LOGS/ci.log"; then
+            if grep -qE 'exit code 137|signal SIGKILL|daemon disappeared unexpectedly|received a shutdown signal|lost communication with the server|No space left on device|ENOSPC|JavaScript heap out of memory|Could not resolve host|Connection (timed out|reset by peer)|ECONNRESET|ETIMEDOUT|EAI_AGAIN|ENOTFOUND|TLS handshake timeout|i/o timeout|curl: \((6|7|28|35|52|56)\)|50[234] (Bad Gateway|Service Unavailable|Gateway Time-?out)' "$LOGS/ci.log"; then
               if [ "$attempt" = 1 ]; then
                 echo "::notice title=Re-running CI::The pr-checks run failed on the runner, not the code. Re-running its failed jobs once."
                 gh run rerun "$id" --repo "$REPO" --failed

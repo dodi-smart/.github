@@ -73,6 +73,20 @@ jobs:
           fi
           echo "no shipped script pipes into head without draining the rest"
 
+      # A download without retries turns one network blip into a red job on
+      # every repo at once; an API call without a time limit hangs a job until
+      # its timeout. Every shipped curl carries one or the other, a download both.
+      - name: Every shipped curl retries or is time-limited
+        run: |
+          set -euo pipefail
+          bad=$(awk '/(^|[|(;&[:space:]])curl +-/ && !/--retry/ && (!/--max-time/ || /curl +-[a-zA-Z]*L/) { print FILENAME ":" FNR ": " $0 }' \
+                  actions/*/*.sh actions/*/action.yml .github/workflows/*.yml | grep -vE '/test\.sh:|self-test\.yml:' || true)
+          if [ -n "$bad" ]; then
+            echo "::error::curl without --retry (downloads) or --max-time (API calls):"
+            echo "$bad"; exit 1
+          fi
+          echo "every shipped curl retries or is time-limited"
+
       - name: Shell tests, four at a time
         env:
           REAL: "1"
@@ -501,6 +515,15 @@ jobs:
           guard = [s for s in zsteps if s.get('id') == 'guards']
           if not guard or 'promotion.sh' not in str(guard[0].get('run', '')):
               bad.append('zavet-check guards step no longer consults promotion.sh')
+          # On a bot's PR nothing outside a decision may turn the job red: the
+          # yq download, the toolchain and the install are report-only too, and
+          # verify runs under the action's time limit.
+          by_id = {s.get('id'): s for s in zsteps}
+          for sid in ('yq', 'setup', 'install'):
+              if 'steps.scope.outputs.report-only' not in str(by_id.get(sid, {}).get('continue-on-error', '')):
+                  bad.append('zavet-check %s step is not report-only on a bot PR' % sid)
+          if 'inputs.verify-timeout' not in str((by_id.get('checks', {}).get('env') or {}).get('TIMEOUT', '')):
+              bad.append('zavet-check runs zavet verify without its verify-timeout')
           triage = [s for s in wf('issue-triage.yml')['gate']['steps'] if s.get('id') == 'gate'][0]
           events = str((triage.get('with') or {}).get('events', '')).split()
           if not events or any(e.startswith('pull_request') for e in events):

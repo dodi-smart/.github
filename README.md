@@ -830,6 +830,8 @@ default, means no floor. `vitest` takes its floors from the vitest config
 instead. With `kover`, only `coverage-min-overall` fails the job;
 `coverage-min-changed` is marked in the comment but not enforced, because
 `kover-report` cannot tell "no changed file in the report" from 0%.
+`kover-report` runs only on pull requests and pushes; a manual or scheduled
+run skips the report and the floor with a notice, instead of failing.
 
 `lcov` takes anything that emits LCOV. Overall coverage is lines hit over lines
 found across the whole file. Changed-file coverage covers only the files the

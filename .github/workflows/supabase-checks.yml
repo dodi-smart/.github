@@ -139,7 +139,7 @@ jobs:
       # checks, not a filter. So does a diff the API could not return.
       - name: Check for migration or seed changes
         id: changes
-        uses: dodi-smart/.github/actions/changed-files@v1
+        uses: dodi-smart/.github/actions/changed-files@pinned/v1.44.5
         with:
           patterns: ${{ inputs.migrations-paths }}
 
@@ -156,7 +156,7 @@ jobs:
       - name: Start Supabase (local)
         id: start
         if: steps.changes.outputs.matched == 'true'
-        uses: dodi-smart/.github/actions/supabase-start@v1
+        uses: dodi-smart/.github/actions/supabase-start@pinned/v1.44.5
         with:
           runtime: ${{ inputs.runtime }}
 
@@ -242,7 +242,7 @@ jobs:
       # `types` job does, so a caller can require it on every pull request.
       - name: Check for migration, seed or test changes
         id: changes
-        uses: dodi-smart/.github/actions/changed-files@v1
+        uses: dodi-smart/.github/actions/changed-files@pinned/v1.44.5
         with:
           # The same paths as the `types` job, plus the tests themselves. A blank
           # `migrations-paths` means no filter, so the tests path is left out then:
@@ -261,7 +261,7 @@ jobs:
 
       - name: Start Supabase (local)
         if: steps.changes.outputs.matched == 'true'
-        uses: dodi-smart/.github/actions/supabase-start@v1
+        uses: dodi-smart/.github/actions/supabase-start@pinned/v1.44.5
         with:
           runtime: ${{ inputs.runtime }}
 
@@ -284,13 +284,13 @@ jobs:
     runs-on: ${{ fromJSON((github.event.repository.private && !github.event.pull_request.head.repo.fork) && '["self-hosted","Linux","light"]' || '"ubuntu-latest"') }}
     timeout-minutes: ${{ inputs.timeout-minutes }}
     steps:
-      - uses: dodi-smart/.github/actions/runner-report@v1
+      - uses: dodi-smart/.github/actions/runner-report@pinned/v1.44.5
 
       # Reports success, not skipped, when no migration changed, the way `types`
       # and `pgtap` do, and without a checkout: the file list comes from the API.
       - name: Check for migration changes
         id: changes
-        uses: dodi-smart/.github/actions/changed-files@v1
+        uses: dodi-smart/.github/actions/changed-files@pinned/v1.44.5
         with:
           patterns: ${{ inputs.migrations-path }}
 
@@ -304,7 +304,7 @@ jobs:
 
       - name: Lint changed migrations
         if: steps.changes.outputs.matched == 'true'
-        uses: dodi-smart/.github/actions/migration-lint@v1
+        uses: dodi-smart/.github/actions/migration-lint@pinned/v1.44.5
         with:
           migrations-path: ${{ inputs.migrations-path }}
           excluded-rules: ${{ inputs.migration-lint-excluded-rules }}

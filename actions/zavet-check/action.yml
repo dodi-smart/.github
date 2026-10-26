@@ -82,7 +82,7 @@ runs:
     # the job. The gate is used only for `author-kind`, which it writes before
     # any rule, so its `proceed` is ignored here on purpose.
     - id: author
-      uses: dodi-smart/.github/actions/agent-gate@v1
+      uses: dodi-smart/.github/actions/agent-gate@pinned/v1.44.5
       with:
         labels:     ${{ toJson(github.event.pull_request.labels.*.name) }}
         event-name: ${{ github.event_name }}
@@ -178,7 +178,7 @@ runs:
     - id: setup
       if: steps.present.outputs.yes == 'true' && inputs.checks == 'true' && steps.need.outputs.install == 'true' && steps.targets.outputs.run == 'true' && inputs.env-file == ''
       continue-on-error: ${{ steps.scope.outputs.report-only == 'true' }}
-      uses: dodi-smart/.github/actions/setup-stack@v1
+      uses: dodi-smart/.github/actions/setup-stack@pinned/v1.44.5
       with:
         stack:           ${{ inputs.stack }}
         isolate:         false
@@ -196,7 +196,7 @@ runs:
       id: install
       if: steps.present.outputs.yes == 'true' && inputs.checks == 'true' && steps.need.outputs.install == 'true' && steps.targets.outputs.run == 'true' && steps.setup.outputs.install != ''
       continue-on-error: ${{ steps.scope.outputs.report-only == 'true' }}
-      uses: dodi-smart/.github/actions/run-phases@v1
+      uses: dodi-smart/.github/actions/run-phases@pinned/v1.44.5
       with:
         env-file: ${{ steps.setup.outputs.env-file }}
         install:  ${{ steps.setup.outputs.install }}
@@ -412,7 +412,7 @@ runs:
     # step below does. pr-checks posts the same comment from the report.
     - if: always() && inputs.comment == 'true' && steps.report.outputs.failed != ''
       continue-on-error: true
-      uses: dodi-smart/.github/actions/sticky-comment@v1
+      uses: dodi-smart/.github/actions/sticky-comment@pinned/v1.44.5
       with:
         key:       zavet-check
         number:    ${{ github.event.pull_request.number }}

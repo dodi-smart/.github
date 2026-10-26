@@ -149,7 +149,7 @@ jobs:
       # workflow does not name is one Renovate cannot see; renovate.json has a
       # manager for this marker and cuts a release for a bump.
       # renovate: datasource=npm depName=firebase-tools
-      FIREBASE_TOOLS_VERSION: 15.32.1
+      FIREBASE_TOOLS_VERSION: 15.34.1
     steps:
       - uses: dodi-smart/.github/actions/runner-report@v1
         with:

@@ -260,16 +260,32 @@ jobs:
             skipped)   later "PR Checks was skipped on $SHA" ;;
           esac
 
-          # One verdict string: green | red:<failed jobs> | red:infra (the runner
-          # failed twice). Decided here so `verify` can pick its runner from it.
-          # A runner or network failure on the first attempt is re-run ONCE,
-          # failed jobs only, and that run's completion brings the verdict.
+          # One verdict string: green | red:<failed jobs> | red:infra (the
+          # runner or the network failed twice). Decided here so `verify` can
+          # pick its runner from it. Infrastructure on the first attempt is
+          # re-run ONCE, failed jobs only, and that run's completion brings the
+          # verdict.
+          #
+          # Runner and tool messages only, never a bare errno or HTTP status a
+          # failing test may print. Self test runs them on sample logs both ways.
+          infra=(
+            'exit code 137' 'signal SIGKILL' 'daemon disappeared unexpectedly'
+            'received a shutdown signal' 'lost communication with the server'
+            'No space left on device' 'ENOSPC' 'JavaScript heap out of memory'
+            '(^|[[:space:]])curl: \((6|7|28|35|52|56)\)'
+            'Could not resolve host'
+            "fatal: unable to access 'https?://[^']*': (Could not resolve|Failed to connect|Operation timed out|Recv failure|The requested URL returned error: 50[234])"
+            'npm (ERR!|error) (code|errno) (ECONNRESET|ETIMEDOUT|EAI_AGAIN|ENOTFOUND)'
+            "Could not (GET|HEAD) 'https?://[^']*'\. (Received status code 50[234]|.*(timed out|Connection reset))"
+            'Got socket error trying to find package'
+            'Failed to download action'
+          )
           v=green
           if [ "$conclusion" != success ]; then
             gh run view "$id" --repo "$REPO" --log-failed > "$LOGS/ci.log" 2>&1 || true
-            if grep -qE 'exit code 137|signal SIGKILL|daemon disappeared unexpectedly|received a shutdown signal|lost communication with the server|No space left on device|ENOSPC|JavaScript heap out of memory|Could not resolve host|Connection (timed out|reset by peer)|ECONNRESET|ETIMEDOUT|EAI_AGAIN|ENOTFOUND|TLS handshake timeout|i/o timeout|curl: \((6|7|28|35|52|56)\)|50[234] (Bad Gateway|Service Unavailable|Gateway Time-?out)' "$LOGS/ci.log"; then
+            if printf '%s\n' "${infra[@]}" | grep -qEf - "$LOGS/ci.log"; then
               if [ "$attempt" = 1 ]; then
-                echo "::notice title=Re-running CI::The pr-checks run failed on the runner, not the code. Re-running its failed jobs once."
+                echo "::notice title=Re-running CI::The pr-checks run failed on infrastructure (the runner or the network), not the code. Re-running its failed jobs once."
                 gh run rerun "$id" --repo "$REPO" --failed
                 later "Re-ran the failed PR Checks jobs"
               fi
@@ -509,7 +525,7 @@ jobs:
           keep-going:     true
 
       # One verdict string, whichever source produced it:
-      #   green | red:<steps or jobs> | red:infra (the runner failed twice)
+      #   green | red:<steps or jobs> | red:infra (the runner or network failed twice)
       # The gate decided it from the pr-checks run. Only a repo with no
       # pr-checks is decided here, from its own build.
       - id: result
@@ -610,9 +626,9 @@ jobs:
             3. Grep this repo for each breaking or deprecated API. A change the
                code never touches is not a risk here.
             4. If the build is red, read the logs FIRST. Decide for each failed
-               job or step: caused by this update, caused by the runner
-               (`red:infra`, exit 137, a killed process: never try to fix
-               those), or already failing on the base branch (check the base
+               job or step: caused by this update, caused by infrastructure
+               (`red:infra`, exit 137, a killed process, a failed download:
+               never try to fix those), or already failing on the base branch (check the base
                branch's latest CI with `gh run list --branch ${{ needs.gate.outputs.base-ref }}`
                before reproducing anything).
             5. Fix when the update caused the failure, or when this repo calls

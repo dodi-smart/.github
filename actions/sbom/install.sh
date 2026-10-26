@@ -76,8 +76,10 @@ mkdir -p "$parent"
 tmp="$(mktemp -d "$parent/download.XXXXXX")"
 trap 'rm -rf "$tmp"' EXIT
 
-curl -fsSL --retry 3 --retry-all-errors --connect-timeout 20 --max-time 120 -o "$tmp/$asset" "$base/$asset"
-curl -fsSL --retry 3 --retry-all-errors --connect-timeout 20 --max-time 120 -o "$tmp/$sums" "$base/$sums"
+# --retry-max-time bounds all attempts together, well inside the job timeout.
+fetch=(curl -fsSL --retry 3 --retry-all-errors --connect-timeout 20 --max-time 60 --retry-max-time 150)
+"${fetch[@]}" -o "$tmp/$asset" "$base/$asset"
+"${fetch[@]}" -o "$tmp/$sums" "$base/$sums"
 
 want="$(awk -v a="$asset" '$2 == a { print $1 }' "$tmp/$sums")"
 if [ -z "$want" ]; then

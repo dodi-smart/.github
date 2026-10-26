@@ -113,6 +113,44 @@ jobs:
           print('every call to this repo\'s actions passes only declared inputs')
           PY
 
+      # deps-verify re-runs a red PR Checks once, and calls it red:infra rather
+      # than the update's fault, when the failed log matches its infra patterns.
+      # A pattern too broad hides a real break behind "infrastructure", so the
+      # exact patterns from the workflow are run against sample logs, both ways.
+      - name: deps-verify tells infrastructure from a real failure
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import re, subprocess, sys
+          from lib import load
+          ci = [s for s in load('.github/workflows/deps-verify.yml')['jobs']['gate']['steps'] if s.get('id') == 'ci'][0]['run']
+          block = re.search(r'^\s*infra=\(\n.*?^\s*\)\n', ci, re.S | re.M).group(0)
+          pre = 'checks / test\tRun phases\t2026-10-26T18:00:00.0000000Z '
+          infra = ['##[error]Process completed with exit code 137.',
+                   'curl: (28) Operation timed out after 20001 milliseconds with 0 bytes received',
+                   'curl: (6) Could not resolve host: github.com',
+                   "fatal: unable to access 'https://github.com/o/r/': Could not resolve host: github.com",
+                   'npm ERR! code ECONNRESET',
+                   "Could not GET 'https://repo.maven.apache.org/maven2/a/b.pom'. Received status code 502 from server: Bad Gateway",
+                   'Got socket error trying to find package http at https://pub.dev.',
+                   'No space left on device']
+          code = ['curl: (22) The requested URL returned error: 404',
+                  '  x retries on ECONNRESET (12 ms)',
+                  'Expected: 503 Service Unavailable',
+                  'AssertionError: ETIMEDOUT was not handled',
+                  'FAIL src/net.test.ts > fetch > times out',
+                  'Error: getaddrinfo ENOTFOUND example.invalid']
+          bad = []
+          sh = block + 'printf "%s\\n" "${infra[@]}" | grep -qEf - <(printf "%s\\n" "$1")'
+          for line, want in [(l, 0) for l in infra] + [(l, 1) for l in code]:
+              rc = subprocess.run(['bash', '-c', sh, '_', pre + line]).returncode
+              if rc != want:
+                  bad.append(('missed infrastructure: ' if want == 0 else 'called infrastructure: ') + line)
+          if bad:
+              sys.exit('::error::' + '; '.join(bad))
+          print('deps-verify tells %d infrastructure lines from %d real failures' % (len(infra), len(code)))
+          PY
+
       - name: Shell tests, four at a time
         env:
           REAL: "1"
@@ -525,26 +563,24 @@ jobs:
                   bad.append(f + ' names a dependency-bot login')
           wf = lambda n: yaml.safe_load(open('.github/workflows/' + n))['jobs']
           zsteps = yaml.safe_load(open('actions/zavet-check/action.yml'))['runs']['steps']
-          author = [s for s in zsteps if s.get('id') == 'author']
-          if not author or 'agent-gate@' not in str(author[0].get('uses', '')):
+          by_id = {s.get('id'): s for s in zsteps}
+          if 'agent-gate@' not in str(by_id.get('author', {}).get('uses', '')):
               bad.append('zavet-check no longer reads the author from agent-gate')
-          if any(s.get('id') == 'mode' for s in zsteps):
+          if 'mode' in by_id:
               bad.append('zavet-check has its own mode step again')
           # The install is gated on need.outputs.install and on targets.outputs.run
           # (a check this run's changes owe), and the guards step asks promotion.sh,
           # or those costs come back on every PR.
           for sid in ('setup', 'install'):
-              cond = str(([s for s in zsteps if s.get('id') == sid] or [{}])[0].get('if', ''))
+              cond = str(by_id.get(sid, {}).get('if', ''))
               for need in ('steps.need.outputs.install', 'steps.targets.outputs.run'):
                   if need not in cond:
                       bad.append('zavet-check %s step no longer depends on %s' % (sid, need))
-          guard = [s for s in zsteps if s.get('id') == 'guards']
-          if not guard or 'promotion.sh' not in str(guard[0].get('run', '')):
+          if 'promotion.sh' not in str(by_id.get('guards', {}).get('run', '')):
               bad.append('zavet-check guards step no longer consults promotion.sh')
           # On a bot's PR nothing outside a decision may turn the job red: the
           # yq download, the toolchain and the install are report-only too, and
           # verify runs under the action's time limit.
-          by_id = {s.get('id'): s for s in zsteps}
           for sid in ('yq', 'setup', 'install'):
               if 'steps.scope.outputs.report-only' not in str(by_id.get(sid, {}).get('continue-on-error', '')):
                   bad.append('zavet-check %s step is not report-only on a bot PR' % sid)

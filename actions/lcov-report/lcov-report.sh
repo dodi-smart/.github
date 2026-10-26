@@ -19,7 +19,7 @@ set -euo pipefail
 : "${LCOV_FILE:?}" "${OUT:?}"
 out="${GITHUB_OUTPUT:-/dev/stdout}"
 
-# The path may be a glob: the coverage job points it at the download directory,
+# The path may be a glob: pr-checks' PR Checks job points it at the download directory,
 # which holds the one report under whatever name the test command gave it.
 match="$(compgen -G "$LCOV_FILE" | sed -n 1p || true)"
 [ -z "$match" ] || LCOV_FILE="$match"

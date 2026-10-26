@@ -15,12 +15,11 @@ jobs:
     name: pr-checks at the pinned release
     permissions:
       contents: read
-      pull-requests: write     # zavet, react-doctor and coverage
-      statuses: write          # react-doctor posts its score
+      pull-requests: write     # PR Checks posts the zavet, React Doctor and coverage comments
     uses: ./.github/workflows/pr-checks.yml
     with:
       stack: none
-      # Every other command is empty for `none`, so those phases and the build job skip.
+      # Every other command is empty for `none`, so those phases skip and there is no build lane.
       test: mkdir -p coverage && cp .github/canary/lcov.info coverage/lcov.info
       hk: true
       coverage: lcov

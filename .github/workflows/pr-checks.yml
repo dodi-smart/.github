@@ -8,12 +8,14 @@
 #
 # Light work (lint, typecheck) goes to the light pool, heavy work (build, tests)
 # to the large one; `single-job: true` collapses the split onto the heavy runner.
-# A step whose command resolves to empty is skipped, and a `test` or `build`
-# job with none does not start. ONE `pick` job resolves both runners and
-# docs-only from the API, with no checkout. `pr-checks` at the bottom always
-# runs and is the one context a ruleset should require. `pick` and `pr-checks`
-# run no caller code and sit on the `control` pool of a private repo (AGENTS.md);
-# their `runs-on` is written out per job because `runs-on` cannot read `env`.
+# ONE `pick` job resolves both runners, docs-only (from the API, with no
+# checkout) and the lanes: the legs of the one `lanes` matrix job that runs the
+# caller's code, each listed only when it has work, so no job shows as skipped.
+# A step whose command resolves to empty is skipped. `pr-checks` at the bottom
+# always runs and is the one context a ruleset should require. `pick` and
+# `pr-checks` run no caller code and sit on the `control` pool of a private repo
+# (AGENTS.md); their `runs-on` is written out per job because `runs-on` cannot
+# read `env`.
 name: PR Checks
 
 # Runs the caller's own code, so no job holds more than it needs.
@@ -21,7 +23,7 @@ permissions:
   contents: read
 
 env:
-  # What `test` and `all` upload for the coverage job: vitest's two JSON files, or the caller's one report.
+  # What `test` and `all` hand `PR Checks` for the comment: vitest's two JSON files, or the caller's one report.
   COVERAGE_REPORT: ${{ inputs.coverage == 'vitest' && 'coverage/coverage-*.json' || inputs.coverage-path || 'coverage/lcov.info' }}
 
 on:
@@ -39,9 +41,9 @@ on:
       test:      { type: string, default: "@stack" }
       build:     { type: string, default: "@stack" }
 
-      # The `ios` job's command and label (see the job). "@stack" is the stack's
-      # iOS command, "" turns the job off. The label is read from the event, so
-      # one added after the last push needs `labeled` in the caller's types.
+      # The `iOS` lane's command and label (see the `lanes` job). "@stack" is the
+      # stack's iOS command, "" turns the lane off. The label is read from the
+      # event, so one added after the last push needs `labeled` in the caller's types.
       ios:               { type: string, default: "@stack" }
       ios-label:         { type: string, default: "ios" }
       xcode-version:     { type: string, default: "" }
@@ -75,17 +77,17 @@ on:
       # and on any event that is not a pull request.
       release-branch: { type: string, default: "main" }
 
-      # Run every step in ONE job on the heavy runner instead of splitting light
-      # work from heavy. Right for Gradle, where three jobs mean three
-      # configuration phases and no shared daemon (one job gives one checkout and
-      # one warm GRADLE_USER_HOME); the split stays the default.
+      # Run every step in ONE lane (`all`) on the heavy runner instead of
+      # splitting light work from heavy. Right for Gradle, where three jobs mean
+      # three configuration phases and no shared daemon (one job gives one
+      # checkout and one warm GRADLE_USER_HOME); the split stays the default.
       single-job: { type: boolean, default: false }
 
       # Every changed file must match one of these globs (newline-separated,
-      # `fnmatch`-style: `*` crosses `/`) for the run to skip `test`, `build`
-      # and `all`, and every step of `checks` but commitlint. That step still runs
-      # on the light runner when `commitlint` is on, even with `single-job`: it
-      # checks the commit messages, not the files.
+      # `fnmatch`-style: `*` crosses `/`) for the run to skip every lane but a
+      # `checks` that carries only commitlint and zavet. It runs on the light
+      # runner when either is on, even with `single-job`: they check the commit
+      # messages and the knowledge layer, not the files.
       #
       # `docs_only` is always `false` on `workflow_dispatch`, and whenever the
       # changed files cannot be listed in full (an API error, or the 3000-file
@@ -108,22 +110,27 @@ on:
       dependency-check:         { type: boolean, default: false }
       dependency-check-fail-on: { type: string,  default: "none" }
 
-      # Opt-in jobs that replace zavet-check.yml and react-doctor.yml. They
-      # feed the `pr-checks` summary only when their `*-blocking` input is on.
-      # `zavet-stack` is the toolchain the decision checks run on.
-      # `react-doctor-paths` are newline globs; the default is web source and
-      # package.json, narrow it to an app directory in a monorepo. A repo that
-      # tunes React Doctor keeps react-doctor.yml.
+      # Opt-in checks that replace zavet-check.yml and react-doctor.yml. They
+      # fail the `pr-checks` summary only when their `*-blocking` input is on.
+      # `zavet-stack` is the toolchain the decision checks run on. Zavet is a
+      # step of `checks` (or `all`) when that lane can serve it: `zavet-stack` is
+      # `none` or the stack, and `zavet-install` is empty. Otherwise it gets its
+      # own `Zavet Check` lane.
+      # React Doctor is a step of `checks` (or `all`) when the pull request
+      # changes a file matching `react-doctor-paths` (newline globs; the default
+      # is web source and package.json, narrow it to an app directory in a
+      # monorepo). A repo that tunes React Doctor keeps react-doctor.yml.
       zavet:       { type: boolean, default: false }
       zavet-dir:   { type: string,  default: ".zavet" }
       zavet-stack: { type: string,  default: "none" }
       zavet-audit: { type: boolean, default: false }   # report-only health sweep
       # Off by default: an advisory check that silently starts blocking merges
-      # is worse than one that reports. On, the job's result joins `PR Checks`,
-      # the required context, so a red Zavet Check blocks the merge.
+      # is worse than one that reports. On, a failure fails its lane, and so
+      # `PR Checks`, the required context: a red Zavet Check blocks the merge.
       zavet-blocking: { type: boolean, default: false }
-      # The zavet job's install. Empty reuses `install`; set it when the decision
-      # checks need more, e.g. a build whose output a check reads.
+      # The zavet install. Empty reuses `install` (and the lane's own install);
+      # set it when the decision checks need more, e.g. a build whose output a
+      # check reads.
       zavet-install: { type: string, default: "" }
 
       react-doctor:           { type: boolean, default: false }
@@ -136,8 +143,8 @@ on:
           **.jsx
           package.json
       react-doctor-directory: { type: string,  default: "." }
-      # Off by default, as `zavet-blocking`. On, the job joins `PR Checks` and
-      # React Doctor fails the run on an error-severity finding.
+      # Off by default, as `zavet-blocking`. On, React Doctor fails its lane, and
+      # so `PR Checks`, on an error-severity finding.
       react-doctor-blocking:  { type: boolean, default: false }
 
       # none | vitest | kover | lcov. `lcov`: the test command writes an LCOV
@@ -176,23 +183,20 @@ on:
       GH_APP_PRIVATE_KEY: { required: false }
 
 jobs:
-  # ONE job resolves both runners and whether the diff is docs-only. It always
-  # runs: a docs-only skip and single-job mode still need it, and its outputs are
-  # how the other jobs skip cleanly. It needs bash, git, gh, jq and python3
-  # (`changed-files` matches globs with fnmatch); a missing one degrades to "not
-  # docs-only, run everything" and skips React Doctor, so the check below says so.
+  # ONE job resolves both runners, whether the diff is docs-only, and the lanes
+  # the run needs. It always runs: its outputs are the only thing that decides
+  # what else starts. It needs bash, git, gh, jq and python3 (`changed-files`
+  # matches globs with fnmatch); a missing one degrades to "not docs-only, run
+  # everything" and skips React Doctor, so the check below says so.
   pick:
     name: Pick runner
     runs-on: ${{ fromJSON((github.event.repository.private && !github.event.pull_request.head.repo.fork) && '["self-hosted","Linux","control"]' || '"ubuntu-latest"') }}
     timeout-minutes: 10
     permissions: { contents: read, pull-requests: read }   # pull-requests: the changed-files listing
     outputs:
-      light:     ${{ steps.light.outputs.runner }}
-      heavy:     ${{ steps.heavy.outputs.runner }}
       docs_only: ${{ steps.docs.outputs.all-matched }}
-      has_test:  ${{ steps.cmds.outputs.test != '' }}
-      has_build: ${{ steps.cmds.outputs.build != '' }}
-      react_doctor: ${{ inputs.react-doctor && steps.rd.outputs.matched == 'true' }}
+      lanes:     ${{ steps.plan.outputs.lanes }}
+      coverage:  ${{ steps.plan.outputs.coverage }}
       key:       ${{ steps.key.outputs.key }}
     steps:
       - uses: dodi-smart/.github/actions/runner-report@v1
@@ -205,7 +209,7 @@ jobs:
           release-branch: ${{ inputs.release-branch }}
       # Artifact names are per run and a caller may call this workflow twice, so
       # each call's names carry a hash of its inputs. Not `github.job`: both calls
-      # have a job called `test`.
+      # have a job called `lanes`.
       - id: key
         env:
           INPUTS: ${{ toJSON(inputs) }}
@@ -247,38 +251,189 @@ jobs:
         with:
           patterns: ${{ inputs.react-doctor-paths }}
 
-      # Only when some light job will run: the split `checks`, commitlint, zavet,
-      # react-doctor or coverage.
+      # Static (no API call, no token), so both always run and the plan below
+      # gives each lane the one it needs.
       - id: light
-        if: ${{ (!inputs.single-job && steps.docs.outputs.all-matched != 'true') || (inputs.commitlint && github.event.pull_request) || inputs.zavet || steps.rd.outputs.matched == 'true' || (steps.docs.outputs.all-matched != 'true' && inputs.coverage != 'none') }}
         uses: dodi-smart/.github/actions/pick-runner@v1
         with:
           weight: ${{ inputs.light-weight }}
-
       - id: heavy
-        if: ${{ steps.docs.outputs.all-matched != 'true' }}
         uses: dodi-smart/.github/actions/pick-runner@v1
         with:
           weight: ${{ inputs.heavy-weight }}
 
-  # Full history, because guards walk the pull request's commits.
-  zavet:
-    name: Zavet Check
-    if: inputs.zavet
+      # The lanes this run needs, one matrix leg each; plan.sh has the rules.
+      # The iOS label is read from the event, so one added after the last push
+      # needs `labeled` in the caller's types.
+      - id: plan
+        uses: dodi-smart/.github/actions/pr-checks-plan@v1
+        with:
+          stack:            ${{ inputs.stack }}
+          single-job:       ${{ inputs.single-job }}
+          docs-only:        ${{ steps.docs.outputs.all-matched }}
+          has-test:         ${{ steps.cmds.outputs.test != '' }}
+          has-build:        ${{ steps.cmds.outputs.build != '' }}
+          light:            ${{ steps.light.outputs.runner }}
+          heavy:            ${{ steps.heavy.outputs.runner }}
+          hk:               ${{ inputs.hk }}
+          dependency-check: ${{ inputs.dependency-check }}
+          commitlint:       ${{ inputs.commitlint && github.event.pull_request != null }}
+          coverage:         ${{ inputs.coverage }}
+          zavet:            ${{ inputs.zavet }}
+          zavet-stack:      ${{ inputs.zavet-stack }}
+          zavet-install:    ${{ inputs.zavet-install }}
+          react-doctor:     ${{ inputs.react-doctor && steps.rd.outputs.matched == 'true' }}
+          ios:              ${{ inputs.ios }}
+          ios-labelled:     ${{ contains(github.event.pull_request.labels.*.name, inputs.ios-label) }}
+
+  # ---------------------------------------------------------------------------
+  # Every job that runs the caller's code is a leg of this one matrix, and `pick`
+  # lists only the legs that have work, so the checks list shows no skipped rows
+  # and each step below is written once. Which lanes exist, where they run and
+  # what each carries is decided in actions/pr-checks-plan (plan.sh has the rules
+  # and why): `checks`, `test` and `build`, or `all` with `single-job`; `iOS` on
+  # the hosted Mac; `Zavet Check` when zavet cannot share `checks` or `all`.
+  # Every lane runs its commands through `run-phases`, which sources the env file
+  # setup-stack wrote, skips an empty phase, stops at the first failure and puts
+  # a timing table in the job summary.
+  # ---------------------------------------------------------------------------
+  lanes:
+    name: ${{ matrix.name }}
     needs: [pick]
-    runs-on: ${{ fromJson(needs.pick.outputs.light) }}
-    timeout-minutes: 15
-    permissions: { contents: read, pull-requests: write }   # pull-requests: the failure comment
+    if: ${{ needs.pick.outputs.lanes != '[]' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.pick.outputs.lanes) }}
+    runs-on: ${{ fromJSON(matrix.runs_on) }}
+    timeout-minutes: ${{ inputs.timeout-minutes }}
+    # pull-requests: commitlint's commit list, dependency-check's changed files, zavet's author, React Doctor's API fallback
+    permissions: { contents: read, pull-requests: read }
     steps:
-      - &report-light
-        uses: dodi-smart/.github/actions/runner-report@v1
+      - uses: dodi-smart/.github/actions/runner-report@v1
         with:
-          selector: ${{ needs.pick.outputs.light }}
-      - uses: actions/checkout@v7
+          selector: ${{ matrix.runs_on }}
+      # Full history only where zavet or React Doctor runs: zavet's guards walk
+      # the pull request's commits, and React Doctor's `scope: changed` diffs
+      # against the merge base. No reporter needs history, they list files
+      # through the API. A lane with nothing to build or verify (commitlint
+      # alone) clones nothing.
+      - id: checkout
+        if: ${{ contains(matrix.phases, 'install') || matrix.zavet }}
+        uses: actions/checkout@v7
         with:
-          fetch-depth: 0
+          fetch-depth: ${{ !(matrix.zavet || matrix.react_doctor) && 1 || 0 }}
           persist-credentials: false
-      - uses: dodi-smart/.github/actions/zavet-check@v1
+      # One setup for every lane, the Mac included: only the inputs that differ
+      # there read the lane's phases. It only resolves the commands into outputs; the
+      # phases step below reads the ones its lane runs.
+      - id: setup
+        if: ${{ contains(matrix.phases, 'install') }}
+        uses: dodi-smart/.github/actions/setup-stack@v1
+        with:
+          stack:             ${{ inputs.stack }}
+          isolate:           false
+          cache:             auto
+          # Only a lane that builds has a `.next/cache` worth keeping.
+          next-cache:        ${{ contains(matrix.phases, 'build') && 'auto' || 'false' }}
+          env:               ${{ inputs.env }}
+          build-env:         ${{ inputs.build-env }}
+          install:           ${{ inputs.install }}
+          lint:              ${{ inputs.lint }}
+          typecheck:         ${{ inputs.typecheck }}
+          test:              ${{ inputs.test }}
+          build:             ${{ inputs.build }}
+          design-lint:       ${{ inputs.design-lint }}
+          ios:               ${{ inputs.ios }}
+          # flutter build ios needs no JDK, and a Mac minute costs ten Linux ones.
+          java-version:      ${{ (!contains(matrix.phases, 'ios') || inputs.stack != 'flutter') && inputs.java-version || '' }}
+          node-version:      ${{ inputs.node-version }}
+          bun-version:       ${{ inputs.bun-version }}
+          flutter-version:   ${{ inputs.flutter-version }}
+          rust-toolchain:    ${{ inputs.rust-toolchain }}
+          # Off the Mac, setup-xcode would run for an `xcode` stack and fail.
+          xcode-version:     ${{ contains(matrix.phases, 'ios') && inputs.xcode-version || '' }}
+          xcode-destination: ${{ inputs.xcode-destination }}
+      # Opt-in `hk`: install first, then hk (the whole tree, never `--pr`; its
+      # mise cache follows setup-stack's), then `Run phases` for the rest.
+      - id: install
+        name: Run phases (install)
+        if: ${{ matrix.hk }}
+        uses: dodi-smart/.github/actions/run-phases@v1
+        with:
+          env-file: ${{ steps.setup.outputs.env-file }}
+          install:  ${{ steps.setup.outputs.install }}
+      - if: ${{ matrix.hk }}
+        uses: dodi-smart/.github/actions/hk-check@v1
+        with:
+          cache:         ${{ steps.setup.outputs.cache-enabled }}
+          cache-save:    ${{ steps.setup.outputs.cache-save }}
+          artifact-name: hk-sarif-${{ needs.pick.outputs.key }}
+      # One step for every lane, with the commands its phases name. With `hk` the
+      # install already ran above, so it is not repeated (an empty command is
+      # skipped) and a red hk does not hide the rest: they run unless the install
+      # failed. Only the iOS lane has the `ios` phase, as its build.
+      - id: phases
+        name: Run phases
+        if: ${{ contains(matrix.phases, 'install') && (success() || (matrix.hk && !cancelled() && steps.install.outcome == 'success')) }}
+        uses: dodi-smart/.github/actions/run-phases@v1
+        with:
+          env-file:       ${{ steps.setup.outputs.env-file }}
+          build-env-file: ${{ steps.setup.outputs.build-env-file }}
+          install:        ${{ !matrix.hk && steps.setup.outputs.install || '' }}
+          lint:           ${{ contains(matrix.phases, 'lint') && steps.setup.outputs.lint || '' }}
+          design-lint:    ${{ contains(matrix.phases, 'design-lint') && steps.setup.outputs.design-lint || '' }}
+          typecheck:      ${{ contains(matrix.phases, 'typecheck') && steps.setup.outputs.typecheck || '' }}
+          test:           ${{ contains(matrix.phases, 'test') && steps.setup.outputs.test || '' }}
+          build:          ${{ contains(matrix.phases, 'build') && steps.setup.outputs.build || contains(matrix.phases, 'ios') && steps.setup.outputs.ios || '' }}
+      # The `PR Checks` job posts the comment and holds the write token; a lane
+      # runs the caller's code, so it only hands the report over, by basename,
+      # with the workspace its paths are relative to. A red run uploads nothing.
+      - name: Stage the coverage report
+        if: ${{ matrix.coverage_upload }}
+        env:
+          OUT: ${{ runner.temp }}/pr-checks-coverage
+        run: |
+          set -euo pipefail
+          shopt -s globstar nullglob
+          # Unquoted on purpose: the path is a glob for vitest's two files.
+          # shellcheck disable=SC2206
+          files=($COVERAGE_REPORT)
+          if [ "${#files[@]}" -eq 0 ] || [ ! -f "${files[0]}" ]; then
+            echo "::error title=No coverage report::the test command wrote nothing at $COVERAGE_REPORT"
+            exit 1
+          fi
+          mkdir -p "$OUT/report"
+          cp "${files[@]}" "$OUT/report/"
+          printf '%s\n' "$GITHUB_WORKSPACE" > "$OUT/workspace"
+      - if: ${{ matrix.coverage_upload }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: pr-checks-coverage-${{ needs.pick.outputs.key }}
+          path: ${{ runner.temp }}/pr-checks-coverage
+          if-no-files-found: error
+          retention-days: 1
+      # Opt-in `dependency-check`, a step and not a job, on `!cancelled()` and the
+      # checkout so a red lint does not hide it.
+      - name: Dependency check
+        if: ${{ !cancelled() && matrix.dependency_check && steps.checkout.outcome == 'success' }}
+        uses: dodi-smart/.github/actions/dependency-check@v1
+        with:
+          fail-on: ${{ inputs.dependency-check-fail-on }}
+      # In `checks` or `all` it reuses the lane's toolchain and install (the env
+      # file), so it costs no second checkout, setup or install; a lane with no
+      # install (its own, or a docs-only `checks`) has no env file, so it sets up
+      # its own. It runs
+      # after a red lint, but not after a failed setup or install, which it would
+      # blame on a decision. Advisory unless `zavet-blocking`: a failure then
+      # leaves the lane green. A dependency bot's PR is report-only inside the
+      # action. The comment is posted by `PR Checks`, from the report uploaded
+      # next, because a lane holds no write token.
+      - id: zavet
+        name: Zavet Check
+        if: ${{ !cancelled() && matrix.zavet && steps.checkout.outcome == 'success' && steps.setup.outcome != 'failure' && steps.install.outcome != 'failure' && !contains(steps.phases.outputs.failed, 'install') }}
+        continue-on-error: ${{ !inputs.zavet-blocking }}
+        uses: dodi-smart/.github/actions/zavet-check@v1
         with:
           zavet-dir:       ${{ inputs.zavet-dir }}
           stack:           ${{ inputs.zavet-stack }}
@@ -288,291 +443,150 @@ jobs:
           bun-version:     ${{ inputs.bun-version }}
           java-version:    ${{ inputs.java-version }}
           flutter-version: ${{ inputs.flutter-version }}
-
-  react-doctor:
-    name: React Doctor
-    if: ${{ needs.pick.outputs.react_doctor == 'true' }}
-    needs: [pick]
-    runs-on: ${{ fromJson(needs.pick.outputs.light) }}
-    timeout-minutes: 15
-    permissions: { contents: read, pull-requests: write, statuses: write }   # the action's sticky comment and score status
-    steps:
-      - *report-light
-      - uses: dodi-smart/.github/actions/react-doctor@v1
+          env-file:        ${{ steps.setup.outputs.env-file }}
+          comment:         'false'
+      - if: ${{ !cancelled() && steps.zavet.outputs.report-dir != '' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: pr-checks-comment-zavet-${{ needs.pick.outputs.key }}
+          path: ${{ steps.zavet.outputs.report-dir }}
+          if-no-files-found: ignore
+          retention-days: 1
+      # Scans with full history from the lane's checkout and posts nothing: the
+      # lane holds no write token, so `PR Checks` posts the comment from the
+      # report uploaded next, and there is no commit status. `error`, not
+      # `warning`, when blocking: a gate on findings nobody agreed to fix gets
+      # bypassed. Advisory unless `react-doctor-blocking`: a failure then leaves
+      # the lane green.
+      - id: react-doctor
+        name: React Doctor
+        if: ${{ !cancelled() && matrix.react_doctor && steps.checkout.outcome == 'success' }}
+        continue-on-error: ${{ !inputs.react-doctor-blocking }}
+        uses: dodi-smart/.github/actions/react-doctor@v1
         with:
           directory: ${{ inputs.react-doctor-directory }}
-          # `error`, not `warning`: a gate on findings nobody agreed to fix
-          # gets bypassed.
           blocking:  ${{ inputs.react-doctor-blocking && 'error' || 'none' }}
-
-  # ---------------------------------------------------------------------------
-  # Split shape: light work on the small pool, heavy work on the large one.
-  # Every job runs its commands through `run-phases`, which sources the env file
-  # setup-stack wrote, skips an empty phase, stops at the first failure and puts
-  # a timing table in the job summary. Steps written once are aliased below.
-  # ---------------------------------------------------------------------------
-
-  # On a docs-only change this runs for commitlint alone, even with `single-job`,
-  # so every other step skips on `docs_only`.
-  checks:
-    if: ${{ (!inputs.single-job && needs.pick.outputs.docs_only != 'true') || (inputs.commitlint && github.event.pull_request && needs.pick.outputs.docs_only == 'true') }}
-    needs: [pick]
-    runs-on: ${{ fromJson(needs.pick.outputs.light) }}
-    timeout-minutes: ${{ inputs.timeout-minutes }}
-    permissions: { contents: read, pull-requests: read }   # pull-requests: commitlint's commit list, dependency-check's changed files
-    steps:
-      - *report-light
-      # Aliased by every job below (the gate is then redundant outside `checks`).
-      # Default depth: no reporter needs history, they list files through the API.
-      - &checkout
-        id: checkout
-        if: ${{ needs.pick.outputs.docs_only != 'true' }}
-        uses: actions/checkout@v7
-        with: { persist-credentials: false }
-      # Every job passes every command: setup-stack only resolves them into
-      # outputs, and each job's `run-phases` reads the ones it uses.
-      - &setup
-        id: setup
-        if: ${{ needs.pick.outputs.docs_only != 'true' }}
-        uses: dodi-smart/.github/actions/setup-stack@v1
+          checkout:  'false'
+          comment:   'false'
+      - if: ${{ !cancelled() && steps.react-doctor.outputs.report-dir != '' }}
+        uses: actions/upload-artifact@v7
         with:
-          stack:           ${{ inputs.stack }}
-          isolate:         false
-          cache:           auto
-          # Only a job that builds has a `.next/cache` worth keeping.
-          next-cache:      ${{ (github.job == 'build' || github.job == 'all') && 'auto' || 'false' }}
-          env:             ${{ inputs.env }}
-          build-env:       ${{ inputs.build-env }}
-          install:         ${{ inputs.install }}
-          lint:            ${{ inputs.lint }}
-          typecheck:       ${{ inputs.typecheck }}
-          test:            ${{ inputs.test }}
-          build:           ${{ inputs.build }}
-          design-lint:     ${{ inputs.design-lint }}
-          java-version:    ${{ inputs.java-version }}
-          node-version:    ${{ inputs.node-version }}
-          bun-version:     ${{ inputs.bun-version }}
-          flutter-version: ${{ inputs.flutter-version }}
-          rust-toolchain:  ${{ inputs.rust-toolchain }}
-      # Opt-in `hk`: install first, then hk (the whole tree, never `--pr`; its
-      # mise cache follows setup-stack's), then `Run phases` for the rest.
-      - &hk-install
-        id: install
-        name: Run phases (install)
-        if: ${{ inputs.hk && needs.pick.outputs.docs_only != 'true' }}
-        uses: dodi-smart/.github/actions/run-phases@v1
-        with:
-          env-file: ${{ steps.setup.outputs.env-file }}
-          install:  ${{ steps.setup.outputs.install }}
-      - &hk-check
-        if: ${{ inputs.hk && needs.pick.outputs.docs_only != 'true' }}
-        uses: dodi-smart/.github/actions/hk-check@v1
-        with:
-          cache:         ${{ steps.setup.outputs.cache-enabled }}
-          cache-save:    ${{ steps.setup.outputs.cache-save }}
-          artifact-name: hk-sarif-${{ needs.pick.outputs.key }}
-      # One step either way. With `hk` the install already ran above, so it is not
-      # repeated (an empty command is skipped) and a red hk does not hide the
-      # rest: they run unless the install failed.
-      - name: Run phases
-        if: ${{ needs.pick.outputs.docs_only != 'true' && (success() || (inputs.hk && !cancelled() && steps.install.outcome == 'success')) }}
-        uses: dodi-smart/.github/actions/run-phases@v1
-        with:
-          env-file:    ${{ steps.setup.outputs.env-file }}
-          install:     ${{ !inputs.hk && steps.setup.outputs.install || '' }}
-          lint:        ${{ steps.setup.outputs.lint }}
-          design-lint: ${{ steps.setup.outputs.design-lint }}
-          typecheck:   ${{ steps.setup.outputs.typecheck }}
-      # Opt-in `dependency-check`, a step and not a job, on `!cancelled()` and the
-      # checkout so a red lint does not hide it and a docs-only change skips it.
-      - &dependency-check
-        name: Dependency check
-        if: ${{ !cancelled() && inputs.dependency-check && steps.checkout.outcome == 'success' }}
-        uses: dodi-smart/.github/actions/dependency-check@v1
-        with:
-          fail-on: ${{ inputs.dependency-check-fail-on }}
+          name: pr-checks-comment-react-doctor-${{ needs.pick.outputs.key }}
+          path: ${{ steps.react-doctor.outputs.report-dir }}
+          if-no-files-found: ignore
+          retention-days: 1
       # Last, on !cancelled(): a red phase still gets its messages checked. A CLI,
       # not a Docker action: see actions/commitlint. A push or dispatch has no pull
       # request to list commits from, so it skips.
-      - &commitlint
-        name: commitlint
-        if: ${{ !cancelled() && inputs.commitlint && github.event.pull_request }}
+      - name: commitlint
+        if: ${{ !cancelled() && matrix.commitlint && github.event.pull_request }}
         uses: dodi-smart/.github/actions/commitlint@v1
         with:
           config: ${{ inputs.commitlint-config }}
           number: ${{ github.event.pull_request.number }}
 
-  test:
-    if: ${{ !inputs.single-job && needs.pick.outputs.docs_only != 'true' && needs.pick.outputs.has_test == 'true' }}
-    needs: [pick]
-    runs-on: ${{ fromJson(needs.pick.outputs.heavy) }}
-    timeout-minutes: ${{ inputs.timeout-minutes }}
-    outputs:
-      workspace: ${{ github.workspace }}    # the coverage job maps report paths with it
-    steps:
-      - &report-heavy
-        uses: dodi-smart/.github/actions/runner-report@v1
-        with:
-          selector: ${{ needs.pick.outputs.heavy }}
-      - *checkout
-      - *setup
-      - name: Run phases
-        uses: dodi-smart/.github/actions/run-phases@v1
-        with:
-          env-file: ${{ steps.setup.outputs.env-file }}
-          install:  ${{ steps.setup.outputs.install }}
-          test:     ${{ steps.setup.outputs.test }}
-      # The `coverage` job posts the comment and holds the write token; this job
-      # runs the caller's code, so it only hands the report over. A red run
-      # uploads nothing.
-      - &coverage-upload
-        if: ${{ inputs.coverage != 'none' }}
-        uses: actions/upload-artifact@v7
-        with:
-          name: pr-checks-coverage-${{ needs.pick.outputs.key }}
-          path: ${{ env.COVERAGE_REPORT }}
-          if-no-files-found: error
-          retention-days: 1
-
-  # `build` needs only `pick`, so it starts beside `checks` and `test`: a push
-  # waits for the slowest of the three, not for two in a row. `build-env` holds
-  # placeholders (never secrets); `run-phases` sources it for the build phase
-  # only, in that phase's shell, since $GITHUB_ENV refuses NODE_OPTIONS.
-  build:
-    if: ${{ !inputs.single-job && needs.pick.outputs.docs_only != 'true' && needs.pick.outputs.has_build == 'true' }}
-    needs: [pick]
-    runs-on: ${{ fromJson(needs.pick.outputs.heavy) }}
-    timeout-minutes: ${{ inputs.timeout-minutes }}
-    steps:
-      - *report-heavy
-      - *checkout
-      - *setup
-      - name: Run phases
-        uses: dodi-smart/.github/actions/run-phases@v1
-        with:
-          env-file:       ${{ steps.setup.outputs.env-file }}
-          build-env-file: ${{ steps.setup.outputs.build-env-file }}
-          install:        ${{ steps.setup.outputs.install }}
-          build:          ${{ steps.setup.outputs.build }}
-
-  # The iOS half, on GitHub's hosted Mac and nowhere else: a Linux runner cannot
-  # link an Apple target, and hosted macOS minutes bill at ten times Linux ones,
-  # so it runs only for a pull request with the `ios-label` label and is never
-  # part of `single-job`. Needs only `pick`, like `build`. Its command is the
-  # build phase, so `build-env` applies to it.
-  ios:
-    name: iOS
-    if: ${{ needs.pick.outputs.docs_only != 'true' && inputs.ios != '' && contains(fromJSON('["kmm","flutter","xcode"]'), inputs.stack) && contains(github.event.pull_request.labels.*.name, inputs.ios-label) }}
-    needs: [pick]
-    runs-on: macos-latest
-    timeout-minutes: ${{ inputs.timeout-minutes }}
+  # ---------------------------------------------------------------------------
+  # One stable context, on every push, in both shapes: the job a branch ruleset
+  # should require, never a lane, so its name never changes. It runs none of the
+  # caller's code, so it is also where the write token lives: it posts the
+  # zavet, React Doctor and coverage comments from the reports the lanes
+  # uploaded. The control pool of a private repo, like `pick`. Zavet and React
+  # Doctor are advisory through their steps' `continue-on-error`, so a lane
+  # fails on them only when they block.
+  # ---------------------------------------------------------------------------
+  pr-checks:
+    name: PR Checks
+    needs: [pick, lanes]
+    if: always()
+    runs-on: ${{ fromJSON((github.event.repository.private && !github.event.pull_request.head.repo.fork) && '["self-hosted","Linux","control"]' || '"ubuntu-latest"') }}
+    timeout-minutes: 5
+    permissions: { contents: read, pull-requests: write }   # pull-requests: the zavet, React Doctor and coverage comments
     steps:
       - uses: dodi-smart/.github/actions/runner-report@v1
+      # The "Where it ran" table for every job of this run attempt, before the
+      # summary, which exits non-zero on a red run.
+      - uses: dodi-smart/.github/actions/runner-report@v1
         with:
-          selector: macos-latest
-      - *checkout
-      - id: setup
-        uses: dodi-smart/.github/actions/setup-stack@v1
+          mode: run
+
+      # The zavet and React Doctor comments, one each. A report directory always
+      # holds a file, so a clean result still uploads one; it holds comment.md
+      # only when there is something to post. So: comment.md updates the comment
+      # in place, a report without it deletes it, and no report (the step
+      # skipped this push) leaves it as it was. A comment that cannot be written
+      # never decides the verdict.
+      - id: reports
+        if: (inputs.zavet || inputs.react-doctor) && github.event_name == 'pull_request' && needs.lanes.result != 'skipped'
+        continue-on-error: true
+        uses: actions/download-artifact@v8
         with:
-          stack:             ${{ inputs.stack }}
-          isolate:           false
-          cache:             auto
-          next-cache:        false
-          env:               ${{ inputs.env }}
-          build-env:         ${{ inputs.build-env }}
-          install:           ${{ inputs.install }}
-          ios:               ${{ inputs.ios }}
-          # flutter build ios needs no JDK, and a Mac minute costs ten Linux ones.
-          java-version:      ${{ inputs.stack != 'flutter' && inputs.java-version || '' }}
-          flutter-version:   ${{ inputs.flutter-version }}
-          xcode-version:     ${{ inputs.xcode-version }}
-          xcode-destination: ${{ inputs.xcode-destination }}
-      - name: Run phases
-        uses: dodi-smart/.github/actions/run-phases@v1
+          pattern: pr-checks-comment-*-${{ needs.pick.outputs.key }}
+          path: ${{ runner.temp }}/reports
+      - id: comments
+        if: steps.reports.outcome == 'success'
+        env:
+          DIR: ${{ runner.temp }}/reports
+          KEY: ${{ needs.pick.outputs.key }}
+        run: |
+          for kind in zavet react-doctor; do
+            report="$DIR/pr-checks-comment-$kind-$KEY"
+            [ -d "$report" ] || continue
+            if [ -s "$report/comment.md" ]; then echo "$kind=$report/comment.md"; else echo "$kind=delete"; fi
+          done >> "$GITHUB_OUTPUT"
+      - if: steps.comments.outputs.zavet != ''
+        continue-on-error: true
+        uses: dodi-smart/.github/actions/sticky-comment@v1
         with:
-          env-file:       ${{ steps.setup.outputs.env-file }}
-          build-env-file: ${{ steps.setup.outputs.build-env-file }}
-          install:        ${{ steps.setup.outputs.install }}
-          build:          ${{ steps.setup.outputs.ios }}
-
-  # ---------------------------------------------------------------------------
-  # Single-job shape: the same phases in the same order, with the same
-  # skip-on-empty rule. Only the runner and the job boundaries differ.
-  # ---------------------------------------------------------------------------
-
-  all:
-    if: ${{ inputs.single-job && needs.pick.outputs.docs_only != 'true' }}
-    needs: [pick]
-    runs-on: ${{ fromJson(needs.pick.outputs.heavy) }}
-    timeout-minutes: ${{ inputs.timeout-minutes }}
-    permissions: { contents: read, pull-requests: read }   # pull-requests: commitlint's commit list, dependency-check's changed files
-    outputs:
-      workspace: ${{ github.workspace }}    # the coverage job maps report paths with it
-    steps:
-      - *report-heavy
-      - *checkout
-      - *setup
-      - *hk-install
-      - *hk-check
-      - name: Run phases
-        if: ${{ needs.pick.outputs.docs_only != 'true' && (success() || (inputs.hk && !cancelled() && steps.install.outcome == 'success')) }}
-        uses: dodi-smart/.github/actions/run-phases@v1
+          key:       zavet-check
+          number:    ${{ github.event.pull_request.number }}
+          body-file: ${{ steps.comments.outputs.zavet }}
+          delete:    ${{ steps.comments.outputs.zavet == 'delete' }}
+      - if: steps.comments.outputs.react-doctor != ''
+        continue-on-error: true
+        uses: dodi-smart/.github/actions/sticky-comment@v1
         with:
-          env-file:       ${{ steps.setup.outputs.env-file }}
-          build-env-file: ${{ steps.setup.outputs.build-env-file }}
-          install:        ${{ !inputs.hk && steps.setup.outputs.install || '' }}
-          lint:           ${{ steps.setup.outputs.lint }}
-          design-lint:    ${{ steps.setup.outputs.design-lint }}
-          typecheck:      ${{ steps.setup.outputs.typecheck }}
-          test:           ${{ steps.setup.outputs.test }}
-          build:          ${{ steps.setup.outputs.build }}
-      - *coverage-upload
-      - *dependency-check
-      - *commitlint
+          key:       react-doctor
+          number:    ${{ github.event.pull_request.number }}
+          body-file: ${{ steps.comments.outputs.react-doctor }}
+          delete:    ${{ steps.comments.outputs.react-doctor == 'delete' }}
 
-  # ---------------------------------------------------------------------------
-  # The coverage comment, from a separate light job so no caller code runs beside
-  # the write token. The checkout below only gives the vitest reporter the tree.
-  # ---------------------------------------------------------------------------
-
-  coverage:
-    name: Coverage
-    if: ${{ !cancelled() && inputs.coverage != 'none' && (needs.test.result == 'success' || needs.all.result == 'success') }}
-    needs: [pick, test, all]
-    runs-on: ${{ fromJson(needs.pick.outputs.light) }}
-    timeout-minutes: 10
-    permissions: { contents: read, pull-requests: write }   # pull-requests: the coverage comment
-    env:
-      # `test` or `all`, whichever ran: the workspace the report was written in.
-      WRITER_WORKSPACE: ${{ needs.test.outputs.workspace || needs.all.outputs.workspace }}
-    steps:
-      - *report-light
-      # The artifact holds one file, or vitest's two, named by basename, so the
-      # reporters read `coverage/*` whatever `coverage-path` was.
-      - if: inputs.coverage == 'vitest'
+      # The coverage comment, from the report `test` or `all` uploaded, only when
+      # every lane passed: a red run keeps the old comment, and is red anyway.
+      # The report holds one file, or vitest's two, by basename, and the
+      # workspace it was written in. The checkout only gives vitest the tree.
+      - if: inputs.coverage == 'vitest' && needs.pick.outputs.coverage == 'true' && needs.lanes.result == 'success'
         uses: actions/checkout@v7
         with: { persist-credentials: false }
-      - uses: actions/download-artifact@v8
+      - id: coverage
+        if: needs.pick.outputs.coverage == 'true' && needs.lanes.result == 'success'
+        uses: actions/download-artifact@v8
         with:
           name: pr-checks-coverage-${{ needs.pick.outputs.key }}
-          path: coverage
-      - if: inputs.coverage == 'vitest'
+          path: ${{ runner.temp }}/pr-checks-coverage
+      - id: writer
+        if: steps.coverage.outcome == 'success'
+        env:
+          DIR: ${{ runner.temp }}/pr-checks-coverage
+        run: echo "workspace=$(cat "$DIR/workspace")" >> "$GITHUB_OUTPUT"
+      - if: steps.coverage.outcome == 'success' && inputs.coverage == 'vitest'
         uses: davelosert/vitest-coverage-report-action@v2
         with:
-          file-coverage-root-path: ${{ env.WRITER_WORKSPACE }}
-      - if: inputs.coverage == 'lcov'
+          json-summary-path: ${{ runner.temp }}/pr-checks-coverage/report/coverage-summary.json
+          json-final-path:   ${{ runner.temp }}/pr-checks-coverage/report/coverage-final.json
+          file-coverage-root-path: ${{ steps.writer.outputs.workspace }}
+      - if: steps.coverage.outcome == 'success' && inputs.coverage == 'lcov'
         uses: dodi-smart/.github/actions/lcov-report@v1
         with:
-          path:        coverage/*
-          source-root: ${{ env.WRITER_WORKSPACE }}
+          path:        ${{ runner.temp }}/pr-checks-coverage/report/*
+          source-root: ${{ steps.writer.outputs.workspace }}
           min-overall: ${{ inputs.coverage-min-overall }}
           min-changed: ${{ inputs.coverage-min-changed }}
       # kover-report fails on any event but a pull request or a push.
-      - if: inputs.coverage == 'kover' && (github.event_name == 'pull_request' || github.event_name == 'push')
+      - if: steps.coverage.outcome == 'success' && inputs.coverage == 'kover' && (github.event_name == 'pull_request' || github.event_name == 'push')
         id: kover
         uses: mi-kas/kover-report@v2
         with:
-          path: coverage/*
+          path: ${{ runner.temp }}/pr-checks-coverage/report/*
           token: ${{ github.token }}
           title: Code Coverage
           update-comment: true
@@ -585,34 +599,12 @@ jobs:
         with:
           overall:     ${{ steps.kover.outputs.coverage-overall }}
           min-overall: ${{ inputs.coverage-min-overall }}
-      - if: inputs.coverage == 'kover' && steps.kover.outcome == 'skipped'
+      - if: steps.coverage.outcome == 'success' && inputs.coverage == 'kover' && steps.kover.outcome == 'skipped'
         run: echo "::notice title=Coverage::kover-report supports only pull requests and pushes, so this $GITHUB_EVENT_NAME run has no coverage report or floor."
 
-  # ---------------------------------------------------------------------------
-  # One stable context, on every push, in both modes: the job a branch ruleset
-  # should require, never `checks` or `all`, so its name never changes. It runs
-  # no caller code: the control pool of a private repo, like `pick`.
-  #
-  # `zavet` and `react-doctor` are always in `needs` (it cannot vary with an
-  # input) but are ignored unless their `*-blocking` input is on.
-  # ---------------------------------------------------------------------------
-
-  pr-checks:
-    name: PR Checks
-    needs: [pick, checks, test, build, ios, all, coverage, zavet, react-doctor]
-    if: always()
-    runs-on: ${{ fromJSON((github.event.repository.private && !github.event.pull_request.head.repo.fork) && '["self-hosted","Linux","control"]' || '"ubuntu-latest"') }}
-    timeout-minutes: 2
-    steps:
-      - uses: dodi-smart/.github/actions/runner-report@v1
-      # The "Where it ran" table for every job of this run attempt, before the
-      # summary, which exits non-zero on a red run.
-      - uses: dodi-smart/.github/actions/runner-report@v1
-        with:
-          mode: run
       - name: Summarize
+        if: ${{ !cancelled() }}
         uses: dodi-smart/.github/actions/pr-checks-summary@v1
         with:
           needs:     ${{ toJSON(needs) }}
-          ignore:    ${{ !inputs.zavet-blocking && 'zavet' || '' }} ${{ !inputs.react-doctor-blocking && 'react-doctor' || '' }}
           docs-only: ${{ needs.pick.outputs.docs_only }}

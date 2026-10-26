@@ -6,6 +6,10 @@ expression opener, because Actions would evaluate it before bash ran. `D`
 spells one in two pieces, so a script compares against it without holding one.
 """
 import functools
+import json
+import os
+import subprocess
+import tempfile
 
 import yaml
 
@@ -70,3 +74,29 @@ def conjuncts(expr):
             i += 1
         i += 1
     return terms + [e[start:].strip()]
+
+
+# A split bun repo with a test and a build command, nothing opted in.
+PLAN_DEFAULTS = {
+    'STACK': 'bun', 'SINGLE_JOB': 'false', 'DOCS_ONLY': 'false', 'HAS_TEST': 'true', 'HAS_BUILD': 'true',
+    'LIGHT': '["self-hosted","Linux","light"]', 'HEAVY': '["self-hosted","Linux","large"]',
+    'HK': 'false', 'DEPENDENCY_CHECK': 'false', 'COMMITLINT': 'false', 'COVERAGE': 'none',
+    'ZAVET': 'false', 'ZAVET_STACK': 'none', 'ZAVET_INSTALL': '', 'IOS': '@stack', 'IOS_LABELLED': 'false',
+}
+
+
+@functools.cache
+def plan(**given):
+    """The lanes actions/pr-checks-plan gives a pr-checks run, as a dict by lane id.
+
+    Keywords are plan.sh's env names in lower case (docs_only=True), changing
+    PLAN_DEFAULTS. A step asserts what the lanes are, not how plan.sh spells them.
+    Cached: callers must not modify what they get.
+    """
+    env = dict(PLAN_DEFAULTS)
+    env.update({k.upper(): str(v).lower() if isinstance(v, bool) else str(v) for k, v in given.items()})
+    with tempfile.NamedTemporaryFile('r', suffix='.out') as out:
+        subprocess.run(['actions/pr-checks-plan/plan.sh'], check=True, stdout=subprocess.DEVNULL,
+                       env={'PATH': os.environ['PATH'], 'GITHUB_OUTPUT': out.name, **env})
+        lanes = json.loads(dict(line.split('=', 1) for line in out.read().splitlines())['lanes'])
+    return {lane['id']: lane for lane in lanes}

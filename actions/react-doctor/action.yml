@@ -1,8 +1,12 @@
-# Checkout plus the React Doctor step, so react-doctor.yml and the
-# `react-doctor` job in pr-checks.yml run exactly the same code.
+# Checkout plus the React Doctor step, so react-doctor.yml and the React Doctor
+# step of pr-checks.yml run exactly the same code.
 #
-# The caller grants `contents: read`, `pull-requests: write` (the action posts
-# its own sticky comment) and `statuses: write` (a commit status with the score).
+# Standalone, the caller grants `contents: read`, `pull-requests: write` (the
+# action posts its own sticky comment) and `statuses: write` (a commit status
+# with the score). pr-checks runs it in a lane that runs the caller's code and
+# holds no write token, so there it posts nothing (`comment: false`): it writes
+# a short report for the `PR Checks` job to post, and needs only
+# `contents: read` and `pull-requests: read`.
 #
 # The checkout takes full history: `scope: changed` needs it to reach the merge
 # base, and without it the action reports every issue in the changed files.
@@ -17,17 +21,66 @@ inputs:
   blocking:  { description: 'Severity that fails the run: none | warning | error', default: 'none' }
   # Pinned: the job holds write scopes, so an unreviewed upstream publish must not run there.
   version:   { description: 'react-doctor npm spec. The default is a pinned exact version, bumped by Renovate as a reviewed PR; a caller may pass its own spec', default: '0.9.18' } # renovate: datasource=npm depName=react-doctor
+  checkout:  { description: "'false' when the caller already checked out with full history", default: 'true' }
+  # 'false' posts no comment, review comment or commit status, and writes the
+  # report to the `report-dir` output instead: `issues`, and `comment.md` when
+  # the scan found something or failed.
+  comment:   { description: "'true' posts the action's comment and commit status; 'false' only writes the report", default: 'true' }
+
+outputs:
+  report-dir:
+    description: "With `comment: false` on a pull request, the directory holding the report. Empty otherwise."
+    value: ${{ steps.report.outputs.dir }}
 
 runs:
   using: composite
   steps:
-    - uses: actions/checkout@v7
+    - if: inputs.checkout == 'true'
+      uses: actions/checkout@v7
       with:
         fetch-depth: 0
         persist-credentials: false
-    - uses: millionco/react-doctor@v2
+    - id: doctor
+      uses: millionco/react-doctor@v2
       with:
-        directory: ${{ inputs.directory }}
-        scope:     ${{ inputs.scope }}
-        blocking:  ${{ inputs.blocking }}
-        version:   ${{ inputs.version }}
+        directory:       ${{ inputs.directory }}
+        scope:           ${{ inputs.scope }}
+        blocking:        ${{ inputs.blocking }}
+        version:         ${{ inputs.version }}
+        comment:         ${{ inputs.comment }}
+        review-comments: ${{ inputs.comment }}
+        commit-status:   ${{ inputs.comment }}
+
+    # The findings themselves are in this job's summary; the comment only says
+    # where, with the figures. A clean scan writes no comment.md, which tells the
+    # poster to delete an earlier one.
+    - id: report
+      if: always() && inputs.comment == 'false' && github.event_name == 'pull_request' && steps.doctor.outcome != 'skipped'
+      shell: bash
+      env:
+        OUTCOME:  ${{ steps.doctor.outcome }}
+        SCORE:    ${{ steps.doctor.outputs.score }}
+        ISSUES:   ${{ steps.doctor.outputs.total-issues }}
+        ERRORS:   ${{ steps.doctor.outputs.error-count }}
+        WARNINGS: ${{ steps.doctor.outputs.warning-count }}
+        FILES:    ${{ steps.doctor.outputs.affected-files }}
+        RUN_URL:  ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+      run: |
+        set -euo pipefail
+        dir="$RUNNER_TEMP/react-doctor-report"
+        mkdir -p "$dir"
+        echo "dir=$dir" >> "$GITHUB_OUTPUT"
+        echo "${ISSUES:-unknown}" > "$dir/issues"
+        if [ "$OUTCOME" != failure ] && [ "${ISSUES:-0}" = 0 ]; then
+          exit 0
+        fi
+        {
+          echo "**React Doctor**"
+          echo
+          echo "| Score | Issues | Errors | Warnings | Files |"
+          echo "|---|---|---|---|---|"
+          echo "| ${SCORE:--} | ${ISSUES:--} | ${ERRORS:--} | ${WARNINGS:--} | ${FILES:--} |"
+          echo
+          [ "$OUTCOME" != failure ] || echo "It failed this run (blocking, or the scan could not finish)."
+          echo "The findings are in the job summary of [this run]($RUN_URL)."
+        } > "$dir/comment.md"

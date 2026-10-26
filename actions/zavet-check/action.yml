@@ -1,9 +1,10 @@
 # Verify a repo's .zavet/ knowledge layer on a pull request.
 #
 # The steps of what used to be the `check` job in zavet-check.yml, so the
-# standalone workflow and the `zavet` job in pr-checks run exactly the same
-# code. The caller checks out with full history first (guards walk the PR's
-# commits) and grants `contents: read` and `pull-requests: write`.
+# standalone workflow and the zavet step of pr-checks run exactly the same code.
+# The caller checks out with full history first (guards walk the PR's commits)
+# and grants `contents: read` and `pull-requests: read`, plus
+# `pull-requests: write` when the action posts its own comment.
 #
 # SEVERITY MIRRORS THE LOCAL HOOKS, deliberately:
 #
@@ -55,6 +56,21 @@ inputs:
   bun-version:     { description: 'Bun version', default: 'auto' }
   java-version:    { description: 'Java version', default: '21' }
   flutter-version: { description: 'Flutter version', default: '' }
+
+  # pr-checks runs this in a lane that already set up its toolchain and ran its
+  # install, so a second setup and install would be pure cost. Set, the action
+  # skips both and the checks source this file instead.
+  env-file: { description: "setup-stack `env-file` of a job that already set up and installed; empty sets up here", default: '' }
+  # pr-checks posts the comment from its `PR Checks` job, which holds the write
+  # token and runs none of the caller's code. 'false' writes the report to the
+  # `report-dir` output instead: `failed` (true or false) and, when failed,
+  # `comment.md`.
+  comment: { description: "'true' posts the failure comment; 'false' only writes the report", default: 'true' }
+
+outputs:
+  report-dir:
+    description: 'Directory holding `failed` and, on a failure, `comment.md`. Empty when nothing was reported (no knowledge layer, or not a pull request).'
+    value: ${{ steps.report.outputs.dir }}
 
 runs:
   using: composite
@@ -181,10 +197,11 @@ runs:
 
     # Installed before the checks run, because a `checks:` command is arbitrary
     # and usually belongs to the repo's own toolchain. Only when `targets` says
-    # a check will run. `none` is a real stack value, so once this runs it always
-    # writes the env file.
+    # a check will run, and never when the caller passed `env-file` (its job
+    # already did both; the install below then has no command and skips). `none`
+    # is a real stack value, so once this runs it always writes the env file.
     - id: setup
-      if: steps.present.outputs.yes == 'true' && inputs.checks == 'true' && steps.need.outputs.install == 'true' && steps.targets.outputs.run == 'true'
+      if: steps.present.outputs.yes == 'true' && inputs.checks == 'true' && steps.need.outputs.install == 'true' && steps.targets.outputs.run == 'true' && inputs.env-file == ''
       continue-on-error: ${{ steps.scope.outputs.report-only == 'true' }}
       uses: dodi-smart/.github/actions/setup-stack@v1
       with:
@@ -216,7 +233,7 @@ runs:
       env:
         GH_TOKEN: ${{ github.token }}
         DIR: ${{ inputs.zavet-dir }}
-        ENV_FILE: ${{ steps.setup.outputs.env-file }}
+        ENV_FILE: ${{ inputs.env-file || steps.setup.outputs.env-file }}
         CLI: ${{ steps.need.outputs.cli }}
         DECLARED: ${{ steps.need.outputs.declared }}
         RUN: ${{ steps.targets.outputs.run }}
@@ -267,8 +284,9 @@ runs:
           exit 0
         fi
 
-        # setup-stack always writes this, so the guard is for the case where
-        # that step itself failed and left the output empty. The directive
+        # setup-stack always writes this (here, or in the caller's job when it
+        # passed `env-file`), so the guard is for the case where that step
+        # itself failed and left the output empty. The directive
         # below is required, because the path is only known at run time and
         # SC1090 is an error here. Keep any prose above it from starting a
         # line with the linter's name, or that line parses as a directive too.
@@ -392,11 +410,16 @@ runs:
       run: |
         set +e            # see the checks step
         set -uo pipefail
+        dir="$RUNNER_TEMP/zavet-report"
+        mkdir -p "$dir"
+        echo "dir=$dir" >> "$GITHUB_OUTPUT"
         if [ "$CHECKS" != "failure" ] && [ "$GUARDS" != "failure" ]; then
           echo "failed=false" >> "$GITHUB_OUTPUT"
+          echo false > "$dir/failed"
           exit 0
         fi
         echo "failed=true" >> "$GITHUB_OUTPUT"
+        echo true > "$dir/failed"
         status() { case "$1" in success) echo "passed";; skipped) echo "skipped";; *) echo "**FAILED**";; esac; }
         {
           echo "**Knowledge layer**"
@@ -411,33 +434,17 @@ runs:
             echo
             echo "Report only: this is a dependency or automation bot's pull request, so the failure above is recorded here without failing the job."
           fi
-        } > "$RUNNER_TEMP/zavet-comment.md"
-
-    # Comments written before this used the shared action carry their own
-    # marker, so the shared action's key never finds them. Remove them here.
-    # Delete this step once old PRs have cycled. Bot-authored only, so a
-    # person quoting the marker keeps their comment.
-    - if: always() && steps.present.outputs.yes == 'true' && github.event_name == 'pull_request'
-      continue-on-error: true
-      shell: bash
-      env:
-        GH_TOKEN: ${{ github.token }}
-        REPO: ${{ github.repository }}
-        NUM:  ${{ github.event.pull_request.number }}
-      run: |
-        gh api "/repos/$REPO/issues/$NUM/comments?per_page=100" --paginate \
-          --jq '.[] | select(.user.type == "Bot" and ((.body // "") | startswith("<!-- zavet-check -->"))) | .id' \
-          | while read -r id; do gh api -X DELETE "/repos/$REPO/issues/comments/$id" >/dev/null; done
+        } > "$dir/comment.md"
 
     # A comment that cannot be written must not decide the verdict. The last
-    # step below does.
-    - if: always() && steps.report.outputs.failed != ''
+    # step below does. pr-checks posts the same comment from the report.
+    - if: always() && inputs.comment == 'true' && steps.report.outputs.failed != ''
       continue-on-error: true
       uses: dodi-smart/.github/actions/sticky-comment@v1
       with:
         key:       zavet-check
         number:    ${{ github.event.pull_request.number }}
-        body-file: ${{ runner.temp }}/zavet-comment.md
+        body-file: ${{ steps.report.outputs.dir }}/comment.md
         delete:    ${{ steps.report.outputs.failed == 'false' }}
 
     - name: Fail if a decision check or guard failed

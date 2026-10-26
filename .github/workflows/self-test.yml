@@ -638,49 +638,113 @@ jobs:
           print('pr-checks.yml has one picker job (%s) and an always-on pr-checks summary job' % pickers[0])
           "
 
-      # zavet and react-doctor join the required context only when their
+      # zavet and React Doctor fail the required context only when their
       # `*-blocking` input is on, and each standalone workflow and its pr-checks
-      # job must run one shared action. `needs` cannot vary with an input, so the
-      # summary needs both always and its `ignore` decides: an advisory job is
-      # read as `skipped` by actions/pr-checks-summary, which never fails on it.
+      # step run one shared action. Both are steps of a lane, so their
+      # `continue-on-error` decides: an advisory failure leaves the lane green,
+      # and the summary ignores nothing.
       - name: pr-checks counts zavet and react-doctor only when blocking
         run: |
           set -euo pipefail
-          python3 -c "
-          import sys, yaml
-          load = lambda p: yaml.safe_load(open(p))
+          python3 - <<'PY'
+          import sys
+          from lib import load, uses, plan, D
           doc = load('.github/workflows/pr-checks.yml')
           jobs = doc['jobs']
           inputs = doc[True]['workflow_call']['inputs']
-          uses = lambda job: str([s.get('uses', '') for s in job['steps']])
           S = chr(39)
           errors = []
           summary = jobs['pr-checks']
-          step = [s for s in summary['steps'] if s.get('name') == 'Summarize'][0]
-          given = step.get('with') or {}
-          for j in ('zavet', 'react-doctor'):
+          given = [s for s in summary['steps'] if s.get('name') == 'Summarize'][0].get('with') or {}
+          if summary['needs'] != ['pick', 'lanes']:
+              errors.append('the pr-checks summary must need exactly pick and lanes, got ' + repr(summary['needs']))
+          if given.get('ignore'):
+              errors.append('the Summarize step must ignore nothing: an advisory step is advisory through its continue-on-error, got ' + repr(given['ignore']))
+          steps = jobs['lanes']['steps']
+          found = {}
+          for j, action in (('zavet', 'actions/zavet-check@'), ('react-doctor', 'actions/react-doctor@')):
               inp = inputs.get(j + '-blocking')
               if not inp or inp.get('type') != 'boolean' or inp.get('default') is not False:
                   errors.append(j + '-blocking must be a boolean input defaulting to false, or an advisory check silently starts blocking merges.')
-              if j not in summary['needs']:
-                  errors.append('the pr-checks summary must need ' + j + ', or a blocking ' + j + ' cannot fail it.')
-              want = '$' + '{{ !inputs.' + j + '-blocking && ' + S + j + S + ' || ' + S + S + ' }}'
-              if want not in str(given.get('ignore', '')):
-                  errors.append('the Summarize ignore must contain ' + want + ', so a non-blocking result can never fail the context, not ' + repr(given.get('ignore')) + '.')
-          rd = [s for s in jobs['react-doctor']['steps'] if 'actions/react-doctor@' in str(s.get('uses', ''))]
-          if not rd or 'inputs.react-doctor-blocking' not in str(rd[0].get('with', {}).get('blocking', '')):
-              errors.append('the react-doctor step must pass a blocking that reads inputs.react-doctor-blocking.')
-          for job, action, wf, wfjob in (
-              ('zavet', 'actions/zavet-check@', 'zavet-check.yml', 'check'),
-              ('react-doctor', 'actions/react-doctor@', 'react-doctor.yml', 'doctor')):
-              if action not in uses(jobs[job]):
-                  errors.append('pr-checks ' + job + ' must use ' + action)
-              if action not in uses(load('.github/workflows/' + wf)['jobs'][wfjob]):
+              step = [st for st in steps if action in uses(st)]
+              if len(step) != 1 or step[0].get('continue-on-error') != D + '!inputs.' + j + '-blocking }}':
+                  errors.append('lanes must run ' + action + ' once, with continue-on-error: !inputs.' + j + '-blocking, so only a blocking failure fails its lane.')
+                  continue
+              found[j] = step[0]
+              if str((step[0].get('with') or {}).get('comment')) != 'false':
+                  errors.append('the lanes ' + j + ' step must pass comment: false: a lane holds no write token.')
+          rd = found.get('react-doctor') or {}
+          rdw = rd.get('with') or {}
+          if rd and rdw.get('blocking') != D + 'inputs.react-doctor-blocking && ' + S + 'error' + S + ' || ' + S + 'none' + S + ' }}':
+              errors.append('the React Doctor step must pass blocking error when react-doctor-blocking is on, none otherwise.')
+          if rd and ('matrix.react_doctor' not in str(rd.get('if', '')) or str(rdw.get('checkout')) != 'false'):
+              errors.append('the React Doctor step must run on matrix.react_doctor, from the lane checkout (checkout: false).')
+          wired = str((([st for st in jobs['pick']['steps'] if 'actions/pr-checks-plan@' in uses(st)] or [{}])[0].get('with') or {}).get('react-doctor'))
+          if 'inputs.react-doctor' not in wired or 'steps.rd.outputs.matched' not in wired:
+              errors.append('pick must give the plan react-doctor from the input and the React Doctor path match.')
+          for given_, want in (({}, ['checks']), ({'single_job': True}, ['all']), ({'docs_only': True, 'commitlint': True}, [])):
+              got = [k for k, v in plan(react_doctor=True, **given_).items() if v['react_doctor']]
+              if got != want:
+                  errors.append('React Doctor must ride on %r for %r, got %r' % (want, given_, got))
+          for wf, wfjob, action in (('zavet-check.yml', 'check', 'actions/zavet-check@'),
+                                    ('react-doctor.yml', 'doctor', 'actions/react-doctor@')):
+              if not any(action in uses(st) for st in load('.github/workflows/' + wf)['jobs'][wfjob]['steps']):
                   errors.append(wf + ' must use ' + action)
           if errors:
               sys.exit('::error::' + ' '.join(errors))
-          print('zavet and react-doctor reach the summary only when blocking, and share their actions')
-          "
+          print('zavet and React Doctor fail their lane only when blocking, post nothing from it, and share their actions')
+          PY
+
+      # Every job that runs the caller's code is one leg of the `lanes` matrix,
+      # listed by pick's plan only when it has work, so a pull request shows no
+      # skipped job rows and each step is written once. A job-level `if:` is how
+      # skipped rows come back, so only two are allowed: the summary's always()
+      # and the empty-plan guard.
+      - name: pr-checks runs caller code as one lanes matrix, with no skipped rows
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import sys
+          from lib import load, uses, plan, D
+          errors = []
+          jobs = load('.github/workflows/pr-checks.yml')['jobs']
+          if set(jobs) != {'pick', 'lanes', 'pr-checks'}:
+              errors.append('pr-checks.yml must have exactly the jobs pick, lanes and pr-checks, found ' + repr(sorted(jobs)))
+          allowed = {'pr-checks': 'always()', 'lanes': D + "needs.pick.outputs.lanes != '[]' }}"}
+          for name, job in jobs.items():
+              if 'if' in job and str(job['if']).strip() != allowed.get(name):
+                  errors.append('job %s has if: %r; a job-level if is a skipped row, so a lane belongs in the plan' % (name, job['if']))
+          lanes = jobs['lanes']
+          if lanes.get('needs') != ['pick']:
+              errors.append('lanes must need only pick, or build waits for lint and typecheck on every push')
+          strategy = lanes.get('strategy') or {}
+          if strategy.get('fail-fast') is not False or strategy.get('matrix') != {'include': D + 'fromJSON(needs.pick.outputs.lanes) }}'}:
+              errors.append('lanes must be a fail-fast: false matrix whose include is fromJSON(needs.pick.outputs.lanes)')
+          if lanes.get('name') != D + 'matrix.name }}' or lanes.get('runs-on') != D + 'fromJSON(matrix.runs_on) }}':
+              errors.append('lanes must take its name and runner from the matrix')
+          steps = lanes['steps']
+          if sum(uses(s).startswith('actions/checkout@') for s in steps) != 1:
+              errors.append('lanes must check out exactly once')
+          if sum('actions/setup-stack@' in uses(s) for s in steps) != 1:
+              errors.append('lanes must set the stack up exactly once, the Mac included')
+          wired = [s for s in jobs['pick']['steps'] if 'actions/pr-checks-plan@' in uses(s)]
+          if len(wired) != 1 or jobs['pick']['outputs'].get('lanes') != D + 'steps.%s.outputs.lanes }}' % wired[0].get('id'):
+              errors.append('pick must output lanes from its one actions/pr-checks-plan step')
+          names = {k: v['name'] for k, v in plan(zavet=True, zavet_stack='gradle', stack='kmm', ios_labelled=True).items()}
+          if names != {'checks': 'checks', 'test': 'test', 'build': 'build', 'zavet': 'Zavet Check', 'ios': 'iOS'}:
+              errors.append('the lanes must keep the old visible job names, got ' + repr(names))
+          # build is a leg beside checks and test, so a push waits for the slowest
+          # of the three, not two in a row; the summary needs every leg.
+          if list(plan()) != ['checks', 'test', 'build'] or 'lanes' not in jobs['pr-checks']['needs']:
+              errors.append('a split run must plan checks, test and build as legs of one matrix the summary needs')
+          if list(plan(single_job=True)) != ['all']:
+              errors.append('single-job must plan one all lane')
+          if plan(docs_only=True, hk=True, dependency_check=True, coverage='lcov'):
+              errors.append('a docs-only change with no commitlint or zavet must plan no lane at all')
+          if errors:
+              sys.exit('::error::' + ' | '.join(errors))
+          print('caller code runs in one lanes matrix from the plan, and no job carries an if beyond the two allowed')
+          PY
 
       # A pin only stays current if a manager reads it, and a manager that stops
       # matching fails silently: Renovate just opens no more PRs. So every file that
@@ -746,77 +810,64 @@ jobs:
           print('every renovate marker is read by a manager')
           PY
 
-      # `build` runs beside `checks`, and the summary must still require
-      # `checks`, or a red lint stops failing the required context.
-      - name: pr-checks runs build beside checks and the summary still needs checks
-        run: |
-          set -euo pipefail
-          python3 -c "
-          import sys, yaml
-          jobs = yaml.safe_load(open('.github/workflows/pr-checks.yml'))['jobs']
-          if 'checks' in jobs['build'].get('needs', []):
-              sys.exit('::error::the build job must not need checks, or it waits for lint and typecheck on every push.')
-          summary = jobs['pr-checks']['needs']
-          for j in ('checks', 'build'):
-              if j not in summary:
-                  sys.exit('::error::the pr-checks summary job must need ' + j + ', or a failure there stops failing the required context.')
-          print('build needs only pick, and pr-checks still needs checks and build')
-          "
-
-      # commitlint is the last step of `checks` and `all`, not a job: as a job it
-      # cost a runner start and the cleanup hook for about 5 s of linting. On a
-      # docs-only change `checks` runs for it alone, never a heavy runner.
+      # commitlint is the last step of the `checks` and `all` lanes, not a job: as
+      # a job it cost a runner start and the cleanup hook for about 5 s of
+      # linting. On a docs-only change `checks` runs for it alone, on the light
+      # runner and never a heavy one, and every other step skips there.
       - name: pr-checks runs commitlint as a step of checks and all
         run: |
           set -euo pipefail
           python3 - <<'CL'
-          import sys, yaml
-          DOCS = 'needs.pick.outputs.docs_only'
-          jobs = yaml.safe_load(open('.github/workflows/pr-checks.yml'))['jobs']
+          import sys
+          from lib import load, uses, plan, PLAN_DEFAULTS
+          jobs = load('.github/workflows/pr-checks.yml')['jobs']
           errors = []
           if 'commitlint' in jobs:
-              errors.append('commitlint must stay a step of checks and all, not a job: a job pays a runner start and the cleanup hook for about 5 s of work.')
-          for name in ('checks', 'all'):
-              steps = jobs[name]['steps']
-              at = [i for i, st in enumerate(steps) if 'actions/commitlint@' in str(st.get('uses', ''))]
-              # Last and on !cancelled(): a red phase must not skip it, and a bad
-              # message fails the job on its own step.
-              if at != [len(steps) - 1] or '!cancelled()' not in str(steps[-1].get('if', '')):
-                  errors.append(name + ' must run actions/commitlint once, as its last step, on !cancelled().')
-              elif 'github.event.pull_request' not in str(steps[-1].get('if', '')):
-                  errors.append(name + ': commitlint must be gated on github.event.pull_request; a push has no PR number.')
-              if (jobs[name].get('permissions') or {}).get('pull-requests') != 'read':
-                  errors.append(name + ' must hold pull-requests: read, which commitlint lists the commits with.')
-          if 'inputs.commitlint' not in str(jobs['checks'].get('if', '')):
-              errors.append('checks must also run on a docs-only change when inputs.commitlint is on.')
-          if 'commitlint' in str(jobs['all'].get('if', '')):
-              errors.append('all must skip on a docs-only change even with commitlint on: never start a heavy runner to lint commit messages.')
-          # Every other step of checks skips on docs-only; the phases after hk
-          # follow the install step and dependency-check follows the checkout,
-          # and both of those skip.
-          for st in jobs['checks']['steps'][1:-1]:
-              cond = str(st.get('if', ''))
-              if DOCS not in cond and 'steps.install.outcome' not in cond and 'steps.checkout.outcome' not in cond:
-                  errors.append('checks step %r must skip on a docs-only change.' % (st.get('name') or st.get('uses')))
-          light = next(st for st in jobs['pick']['steps'] if st.get('id') == 'light')
-          if 'inputs.commitlint' not in str(light.get('if', '')):
-              errors.append('pick must keep inputs.commitlint in the light picker condition, or a docs-only change picks no light runner for commitlint.')
+              errors.append('commitlint must stay a step, not a job: a job pays a runner start and the cleanup hook for about 5 s of work.')
+          steps = jobs['lanes']['steps']
+          at = [i for i, st in enumerate(steps) if 'actions/commitlint@' in uses(st)]
+          cond = str(steps[-1].get('if', ''))
+          # Last and on !cancelled(): a red phase must not skip it, and a bad
+          # message fails the job on its own step.
+          if at != [len(steps) - 1] or '!cancelled()' not in cond:
+              errors.append('lanes must run actions/commitlint once, as its last step, on !cancelled().')
+          elif 'matrix.commitlint' not in cond or 'github.event.pull_request' not in cond:
+              errors.append('commitlint must be gated on matrix.commitlint and github.event.pull_request; a push has no PR number.')
+          if (jobs['lanes'].get('permissions') or {}).get('pull-requests') != 'read':
+              errors.append('lanes must hold pull-requests: read, which commitlint lists the commits with.')
+          for single, want in ((False, ['checks']), (True, ['all'])):
+              got = [k for k, v in plan(commitlint=True, single_job=single, stack='kmm', ios_labelled=True).items() if v['commitlint']]
+              if got != want:
+                  errors.append('commitlint must ride on %r and no other lane (single-job %s), got %r' % (want, single, got))
+              docs = plan(docs_only=True, commitlint=True, single_job=single, hk=True, dependency_check=True, react_doctor=True, coverage='lcov')
+              if list(docs) != ['checks'] or docs['checks']['runs_on'] != PLAN_DEFAULTS['LIGHT']:
+                  errors.append('a docs-only change with commitlint must plan checks alone, on light (single-job %s), got %r' % (single, docs))
+              elif docs['checks']['phases'] or any(docs['checks'][k] for k in ('hk', 'dependency_check', 'react_doctor', 'coverage_upload', 'zavet')):
+                  errors.append('the docs-only checks lane must carry commitlint and nothing else, got %r' % docs['checks'])
+          # On that lane every step between the runner report and commitlint skips:
+          # each is gated on something a commitlint-only lane has off.
+          GATES = ('matrix.phases', 'matrix.hk', 'matrix.zavet', 'matrix.react_doctor', 'matrix.dependency_check', 'matrix.coverage_upload',
+                   'steps.zavet.outputs', 'steps.react-doctor.outputs')
+          for st in steps[1:-1]:
+              if not any(g in str(st.get('if', '')) for g in GATES):
+                  errors.append('lanes step %r must skip on a lane that only runs commitlint.' % (st.get('name') or st.get('uses')))
           if errors:
               sys.exit('::error::' + ' '.join(errors))
-          print('commitlint is the last step of checks and all, and checks runs for it alone on docs-only')
+          print('commitlint is the last step of the checks and all lanes, and checks runs for it alone on docs-only')
           CL
 
-      # dependency-check is an opt-in step of `checks` and `all`, not a job: a job
-      # would pay a runner start for seconds of work. It runs after the phases on
-      # !cancelled(), on the checkout (a docs-only change skips it), before
-      # commitlint, and classifies the author itself. Never
+      # dependency-check is an opt-in step of the `checks` and `all` lanes, not a
+      # job: a job would pay a runner start for seconds of work. It runs after the
+      # phases on !cancelled(), on the checkout, before commitlint, never on a
+      # docs-only change, and classifies the author itself. Never
       # dependency-review-action, which needs GHAS and `security-events`.
       - name: pr-checks runs dependency-check as an opt-in step of checks and all
         run: |
           set -euo pipefail
           python3 - <<'DC'
-          import sys, yaml
-          doc = yaml.safe_load(open('.github/workflows/pr-checks.yml'))
+          import sys
+          from lib import load, uses, plan
+          doc = load('.github/workflows/pr-checks.yml')
           inputs = doc[True]['workflow_call']['inputs']
           jobs = doc['jobs']
           errors = []
@@ -826,71 +877,89 @@ jobs:
           fail_on = inputs.get('dependency-check-fail-on')
           if not fail_on or fail_on.get('type') != 'string' or fail_on.get('default') != 'none':
               errors.append('dependency-check-fail-on must be a string input that defaults to none.')
-          if any('dependency-review-action' in str(st.get('uses', '')) for j in jobs.values() for st in j.get('steps') or []):
+          if any('dependency-review-action' in uses(st) for j in jobs.values() for st in j.get('steps') or []):
               errors.append('pr-checks must never use actions/dependency-review-action: it needs GHAS on private repos and security-events.')
           if 'dependency-check' in jobs:
-              errors.append('dependency-check must stay a step of checks and all, not a job.')
+              errors.append('dependency-check must stay a step, not a job.')
           for name, job in jobs.items():
               if 'security-events' in (job.get('permissions') or {}):
                   errors.append(name + ' must not hold security-events.')
-          for name in ('checks', 'all'):
-              steps = jobs[name]['steps']
-              at = [i for i, st in enumerate(steps) if 'actions/dependency-check@' in str(st.get('uses', ''))]
-              if len(at) != 1:
-                  errors.append(name + ' must run actions/dependency-check exactly once.')
-                  continue
+          steps = jobs['lanes']['steps']
+          at = [i for i, st in enumerate(steps) if 'actions/dependency-check@' in uses(st)]
+          if len(at) != 1:
+              errors.append('lanes must run actions/dependency-check exactly once.')
+          else:
               step = steps[at[0]]
               cond = str(step.get('if', ''))
-              for need in ('!cancelled()', 'inputs.dependency-check', 'steps.checkout.outcome'):
+              for need in ('!cancelled()', 'matrix.dependency_check', 'steps.checkout.outcome'):
                   if need not in cond:
-                      errors.append(name + ': the dependency-check condition must contain ' + need + '.')
-              phases = [i for i, st in enumerate(steps) if 'actions/run-phases@' in str(st.get('uses', ''))]
-              lint = [i for i, st in enumerate(steps) if 'actions/commitlint@' in str(st.get('uses', ''))]
-              if not phases or max(phases) > at[0] or lint != [at[0] + 1]:
-                  errors.append(name + ': dependency-check must come after the phases and right before commitlint.')
-              if not any(st.get('id') == 'checkout' and 'actions/checkout@' in str(st.get('uses', '')) for st in steps):
-                  errors.append(name + ': the checkout step must have id: checkout, which dependency-check is conditioned on.')
-              if any('actions/agent-gate@' in str(st.get('uses', '')) for st in steps) or 'author-kind' in (step.get('with') or {}):
-                  errors.append(name + ': dependency-check classifies the author itself, so the job needs no agent-gate step.')
+                      errors.append('the dependency-check condition must contain ' + need + '.')
+              phases = [i for i, st in enumerate(steps) if 'actions/run-phases@' in uses(st)]
+              lint = [i for i, st in enumerate(steps) if 'actions/commitlint@' in uses(st)]
+              if not phases or max(phases) > at[0] or not lint or lint[0] < at[0]:
+                  errors.append('dependency-check must come after the phases and before commitlint.')
+              if not any(st.get('id') == 'checkout' and uses(st).startswith('actions/checkout@') for st in steps):
+                  errors.append('the checkout step must have id: checkout, which dependency-check is conditioned on.')
+              if any('actions/agent-gate@' in uses(st) for st in steps) or 'author-kind' in (step.get('with') or {}):
+                  errors.append('dependency-check classifies the author itself, so the lanes job needs no agent-gate step.')
               if 'inputs.dependency-check-fail-on' not in str((step.get('with') or {}).get('fail-on', '')):
-                  errors.append(name + ': dependency-check must pass inputs.dependency-check-fail-on as fail-on.')
+                  errors.append('dependency-check must pass inputs.dependency-check-fail-on as fail-on.')
+          for given, want in (({}, ['checks']), ({'single_job': True}, ['all']), ({'docs_only': True, 'commitlint': True}, [])):
+              got = [k for k, v in plan(dependency_check=True, **given).items() if v['dependency_check']]
+              if got != want:
+                  errors.append('dependency-check must ride on %r for %r, got %r' % (want, given, got))
           if errors:
               sys.exit('::error::' + ' '.join(errors))
-          print('dependency-check is an opt-in step of checks and all, after the phases and before commitlint')
+          print('dependency-check is an opt-in step of the checks and all lanes, after the phases and before commitlint')
           DC
 
       # The iOS half of kmm, flutter and xcode runs on the hosted Mac and nowhere
-      # else, and only when asked: in pr-checks for a pull request with the label,
-      # in release.yml with ios-build. The `if:` is checked as a conjunction, so a
-      # term it holds is one the job cannot run without: no label, no Mac job.
+      # else, and only when asked: in pr-checks as the iOS lane, for a pull
+      # request with the label, in release.yml with ios-build. The plan is run
+      # with each condition off, so a condition it holds is one the lane cannot
+      # run without: no label, no Mac.
       - name: The iOS jobs run on a hosted Mac, only when asked
         run: |
           set -euo pipefail
           python3 - <<'PY'
           import sys
-          from lib import load, conjuncts, checkout_ok, D
+          from lib import load, conjuncts, checkout_ok, uses, plan, D
           bad = []
           pc = load('.github/workflows/pr-checks.yml')
           inputs = pc[True]['workflow_call']['inputs']
           jobs = pc['jobs']
-          ios = jobs.get('ios') or {}
-          terms = conjuncts(ios.get('if', ''))
-          label = 'contains(github.event.pull_request.labels.*.name, inputs.ios-label)'
-          if label not in terms:
-              bad.append('pr-checks ios: its if must require the label as a top-level && term (' + label + '), so the job is skipped without it; got ' + repr(terms))
-          if not any('inputs.stack' in t and all(x in t for x in ('kmm', 'flutter', 'xcode')) for t in terms):
-              bad.append('pr-checks ios: its if must require stack kmm, flutter or xcode')
-          if "needs.pick.outputs.docs_only != 'true'" not in terms:
-              bad.append('pr-checks ios: a docs-only change must skip it')
+          on = {'stack': 'kmm', 'ios_labelled': True}
+          ios = plan(**on).get('ios')
+          if not ios or ios['runs_on'] != '"macos-latest"' or ios['phases'] != ['install', 'ios']:
+              bad.append('pr-checks: a labelled kmm pull request must plan the iOS lane on macos-latest, running install and the iOS command; got %r' % ios)
+          for stack in ('flutter', 'xcode'):
+              if 'ios' not in plan(stack=stack, ios_labelled=True):
+                  bad.append('pr-checks: a labelled %s pull request must plan the iOS lane' % stack)
+          for why, given in (('without the label', dict(on, ios_labelled=False)),
+                             ('on a docs-only change', dict(on, docs_only=True, commitlint=True, zavet=True)),
+                             ('with ios off', dict(on, ios='')), ('for bun', dict(on, stack='bun')), ('for gradle', dict(on, stack='gradle'))):
+              if 'ios' in plan(**given):
+                  bad.append('pr-checks: an iOS lane ' + why)
+          # Linux never gets the iOS command, and only the iOS lane lands on a Mac.
+          for given in (on, dict(on, single_job=True, zavet=True, zavet_stack='gradle')):
+              for lid, lane in plan(**given).items():
+                  if lid != 'ios' and ('ios' in lane['phases'] or 'macos' in lane['runs_on']):
+                      bad.append('pr-checks: the %s lane runs the iOS command or lands on a Mac' % lid)
+          if 'macos' in open('.github/workflows/pr-checks.yml').read():
+              bad.append('pr-checks.yml: names a Mac; only the plan picks one, for the iOS lane')
           if (inputs.get('ios-label') or {}).get('default') != 'ios' or (inputs.get('ios') or {}).get('default') != '@stack':
               bad.append('pr-checks: ios-label must default to ios and ios to @stack')
-          if 'ios' not in jobs['pr-checks']['needs']:
-              bad.append('the PR Checks summary must need ios, or a red iOS build stops failing the required context')
-          # Linux never gets the iOS command. Which jobs run on a Mac is the
-          # runner step's MACOS table.
+          wired = [s for s in jobs['pick']['steps'] if 'actions/pr-checks-plan@' in uses(s)]
+          if not wired or (wired[0].get('with') or {}).get('ios-labelled') != D + 'contains(github.event.pull_request.labels.*.name, inputs.ios-label) }}':
+              bad.append('pr-checks: pick must give the plan ios-labelled from the pull request labels')
+          if 'lanes' not in jobs['pr-checks']['needs']:
+              bad.append('the PR Checks summary must need lanes, or a red iOS build stops failing the required context')
+          phases = [s for s in jobs['lanes']['steps'] if s.get('id') == 'phases']
+          if not phases or "contains(matrix.phases, 'ios') && steps.setup.outputs.ios" not in str((phases[0].get('with') or {}).get('build')):
+              bad.append('pr-checks lanes: the iOS command must reach the build phase only through the ios phase')
           for name, job in jobs.items():
-              if name != 'ios' and 'steps.setup.outputs.ios' in str(job.get('steps')):
-                  bad.append('pr-checks ' + name + ': runs the iOS command off the Mac job')
+              if str(job.get('steps')).count('steps.setup.outputs.ios') != (1 if name == 'lanes' else 0):
+                  bad.append('pr-checks ' + name + ': reads the iOS command outside the ios phase')
           rel = load('.github/workflows/release.yml')
           rel_inputs = rel[True]['workflow_call']['inputs']
           rios = rel['jobs'].get('ios') or {}
@@ -915,24 +984,28 @@ jobs:
       # A `test` or `build` with no command must not start a large runner, which
       # cost one caller 5 minutes of queue for 2 seconds of work. `pick` decides,
       # from the one command table and with no checkout (the step below asserts
-      # that), and the two jobs read its answer.
+      # that), and the plan lists no lane for it.
       - name: pr-checks skips test and build that have no command
         run: |
           set -euo pipefail
           python3 - <<'PY'
-          import sys, yaml
-          jobs = yaml.safe_load(open('.github/workflows/pr-checks.yml'))['jobs']
+          import sys
+          from lib import load, uses, plan, D
+          jobs = load('.github/workflows/pr-checks.yml')['jobs']
           pick = jobs['pick']
           errors = []
-          cmds = [s for s in pick['steps'] if str(s.get('uses', '')).startswith('dodi-smart/.github/actions/setup-stack/resolve@')]
+          cmds = [s for s in pick['steps'] if uses(s).startswith('dodi-smart/.github/actions/setup-stack/resolve@')]
           if len(cmds) != 1:
               errors.append('pick must resolve the commands through actions/setup-stack/resolve, once.')
-          for name in ('has_test', 'has_build'):
-              if name not in pick['outputs']:
-                  errors.append('pick must output ' + name + '.')
-          for job, out in (('test', 'has_test'), ('build', 'has_build')):
-              if 'needs.pick.outputs.' + out + " == 'true'" not in str(jobs[job].get('if')):
-                  errors.append(job + ' must run only when pick.' + out + ' is true.')
+          else:
+              given = ([s for s in pick['steps'] if 'actions/pr-checks-plan@' in uses(s)] or [{}])[0].get('with') or {}
+              for key, out in (('has-test', 'test'), ('has-build', 'build')):
+                  if given.get(key) != D + 'steps.%s.outputs.%s != %s }}' % (cmds[0].get('id'), out, chr(39) * 2):
+                      errors.append('pick must give the plan ' + key + ' from the resolved ' + out + ' command.')
+          if 'test' in plan(has_test=False) or 'build' in plan(has_build=False):
+              errors.append('the plan must list no test or build lane without its command.')
+          if list(plan(has_test=False, has_build=False)) != ['checks']:
+              errors.append('with neither command, checks must be the only lane.')
           action = open('actions/setup-stack/resolve/action.yml').read()
           if 'defaults.sh' not in action:
               errors.append('the resolve action must run defaults.sh.')
@@ -941,7 +1014,7 @@ jobs:
                   errors.append('the resolve action carries part of the command table (' + table + '); it lives in defaults.sh only.')
           if errors:
               sys.exit('::error::' + ' '.join(errors))
-          print('pick resolves test and build through the one table, and the jobs skip when empty')
+          print('pick resolves test and build through the one table, and the plan lists no lane without a command')
           PY
 
       # This workflow runs the caller's own code, so no job holds a write token
@@ -972,66 +1045,67 @@ jobs:
           "
 
       # The opt-in `hk` input runs the caller's own hk.pkl over the whole tree,
-      # through actions/hk-check. No job holds security-events: a code scanning
-      # upload would force that grant on every caller, so the SARIF stays an
-      # artifact. A red hk must not hide lint, so the phases after it run unless
-      # the install failed.
+      # through actions/hk-check, in the `checks` or `all` lane. No job holds
+      # security-events: a code scanning upload would force that grant on every
+      # caller, so the SARIF stays an artifact. A red hk must not hide lint, so
+      # the phases after it run unless the install failed.
       - name: pr-checks hk is opt-in, checks the whole tree and holds no new permission
         run: |
           set -euo pipefail
-          python3 -c "
-          import sys, yaml
+          python3 - <<'PY'
+          import sys
+          from lib import load, uses, plan
           errors = []
-          doc = yaml.safe_load(open('.github/workflows/pr-checks.yml'))
+          doc = load('.github/workflows/pr-checks.yml')
           inp = doc[True]['workflow_call']['inputs'].get('hk')
           if not inp or inp.get('type') != 'boolean' or inp.get('default') is not False:
               errors.append('the hk input must be a boolean that defaults to false, so a caller that never sets it behaves as before.')
           jobs = doc['jobs']
-          phases = lambda st: 'actions/run-phases@' in str(st.get('uses', ''))
-          hk_on = lambda st: 'inputs.hk' in str(st.get('if', '')) and '!inputs.hk' not in str(st.get('if', ''))
-          for name in ('checks', 'all'):
-              job = jobs[name]
-              if 'security-events' in (job.get('permissions') or {}):
-                  errors.append(name + ' runs the caller code and must not hold security-events: write.')
-              steps = job['steps']
-              if any('hk check' in str(st.get('run', '')) for st in steps):
-                  errors.append(name + ' must run hk through actions/hk-check, not an inline step.')
-              hk = [i for i, st in enumerate(steps) if 'actions/hk-check@' in str(st.get('uses', ''))]
-              if len(hk) != 1:
-                  errors.append(name + ' must use actions/hk-check exactly once.')
-                  continue
+          phases = lambda st: 'actions/run-phases@' in uses(st)
+          hk_on = lambda st: 'matrix.hk' in str(st.get('if', '')) and '!matrix.hk' not in str(st.get('if', ''))
+          steps = jobs['lanes']['steps']
+          if any('hk check' in str(st.get('run', '')) for st in steps):
+              errors.append('lanes must run hk through actions/hk-check, not an inline step.')
+          hk = [i for i, st in enumerate(steps) if 'actions/hk-check@' in uses(st)]
+          if len(hk) != 1:
+              errors.append('lanes must use actions/hk-check exactly once.')
+          else:
               step = steps[hk[0]]
               if not hk_on(step):
-                  errors.append(name + ': the hk-check step must run only when hk is on.')
+                  errors.append('the hk-check step must run only on a lane with hk.')
               given = step.get('with') or {}
               if 'steps.setup.outputs.cache-enabled' not in str(given.get('cache', '')):
-                  errors.append(name + ': hk-check must take its cache from setup-stack cache-enabled, or mise caches on a self-hosted Linux runner whose volume is the cache.')
+                  errors.append('hk-check must take its cache from setup-stack cache-enabled, or mise caches on a self-hosted Linux runner whose volume is the cache.')
               if 'steps.setup.outputs.cache-save' not in str(given.get('cache-save', '')):
-                  errors.append(name + ': hk-check must take cache-save from setup-stack, the one place the default-branch save rule lives.')
+                  errors.append('hk-check must take cache-save from setup-stack, the one place the default-branch save rule lives.')
               if 'needs.pick.outputs.key' not in str(given.get('artifact-name', '')):
-                  errors.append(name + ': the hk-check artifact name must carry needs.pick.outputs.key, or two calls of pr-checks collide.')
+                  errors.append('the hk-check artifact name must carry needs.pick.outputs.key, or two calls of pr-checks collide.')
               inst = [i for i, st in enumerate(steps) if st.get('id') == 'install' and phases(st) and hk_on(st)]
               if not inst or inst[0] > hk[0]:
-                  errors.append(name + ' must run install (id: install, hk only) before hk-check.')
+                  errors.append('lanes must run install (id: install, hk only) before hk-check.')
               # One Run phases step serves both modes: with hk it runs after a red hk
               # unless the install failed, and it repeats no install.
               rest = [st for st in steps[hk[0] + 1:] if phases(st)]
               cond = str(rest[0].get('if', '')) if rest else ''
-              if len(rest) != 1 or not all(t in cond for t in ('success()', 'inputs.hk', '!cancelled()', 'steps.install.outcome == \'success\'')):
-                  errors.append(name + ' must run ONE Run phases step after hk, on success() or (hk, !cancelled() and the install outcome), so a red hk does not hide lint and a failed install stops everything.')
-              if rest and '!inputs.hk' not in str((rest[0].get('with') or {}).get('install', '')):
-                  errors.append(name + ': the Run phases step must pass an empty install when hk is on, or the install runs twice.')
+              if len(rest) != 1 or not all(t in cond for t in ('success()', 'matrix.hk', '!cancelled()', "steps.install.outcome == 'success'")):
+                  errors.append('lanes must run ONE Run phases step after hk, on success() or (hk, !cancelled() and the install outcome), so a red hk does not hide lint and a failed install stops everything.')
+              if rest and '!matrix.hk' not in str((rest[0].get('with') or {}).get('install', '')):
+                  errors.append('the Run phases step must pass an empty install when hk is on, or the install runs twice.')
+          for given, want in (({}, ['checks']), ({'single_job': True}, ['all']), ({'docs_only': True, 'commitlint': True}, [])):
+              got = [k for k, v in plan(hk=True, **given).items() if v['hk']]
+              if got != want:
+                  errors.append('hk must ride on %r for %r, got %r' % (want, given, got))
           if any('security-events' in (j.get('permissions') or {}) for j in jobs.values()):
               errors.append('no pr-checks job may hold security-events: a code scanning upload would force that permission on every caller.')
-          act = yaml.safe_load(open('actions/hk-check/action.yml'))['runs']['steps']
-          mise = [st for st in act if str(st.get('uses', '')).startswith('jdx/mise-action@')]
+          act = load('actions/hk-check/action.yml')['runs']['steps']
+          mise = [st for st in act if uses(st).startswith('jdx/mise-action@')]
           given = (mise[0].get('with') or {}) if mise else {}
           if not mise or 'inputs.cache' not in str(given.get('cache', '')):
               errors.append('hk-check must run jdx/mise-action with cache read from its cache input; a bare default turns the GitHub cache on for self-hosted Linux.')
           if errors:
               sys.exit('::error::' + ' '.join(errors))
-          print('hk defaults off, runs through hk-check over the whole tree, a red hk hides nothing, and no job holds security-events')
-          "
+          print('hk defaults off, runs through hk-check over the whole tree on checks or all, a red hk hides nothing, and no job holds security-events')
+          PY
 
       # A caller may call pr-checks twice in one workflow, and artifact names are
       # per run, so every name carries the call's key (a hash of its inputs, from
@@ -1049,7 +1123,7 @@ jobs:
           for jname, job in jobs.items():
               for st in job.get('steps') or []:
                   if 'actions/upload-artifact@' in str(st.get('uses', '')) or 'actions/download-artifact@' in str(st.get('uses', '')):
-                      name = str((st.get('with') or {}).get('name', ''))
+                      name = str((st.get('with') or {}).get('name') or (st.get('with') or {}).get('pattern') or '')
                       if 'needs.pick.outputs.key' not in name or 'pick' not in job.get('needs', []):
                           errors.append(jname + ' names an artifact ' + repr(name) + ' without needs.pick.outputs.key.')
           if errors:
@@ -1057,36 +1131,56 @@ jobs:
           print('every pr-checks artifact name carries the per-call key')
           "
 
-      # `test` and `all` run the caller's whole test suite, so the comment token
-      # lives in a job that runs none of it and reads the report as an artifact.
+      # The lanes run the caller's code, so the comment token lives in
+      # `PR Checks`, which runs none of it and reads each report as an artifact:
+      # coverage, zavet and React Doctor.
       - name: pr-checks posts coverage from a job that runs no repo code
         run: |
           set -euo pipefail
-          python3 -c "
-          import sys, yaml
-          jobs = yaml.safe_load(open('.github/workflows/pr-checks.yml'))['jobs']
+          python3 - <<'PY'
+          import sys
+          from lib import load, uses, plan
+          jobs = load('.github/workflows/pr-checks.yml')['jobs']
           errors = []
           writers = [n for n, j in jobs.items() if (j.get('permissions') or {}).get('pull-requests') == 'write']
-          # zavet and react-doctor post their own comments, as their standalone workflows do.
-          if set(writers) - {'coverage', 'zavet', 'react-doctor'} or 'coverage' not in writers:
-              errors.append('test/all/build must hold no pull-requests: write, and coverage must: found ' + repr(writers))
-          uses = [str(st.get('uses', '')) for st in jobs['coverage']['steps']]
-          if 'coverage' not in jobs['pr-checks']['needs']:
-              errors.append('the pr-checks summary must need coverage, or a breached floor stops failing the required context.')
-          if not any('actions/lcov-report@' in u for u in uses):
-              errors.append('the coverage job must handle coverage: lcov through actions/lcov-report.')
-          kover = [st for st in jobs['coverage']['steps'] if 'actions/kover-floor@' in str(st.get('uses', ''))]
+          if writers != ['pr-checks']:
+              errors.append('only PR Checks may hold pull-requests: write, never a lane: found ' + repr(writers))
+          if any('statuses' in (j.get('permissions') or {}) for j in jobs.values()):
+              errors.append('no pr-checks job posts a commit status, so none holds statuses.')
+          summary = jobs['pr-checks']['steps']
+          for act in ('actions/setup-stack', 'actions/run-phases', 'actions/hk-check', 'actions/zavet-check', 'actions/react-doctor'):
+              if any(act + '@' in uses(st) for st in summary):
+                  errors.append('PR Checks holds the write token, so it runs none of the caller code: no ' + act + '.')
+          for st in summary:
+              if uses(st).startswith('actions/checkout@') and "inputs.coverage == 'vitest'" not in str(st.get('if', '')):
+                  errors.append('PR Checks may check out only for the vitest reporter.')
+          sticky = [st for st in summary if 'actions/sticky-comment@' in uses(st)]
+          if sorted((st.get('with') or {}).get('key') for st in sticky) != ['react-doctor', 'zavet-check'] or not all(st.get('continue-on-error') for st in sticky):
+              errors.append('PR Checks must post the zavet-check and react-doctor comments once each, on continue-on-error: a comment never decides the verdict.')
+          if not any('actions/lcov-report@' in uses(st) for st in summary):
+              errors.append('PR Checks must handle coverage: lcov through actions/lcov-report.')
+          kover = [st for st in summary if 'actions/kover-floor@' in uses(st)]
           if len(kover) != 1 or 'steps.kover.outputs.coverage-overall' not in str(kover[0].get('with', {}).get('overall', '')):
               errors.append('coverage: kover must fail on a breached floor through actions/kover-floor, given the kover-report figure: kover-report only comments.')
-          report = [st for st in jobs['coverage']['steps'] if str(st.get('uses', '')).startswith('mi-kas/kover-report@')]
+          report = [st for st in summary if uses(st).startswith('mi-kas/kover-report@')]
           if len(report) != 1 or 'github.event_name' not in str(report[0].get('if', '')):
               errors.append('coverage: kover-report must run only on pull_request and push.')
           if kover and 'steps.kover.outcome' not in str(kover[0].get('if', '')):
               errors.append('coverage: kover-floor must run only after kover-report.')
+          down = [st for st in summary if st.get('id') == 'coverage' and 'actions/download-artifact@' in uses(st)]
+          if len(down) != 1 or not all(t in str(down[0].get('if', '')) for t in ("needs.pick.outputs.coverage == 'true'", "needs.lanes.result == 'success'")):
+              errors.append('PR Checks must read the report only when the plan uploads one and every lane passed.')
+          up = [st for st in jobs['lanes']['steps'] if 'actions/upload-artifact@' in uses(st) and 'coverage' in str((st.get('with') or {}).get('name'))]
+          if len(up) != 1 or 'matrix.coverage_upload' not in str(up[0].get('if', '')):
+              errors.append('lanes must upload the coverage report once, on matrix.coverage_upload.')
+          for given, want in (({'coverage': 'lcov'}, ['test']), ({'coverage': 'kover', 'single_job': True}, ['all']), ({'coverage': 'none'}, [])):
+              got = [k for k, v in plan(**given).items() if v['coverage_upload']]
+              if got != want:
+                  errors.append('the coverage upload must ride on %r for %r, got %r' % (want, given, got))
           if errors:
               sys.exit('::error::' + ' '.join(errors))
-          print('only coverage holds pull-requests: write, and the summary needs it')
-          "
+          print('only PR Checks holds pull-requests: write, and it posts the coverage, zavet and React Doctor comments from artifacts')
+          PY
 
       # Each agent workflow used to run the picker as its own hosted job, needed
       # by the agent job. That billed two hosted starts before a proceeding run
@@ -1397,7 +1491,7 @@ jobs:
           set -euo pipefail
           python3 - <<'PY'
           import glob, os, sys
-          from lib import load, first_step_is_report
+          from lib import load, first_step_is_report, D
           bad = []
           LIGHT = load('.github/workflows/pick-runner.yml')['jobs']['pick']['runs-on']
           for part in ('github.event.repository.private', '!github.event.pull_request.head.repo.fork',
@@ -1426,9 +1520,8 @@ jobs:
               ('supabase-deploy.yml', 'deploy'): 'holds a production Supabase token, which belongs on a throwaway VM',
           }
           # The iOS half: Apple targets link on macOS only, and these jobs run only
-          # when a pull request or a release asks (see the iOS step).
+          # when a release asks (see the iOS step; pr-checks' iOS lane is a plan entry).
           MACOS = {
-              ('pr-checks.yml', 'ios'): 'Apple targets build only on macOS; opt-in per pull request',
               ('release.yml', 'ios'): 'Apple targets build only on macOS; opt-in per release',
           }
           seen = set()
@@ -1452,7 +1545,9 @@ jobs:
                   if not first_step_is_report(job):
                       bad.append(where + ' must start with actions/runner-report')
                   want = POOLS.get((f, jid), 'light')
-                  if ro != pool(want) and 'needs.' not in str(ro):
+                  # pr-checks' lanes run where the plan says: light, heavy or, for iOS, the Mac.
+                  lanes = (f, jid) == ('pr-checks.yml', 'lanes') and ro == D + 'fromJSON(matrix.runs_on) }}'
+                  if ro != pool(want) and 'needs.' not in str(ro) and not lanes:
                       bad.append(where + ' runs-on is not the %s expression, character for character: %r' % (want, ro))
               # Nothing else in the file may name the hosted runner (pick-runner.yml's
               # hosted-runner input default aside).

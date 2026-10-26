@@ -154,6 +154,7 @@ check "bun lists a workspace package.json"     yes "$(listed bun packages/web/pa
 check "flutter lists pubspec.yaml"             yes "$(listed flutter pubspec.yaml)"
 check "rust lists a crate's Cargo.toml"        yes "$(listed rust crates/a/Cargo.toml)"
 check "every stack lists mise.toml"            yes "$(listed none mise.toml)"
+check "every stack lists hk.pkl"               yes "$(listed none hk.pkl)"
 check "no stack lists source code"             no  "$(listed android app/src/main/Main.kt)"
 check "a stack's manifests are not another's"  no  "$(listed rust package.json)"
 check "version files never include a lockfile" no  "$(listed bun bun.lock)"

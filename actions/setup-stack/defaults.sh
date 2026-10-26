@@ -89,6 +89,7 @@ emit design-lint "$(pick "${O_DESIGN_LINT-@stack}" "")"
 # The iOS half of a mobile stack, run only on macOS by pr-checks' `ios` job.
 emit ios       "$(pick "${O_IOS-@stack}" "$ios")"
 emit lock      "$(pick "${O_LOCK-@stack}" "$lock")"
-# Toolchain pins in mise apply to every stack.
-emit version-files "$(pick "${O_VERSION_FILES-@stack}" "(^|/)(${versions:+$versions|}mise\.toml|\.tool-versions)\$")"
+# Toolchain pins in mise apply to every stack, and so does the hk schema pin
+# that moves with the hk binary.
+emit version-files "$(pick "${O_VERSION_FILES-@stack}" "(^|/)(${versions:+$versions|}mise\.toml|\.tool-versions|hk\.pkl)\$")"
 emit lockfiles "$(cat "$here/lockfiles.re")"

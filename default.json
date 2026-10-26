@@ -65,7 +65,28 @@
   // alerts" are enabled for the repo. osvVulnerabilityAlerts is deliberately NOT
   // used. Experimental, and uncertain on the community tier.
 
+  // hk is the org's git-hook runner. hk.pkl pins the schema it amends in a
+  // package URL that no built-in manager reads, so without this the binary in
+  // mise.toml moves and hk.pkl stays behind, and deps-verify stops on it.
+  "customManagers": [
+    {
+      "description": "The hk schema hk.pkl amends, pinned in its package URL",
+      "customType": "regex",
+      "managerFilePatterns": ["/^hk\\.pkl$/"],
+      "matchStrings": [
+        "package://github\\.com/jdx/hk/releases/download/v(?<currentValue>\\d+\\.\\d+\\.\\d+)/hk@\\d+\\.\\d+\\.\\d+#"
+      ],
+      "depNameTemplate": "jdx/hk",
+      "datasourceTemplate": "github-releases",
+      "extractVersionTemplate": "^v?(?<version>.+)$",
+      "autoReplaceStringTemplate": "package://github.com/jdx/hk/releases/download/v{{{newValue}}}/hk@{{{newValue}}}#"
+    }
+  ],
+
   "packageRules": [
+    // The hk binary and the hk.pkl schema version move in one PR.
+    { "matchPackageNames": ["jdx/hk", "aqua:jdx/hk"], "groupName": "hk" },
+
     // Keep Actions on readable version tags. best-practices pins digests, which
     // turns every workflow into a wall of SHAs and makes review harder for a
     // threat this org is not defending against.

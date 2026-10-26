@@ -9,20 +9,6 @@
   "npmrc": "allow-remote=all",
   "customManagers": [
     {
-      "description": "The hk schema hk.pkl amends, pinned in its package URL. Grouped with the hk binary in mise.toml so both move together",
-      "customType": "regex",
-      "managerFilePatterns": [
-        "/^hk\\.pkl$/"
-      ],
-      "matchStrings": [
-        "package://github\\.com/jdx/hk/releases/download/v(?<currentValue>\\d+\\.\\d+\\.\\d+)/hk@\\d+\\.\\d+\\.\\d+#"
-      ],
-      "depNameTemplate": "jdx/hk",
-      "datasourceTemplate": "github-releases",
-      "extractVersionTemplate": "^v?(?<version>.+)$",
-      "autoReplaceStringTemplate": "package://github.com/jdx/hk/releases/download/v{{{newValue}}}/hk@{{{newValue}}}#"
-    },
-    {
       "description": "squawk, pinned in the migration-lint action's install script by the marker comment above its version",
       "customType": "regex",
       "managerFilePatterns": [
@@ -75,14 +61,6 @@
       ],
       "semanticCommitType": "ci",
       "semanticCommitScope": "self-test"
-    },
-    {
-      "description": "The hk binary and the hk.pkl schema version move in one PR",
-      "matchPackageNames": [
-        "jdx/hk",
-        "aqua:jdx/hk"
-      ],
-      "groupName": "hk"
     },
     {
       "description": "Each of these is what a shared workflow or action runs for callers (migration-lint, the deploy workflow, the react-doctor scan, dependency-check, sbom), so a bump releases like any chore(deps), unlike the other custom.regex pins",

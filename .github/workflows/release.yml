@@ -133,7 +133,7 @@ jobs:
       tag: ${{ steps.detect.outputs.tag }}
       tags: ${{ steps.detect.outputs.tags }}
     steps:
-      - uses: dodi-smart/.github/actions/runner-report@v1
+      - uses: dodi-smart/.github/actions/runner-report@pinned/v1.44.0
         with:
           selector: '["self-hosted","Linux","light"]'
 
@@ -180,7 +180,7 @@ jobs:
           token: ${{ steps.app-token.outputs.token || secrets.GITHUB_TOKEN || github.token }}
 
       - id: setup
-        uses: dodi-smart/.github/actions/setup-stack@v1
+        uses: dodi-smart/.github/actions/setup-stack@pinned/v1.44.0
         with:
           stack:        ${{ inputs.stack }}
           node-version: ${{ inputs.node-version }}
@@ -222,7 +222,7 @@ jobs:
       # `semantic-release` on PATH.
       - if: inputs.release-command == ''
         name: Install semantic-release
-        uses: dodi-smart/.github/actions/release-tooling@v1
+        uses: dodi-smart/.github/actions/release-tooling@pinned/v1.44.0
         with:
           packages: ${{ inputs.semantic-release-packages }}
 
@@ -232,7 +232,7 @@ jobs:
       # release config, and a caller that does not is unaffected: the link
       # sits unused.
       - if: inputs.shared-config
-        uses: dodi-smart/.github/actions/semantic-release-config@v1
+        uses: dodi-smart/.github/actions/semantic-release-config@pinned/v1.44.0
 
       # Tag-diff is the only stack-agnostic way to know what released: it works
       # for `modules`, for a custom `release-command`, and needs no cooperation
@@ -325,7 +325,7 @@ jobs:
       # checkout and the token that already holds contents: write.
       - if: inputs.sbom && steps.detect.outputs.released == 'true'
         name: Attach SBOM
-        uses: dodi-smart/.github/actions/sbom@v1
+        uses: dodi-smart/.github/actions/sbom@pinned/v1.44.0
         with:
           tags:    ${{ steps.detect.outputs.tags }}
           exclude: ${{ inputs.sbom-exclude }}
@@ -343,7 +343,7 @@ jobs:
       # What it does, and why a conflict never fails this job: actions/backmerge.
       - if: inputs.backmerge && github.ref == format('refs/heads/{0}', inputs.backmerge-from)
         name: Backmerge
-        uses: dodi-smart/.github/actions/backmerge@v1
+        uses: dodi-smart/.github/actions/backmerge@pinned/v1.44.0
         with:
           from:          ${{ inputs.backmerge-from }}
           to:            ${{ inputs.backmerge-to }}
@@ -365,14 +365,14 @@ jobs:
     env:
       STACK: ${{ inputs.ios-stack || inputs.stack }}
     steps:
-      - uses: dodi-smart/.github/actions/runner-report@v1
+      - uses: dodi-smart/.github/actions/runner-report@pinned/v1.44.0
         with:
           selector: macos-latest
       # A stack with no iOS half resolves to an empty command, which would pass
       # having built nothing. Asked before checkout and installs, which cost Mac
       # minutes.
       - id: cmd
-        uses: dodi-smart/.github/actions/setup-stack/resolve@v1
+        uses: dodi-smart/.github/actions/setup-stack/resolve@pinned/v1.44.0
         with:
           stack: ${{ env.STACK }}
           ios:   ${{ inputs.ios }}
@@ -385,7 +385,7 @@ jobs:
           ref: ${{ needs.release.outputs.tag }}
           persist-credentials: false
       - id: setup
-        uses: dodi-smart/.github/actions/setup-stack@v1
+        uses: dodi-smart/.github/actions/setup-stack@pinned/v1.44.0
         with:
           stack:             ${{ env.STACK }}
           cache:             auto
@@ -401,7 +401,7 @@ jobs:
           xcode-version:     ${{ inputs.xcode-version }}
           xcode-destination: ${{ inputs.xcode-destination }}
       - name: Run phases
-        uses: dodi-smart/.github/actions/run-phases@v1
+        uses: dodi-smart/.github/actions/run-phases@pinned/v1.44.0
         with:
           env-file:       ${{ steps.setup.outputs.env-file }}
           build-env-file: ${{ steps.setup.outputs.build-env-file }}

@@ -81,11 +81,11 @@ jobs:
       checks: read          # the required check run
       statuses: read        # review / verdict
     steps:
-      - uses: dodi-smart/.github/actions/runner-report@v1
+      - uses: dodi-smart/.github/actions/runner-report@pinned/v1.44.0
         with:
           selector: '["self-hosted","Linux","light"]'
 
-      - uses: dodi-smart/.github/actions/merge-gate@v1
+      - uses: dodi-smart/.github/actions/merge-gate@pinned/v1.44.0
         with:
           policy:         deps
           required-check: ${{ inputs.required-check }}
@@ -121,11 +121,11 @@ jobs:
       checks: read          # the required check run
       statuses: read        # the head's commit statuses
     steps:
-      - uses: dodi-smart/.github/actions/runner-report@v1
+      - uses: dodi-smart/.github/actions/runner-report@pinned/v1.44.0
         with:
           selector: '["self-hosted","Linux","light"]'
 
-      - uses: dodi-smart/.github/actions/merge-gate@v1
+      - uses: dodi-smart/.github/actions/merge-gate@pinned/v1.44.0
         with:
           policy:         backmerge
           required-check: ${{ inputs.required-check }}
@@ -164,11 +164,11 @@ jobs:
       checks: read          # the required check run
       statuses: read        # review / verdict
     steps:
-      - uses: dodi-smart/.github/actions/runner-report@v1
+      - uses: dodi-smart/.github/actions/runner-report@pinned/v1.44.0
         with:
           selector: '["self-hosted","Linux","light"]'
 
-      - uses: dodi-smart/.github/actions/merge-gate@v1
+      - uses: dodi-smart/.github/actions/merge-gate@pinned/v1.44.0
         with:
           policy:         hotfix
           required-check: ${{ inputs.required-check }}
@@ -199,11 +199,11 @@ jobs:
       checks: read          # the required check run
       statuses: read        # review / verdict and the standards statuses
     steps:
-      - uses: dodi-smart/.github/actions/runner-report@v1
+      - uses: dodi-smart/.github/actions/runner-report@pinned/v1.44.0
         with:
           selector: '["self-hosted","Linux","light"]'
 
-      - uses: dodi-smart/.github/actions/merge-gate@v1
+      - uses: dodi-smart/.github/actions/merge-gate@pinned/v1.44.0
         with:
           policy:         standards-sync
           required-check: ${{ inputs.required-check }}

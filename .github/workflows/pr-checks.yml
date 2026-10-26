@@ -567,7 +567,8 @@ jobs:
           source-root: ${{ env.WRITER_WORKSPACE }}
           min-overall: ${{ inputs.coverage-min-overall }}
           min-changed: ${{ inputs.coverage-min-changed }}
-      - if: inputs.coverage == 'kover'
+      # kover-report fails on any event but a pull request or a push.
+      - if: inputs.coverage == 'kover' && (github.event_name == 'pull_request' || github.event_name == 'push')
         id: kover
         uses: mi-kas/kover-report@v2
         with:
@@ -579,11 +580,13 @@ jobs:
           min-coverage-changed-files: ${{ inputs.coverage-min-changed }}
       # kover-report only comments on a breached minimum, so the overall floor is
       # enforced here; the changed-files floor stays comment-only.
-      - if: inputs.coverage == 'kover'
+      - if: steps.kover.outcome == 'success'
         uses: dodi-smart/.github/actions/kover-floor@v1
         with:
           overall:     ${{ steps.kover.outputs.coverage-overall }}
           min-overall: ${{ inputs.coverage-min-overall }}
+      - if: inputs.coverage == 'kover' && steps.kover.outcome == 'skipped'
+        run: echo "::notice title=Coverage::kover-report supports only pull requests and pushes, so this $GITHUB_EVENT_NAME run has no coverage report or floor."
 
   # ---------------------------------------------------------------------------
   # One stable context, on every push, in both modes: the job a branch ruleset

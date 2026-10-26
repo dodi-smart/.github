@@ -1027,6 +1027,11 @@ jobs:
           kover = [st for st in jobs['coverage']['steps'] if 'actions/kover-floor@' in str(st.get('uses', ''))]
           if len(kover) != 1 or 'steps.kover.outputs.coverage-overall' not in str(kover[0].get('with', {}).get('overall', '')):
               errors.append('coverage: kover must fail on a breached floor through actions/kover-floor, given the kover-report figure: kover-report only comments.')
+          report = [st for st in jobs['coverage']['steps'] if str(st.get('uses', '')).startswith('mi-kas/kover-report@')]
+          if len(report) != 1 or 'github.event_name' not in str(report[0].get('if', '')):
+              errors.append('coverage: kover-report must run only on pull_request and push.')
+          if kover and 'steps.kover.outcome' not in str(kover[0].get('if', '')):
+              errors.append('coverage: kover-floor must run only after kover-report.')
           if errors:
               sys.exit('::error::' + ' '.join(errors))
           print('only coverage holds pull-requests: write, and the summary needs it')

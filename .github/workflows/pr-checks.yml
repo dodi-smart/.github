@@ -318,12 +318,20 @@ jobs:
       # against the merge base. No reporter needs history, they list files
       # through the API. A lane with nothing to build or verify (commitlint
       # alone) clones nothing.
+      #
+      # Flutter: dart-hooks-cache reuses native-asset builds. On self-hosted
+      # Linux it keeps them in place, so that checkout does not clean; it does.
       - id: checkout
         if: ${{ contains(matrix.phases, 'install') || matrix.zavet }}
         uses: actions/checkout@v7
         with:
           fetch-depth: ${{ !(matrix.zavet || matrix.react_doctor) && 1 || 0 }}
           persist-credentials: false
+          clean: ${{ !(inputs.stack == 'flutter' && runner.environment == 'self-hosted' && runner.os == 'Linux') }}
+      - if: ${{ steps.checkout.outcome == 'success' && inputs.stack == 'flutter' }}
+        uses: dodi-smart/.github/actions/dart-hooks-cache@v1
+        with:
+          toolchain: ${{ inputs.flutter-version }}
       # One setup for every lane, the Mac included: only the inputs that differ
       # there read the lane's phases. It only resolves the commands into outputs; the
       # phases step below reads the ones its lane runs.

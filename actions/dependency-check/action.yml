@@ -51,7 +51,7 @@ runs:
     # osv-scanner reads. One list of names, in one place.
     - id: files
       if: ${{ inputs.lockfiles == '' && steps.kind.outputs.kind != 'dependency' }}
-      uses: dodi-smart/.github/actions/changed-files@v1
+      uses: dodi-smart/.github/actions/changed-files@pinned/v1.43.1
       with:
         number: ${{ inputs.number }}
         repository: ${{ inputs.repository }}

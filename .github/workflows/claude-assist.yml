@@ -72,12 +72,12 @@ jobs:
       proceed: ${{ steps.gate.outputs.proceed }}
       runner:  ${{ steps.pick.outputs.runner }}
     steps:
-      - uses: dodi-smart/.github/actions/runner-report@v1
+      - uses: dodi-smart/.github/actions/runner-report@pinned/v1.43.1
         with:
           selector: light
 
       - id: gate
-        uses: dodi-smart/.github/actions/agent-gate@v1
+        uses: dodi-smart/.github/actions/agent-gate@pinned/v1.43.1
         with:
           # An issue and a PR keep their labels in different places. Whichever
           # is absent is an empty list, so the kill switch reads the right one.
@@ -100,7 +100,7 @@ jobs:
       # reserved-verb mention must never pay for a hosted picker.
       - id: pick
         if: steps.gate.outputs.proceed == 'true'
-        uses: dodi-smart/.github/actions/pick-runner@v1
+        uses: dodi-smart/.github/actions/pick-runner@pinned/v1.43.1
         with:
           weight:             ${{ inputs.runner-weight }}
           labels:             ${{ inputs.runner-labels }}
@@ -119,7 +119,7 @@ jobs:
       id-token: write
       actions: read
     steps:
-      - uses: dodi-smart/.github/actions/runner-report@v1
+      - uses: dodi-smart/.github/actions/runner-report@pinned/v1.43.1
         with:
           selector: ${{ needs.gate.outputs.runner }}
 
@@ -130,7 +130,7 @@ jobs:
 
       # No `prompt`. With none supplied the action follows the instruction in
       # the comment that mentioned it, which is the point of this workflow.
-      - uses: dodi-smart/.github/actions/run-agent@v1
+      - uses: dodi-smart/.github/actions/run-agent@pinned/v1.43.1
         with:
           oauth-token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           stage: assist

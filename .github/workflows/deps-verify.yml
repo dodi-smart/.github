@@ -106,9 +106,11 @@ jobs:
   # which bots count stays in actions/agent-gate/gate.sh and nowhere else.
   #
   # Nothing here waits. Two events reach it:
-  #   pull_request  opened, synchronize, reopened, or labeled `agent:review`.
-  #                 A repo whose pr-checks has not finished on the head commit
-  #                 stops here; that run's completion starts this again.
+  #   pull_request  labeled `agent:review`. The standard caller sends only
+  #                 `labeled`; a repo that builds the PR here (no PR Checks
+  #                 caller) adds opened, synchronize and reopened. A PR whose
+  #                 PR Checks has not finished stops here, and that run's
+  #                 completion starts this again.
   #   workflow_run  the caller's PR Checks run completed. The verdict is read
   #                 from the finished run, once.
   # Why nothing may wait here: see deps-verify in AGENTS.md.
@@ -124,7 +126,7 @@ jobs:
         && github.event.workflow_run.conclusion != 'cancelled'
         && github.event.workflow_run.conclusion != 'skipped')
     runs-on: ${{ fromJSON((github.event.repository.private && !github.event.pull_request.head.repo.fork) && '["self-hosted","Linux","light"]' || '"ubuntu-latest"') }}
-    timeout-minutes: 10   # the picker may retry
+    timeout-minutes: 10
     permissions:
       contents: read        # workflow files and the compare API
       pull-requests: read   # the pull request and the verdict comment
@@ -299,21 +301,19 @@ jobs:
           verdict:  ${{ steps.ci.outputs.verdict }}
 
       # Only when the run above is still proceeding: a human-authored PR (this
-      # workflow runs for bots only) must never pay for a hosted picker.
+      # workflow runs for bots only) picks no runner.
       #
       # Both pools are picked here, because the verify job runs on light for a
-      # green verdict and takes heavy only when there is something to build. The
-      # action caches the fleet listing, so the second call costs no API calls.
-      # An `apple` or `hosted` weight, or an explicit selector, has no lighter
-      # pool (the light pool cannot run Xcode), so light follows it.
+      # green verdict and takes heavy only when there is something to build.
+      # The picker is static, so the second call costs nothing. An `apple` or
+      # `hosted` weight, or an explicit selector, has no lighter pool (the light
+      # pool cannot run Xcode), so light follows it.
       - id: pick-light
         if: steps.gate.outputs.proceed == 'true' && steps.ci.outputs.ready == 'true' && steps.judge.outputs.judge != 'skip'
         uses: dodi-smart/.github/actions/pick-runner@v1
         with:
           weight:             ${{ (inputs.runner-weight == 'apple' || inputs.runner-weight == 'hosted') && inputs.runner-weight || 'light' }}
           labels:             ${{ inputs.runner-labels }}
-          gh-app-client-id:   ${{ secrets.GH_APP_CLIENT_ID }}
-          gh-app-private-key: ${{ secrets.GH_APP_PRIVATE_KEY }}
 
       - id: pick-heavy
         if: steps.gate.outputs.proceed == 'true' && steps.ci.outputs.ready == 'true' && steps.judge.outputs.judge != 'skip'
@@ -321,8 +321,6 @@ jobs:
         with:
           weight:             ${{ inputs.runner-weight }}
           labels:             ${{ inputs.runner-labels }}
-          gh-app-client-id:   ${{ secrets.GH_APP_CLIENT_ID }}
-          gh-app-private-key: ${{ secrets.GH_APP_PRIVATE_KEY }}
 
   # The build (here, when the repo has no pr-checks), the agent, then a
   # deterministic push and publish. A green verdict stays on the light pool;

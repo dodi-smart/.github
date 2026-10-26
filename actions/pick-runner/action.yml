@@ -62,19 +62,12 @@ inputs:
 
   # DEPRECATED and ignored: setting either prints a warning that names it, and
   # both are removed once no caller passes them. Overflow is the queue's job, so
-  # there is no fallback to choose, and nothing reads the fleet, so there is no
-  # token to mint.
+  # there is no fallback to choose.
   fallback:
     description: 'Deprecated and ignored; warns when set. Remove it from the caller.'
     default: ""
   fallback-when:
     description: 'Deprecated and ignored; warns when set. Remove it from the caller.'
-    default: ""
-  gh-app-client-id:
-    description: 'Ignored. The picker no longer reads the org runner list.'
-    default: ""
-  gh-app-private-key:
-    description: 'Ignored. The picker no longer reads the org runner list.'
     default: ""
 
 outputs:

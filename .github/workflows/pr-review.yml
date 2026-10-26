@@ -96,7 +96,7 @@ jobs:
       && (!(endsWith(github.event.pull_request.user.login, '[bot]') || startsWith(github.event.pull_request.user.login, 'app/'))
         || (github.event.action == 'labeled' && endsWith(github.event.sender.login, '[bot]')))
     runs-on: ${{ fromJSON((github.event.repository.private && !github.event.pull_request.head.repo.fork) && '["self-hosted","Linux","light"]' || '"ubuntu-latest"') }}
-    timeout-minutes: 10   # the picker calls the org API and may retry
+    timeout-minutes: 10
     permissions:
       contents: read
       checks: read
@@ -257,7 +257,7 @@ jobs:
           echo "collected $n failing check(s)"
 
       # Only when the run above is still proceeding: a draft, a bot PR or a
-      # docs-only diff must never pay for a hosted picker. `steps.level`, not
+      # docs-only diff picks no runner. `steps.level`, not
       # `steps.gate`, is the last step that can still say no -- it narrows the
       # gate's own verdict further (no changed files, docs only).
       - id: pick
@@ -266,8 +266,6 @@ jobs:
         with:
           weight:             ${{ inputs.runner-weight }}
           labels:             ${{ inputs.runner-labels }}
-          gh-app-client-id:   ${{ secrets.GH_APP_CLIENT_ID }}
-          gh-app-private-key: ${{ secrets.GH_APP_PRIVATE_KEY }}
 
   review:
     needs: [gate]

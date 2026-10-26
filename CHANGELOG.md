@@ -1,3 +1,9 @@
+## [1.44.1](https://github.com/dodi-smart/.github/compare/v1.44.0...v1.44.1) (2026-10-26)
+
+### 🐛 Bug Fixes
+
+* **deps-automerge:** one job and no concurrency group, so bot PRs stop showing cancelled checks ([#209](https://github.com/dodi-smart/.github/issues/209)) ([fd26ef2](https://github.com/dodi-smart/.github/commit/fd26ef2539caefef8ae5e911678b11a947448ebe))
+
 ## [1.44.0](https://github.com/dodi-smart/.github/compare/v1.43.3...v1.44.0) (2026-10-26)
 
 ### ✨ Features

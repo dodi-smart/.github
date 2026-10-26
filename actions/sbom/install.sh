@@ -26,7 +26,7 @@
 set -euo pipefail
 
 # renovate: datasource=github-releases depName=anchore/syft
-SYFT_VERSION=1.54.1
+SYFT_VERSION=1.55.0
 # renovate: datasource=github-releases depName=CycloneDX/cdxgen
 CDXGEN_VERSION=13.4.0
 

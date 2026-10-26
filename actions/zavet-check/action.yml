@@ -34,6 +34,9 @@ inputs:
   audit:  { description: 'Report-only health sweep', default: 'false' }
   zavet-dir:  { description: 'Directory holding the knowledge layer', default: '.zavet' }
   yq-version: { description: 'mikefarah yq release to install when it is missing', default: 'v4.53.3' }
+  # Under the job's timeout, so a hung check is reported as a check that could
+  # not run, and the comment and verdict steps after it still run.
+  verify-timeout: { description: 'Minutes `zavet verify` may run before it counts as could-not-run', default: '12' }
   # A PR whose head is this branch is a promotion and its guard commits are not
   # walked again (promotion.sh has the rule and the cost). "" turns it off.
   integration-branch: { description: 'Branch whose promotion PRs skip the guard walk, or "" for none', default: 'develop' }
@@ -110,7 +113,9 @@ runs:
     # easy and confusing way for every check to report NONE. Needed whenever
     # the CLI runs (checks, guards and audit all read frontmatter), so it is
     # gated on the CLI alone, not on declared checks.
-    - if: steps.present.outputs.yes == 'true' && steps.need.outputs.cli == 'true'
+    - id: yq
+      if: steps.present.outputs.yes == 'true' && steps.need.outputs.cli == 'true'
+      continue-on-error: ${{ steps.scope.outputs.report-only == 'true' }}
       shell: bash
       env:
         YQ: ${{ inputs.yq-version }}
@@ -129,8 +134,8 @@ runs:
           esac
           base="https://github.com/mikefarah/yq/releases/download/${YQ}"
           tmp="$(mktemp -d "${RUNNER_TEMP:-/tmp}/yq.XXXXXX")"
-          curl -fsSL -o "$tmp/yq_linux_${arch}" "$base/yq_linux_${arch}"
-          curl -fsSL "$base/checksums-bsd" \
+          curl -fsSL --retry 3 --retry-all-errors --connect-timeout 20 --max-time 120 -o "$tmp/yq_linux_${arch}" "$base/yq_linux_${arch}"
+          curl -fsSL --retry 3 --retry-all-errors --connect-timeout 20 --max-time 120 "$base/checksums-bsd" \
             | sed -n "s/^SHA256 (yq_linux_${arch}) = //p" \
             | sed "s|\$|  yq_linux_${arch}|" > "$tmp/sha256"
           (cd "$tmp" && sha256sum -c sha256)
@@ -180,6 +185,7 @@ runs:
     # writes the env file.
     - id: setup
       if: steps.present.outputs.yes == 'true' && inputs.checks == 'true' && steps.need.outputs.install == 'true' && steps.targets.outputs.run == 'true'
+      continue-on-error: ${{ steps.scope.outputs.report-only == 'true' }}
       uses: dodi-smart/.github/actions/setup-stack@v1
       with:
         stack:           ${{ inputs.stack }}
@@ -191,12 +197,9 @@ runs:
         java-version:    ${{ inputs.java-version }}
         flutter-version: ${{ inputs.flutter-version }}
 
-    # On a bot's report-only PR an install failure is the update's problem,
-    # and pr-checks and deps-verify already report it. Failing here as well
-    # put a red knowledge-layer check on a PR whose knowledge layer nobody
-    # touched, which is what the report-only rule above exists to prevent.
-    # The checks are then skipped, because a check run without its
-    # dependencies would fail for the same reason and blame a decision.
+    # yq, setup and install are continue-on-error on a bot's report-only PR
+    # (AGENTS.md has why); what needs a tool that failed is skipped, so no
+    # decision is blamed for a download.
     - name: Install dependencies for the decision checks
       id: install
       if: steps.present.outputs.yes == 'true' && inputs.checks == 'true' && steps.need.outputs.install == 'true' && steps.targets.outputs.run == 'true' && steps.setup.outputs.install != ''
@@ -207,7 +210,7 @@ runs:
         install:  ${{ steps.setup.outputs.install }}
 
     - id: checks
-      if: steps.present.outputs.yes == 'true' && inputs.checks == 'true' && steps.install.outcome != 'failure'
+      if: steps.present.outputs.yes == 'true' && inputs.checks == 'true' && steps.yq.outcome != 'failure' && steps.setup.outcome != 'failure' && steps.install.outcome != 'failure'
       continue-on-error: true
       shell: bash
       env:
@@ -220,6 +223,7 @@ runs:
         SCOPED: ${{ steps.targets.outputs.scoped }}
         CHANGED: ${{ steps.targets.outputs.changed }}
         PATHS_FILE: ${{ steps.targets.outputs.paths }}
+        TIMEOUT: ${{ inputs.verify-timeout }}
       run: |
         # `set +e` is REQUIRED and must come first.
         #
@@ -277,14 +281,17 @@ runs:
           mapfile -t changed < "$PATHS_FILE"
           args=(--paths "${changed[@]}")
         fi
-        out=$("$zavet" verify "${args[@]}" 2>&1); rc=$?
+        # A hung check must not eat the job: past the limit it is a check that
+        # could not run (124), and the comment and verdict steps still run.
+        out=$(timeout -k 30s "${TIMEOUT}m" "$zavet" verify "${args[@]}" 2>&1); rc=$?
         printf '%s\n' "$out"
-        # 127 is bash for "command not found". Reported apart from a real
-        # failure, because the fix is a missing toolchain and not a decision
-        # that stopped holding. `stack:` on this action is what supplies it.
-        if [ "$rc" -eq 127 ]; then
-          echo "::error title=Decision check could not run::a check exited 127, command not found. Set the 'stack' input to the toolchain these checks need."
-        fi
+        # Reported apart from a real failure: the fix is not a decision that
+        # stopped holding. 124 is the time limit, 127 bash's "command not found",
+        # which the `stack` input supplies.
+        case "$rc" in
+          124) echo "::error title=Decision checks could not run::zavet verify ran past ${TIMEOUT} minutes and was stopped. A check this slow re-runs work the test job owns; point it at the one test that proves the decision." ;;
+          127) echo "::error title=Decision check could not run::a check exited 127, command not found. Set the 'stack' input to the toolchain these checks need." ;;
+        esac
         {
           echo "### Decision checks"
           echo '```'
@@ -306,7 +313,7 @@ runs:
     # cover changes it never described. A promotion PR walks nothing: see
     # promotion.sh for the rule, and why the integration branch must require PRs.
     - id: guards
-      if: steps.present.outputs.yes == 'true' && inputs.guards == 'true' && github.event_name == 'pull_request'
+      if: steps.present.outputs.yes == 'true' && inputs.guards == 'true' && github.event_name == 'pull_request' && steps.yq.outcome != 'failure'
       continue-on-error: true
       shell: bash
       env:
@@ -359,7 +366,7 @@ runs:
         exit "$blocked"
 
     - id: audit
-      if: steps.present.outputs.yes == 'true' && inputs.audit == 'true'
+      if: steps.present.outputs.yes == 'true' && inputs.audit == 'true' && steps.yq.outcome != 'failure'
       continue-on-error: true
       shell: bash
       env:

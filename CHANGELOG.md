@@ -1,3 +1,9 @@
+## [1.44.2](https://github.com/dodi-smart/.github/compare/v1.44.1...v1.44.2) (2026-10-26)
+
+### 🐛 Bug Fixes
+
+* **zavet-check:** a bot PR never goes red on zavet's tooling, and a hung verify stops before the job does ([#210](https://github.com/dodi-smart/.github/issues/210)) ([528311c](https://github.com/dodi-smart/.github/commit/528311cd7985ee293fb342deb99b98913aa53094))
+
 ## [1.44.1](https://github.com/dodi-smart/.github/compare/v1.44.0...v1.44.1) (2026-10-26)
 
 ### 🐛 Bug Fixes

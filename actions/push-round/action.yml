@@ -60,7 +60,7 @@ runs:
     # Not narrowed: the push must satisfy the org rulesets the App bypasses.
     - id: token
       if: steps.check.outputs.ready == 'true'
-      uses: dodi-smart/.github/actions/app-token@v1
+      uses: dodi-smart/.github/actions/app-token@pinned/v1.44.6
       with:
         client-id:   ${{ inputs.client-id }}
         private-key: ${{ inputs.private-key }}

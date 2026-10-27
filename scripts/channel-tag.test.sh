@@ -18,6 +18,7 @@ eq() { if [ "$2" = "$3" ]; then ok "$1"; else bad "$1 (expected '$3', got '$2')"
 ne() { if [ "$2" != "$3" ]; then ok "$1"; else bad "$1 (both '$2')"; fi; }
 yes() { local d="$1"; shift; if "$@" >/dev/null 2>&1; then ok "$d"; else bad "$d"; fi; }
 no() { local d="$1"; shift; if "$@" >/dev/null 2>&1; then bad "$d"; else ok "$d"; fi; }
+has() { case "$2" in *"$3"*) ok "$1" ;; *) bad "$1 (no '$3' in '$2')" ;; esac; }
 
 export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@example.com GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@example.com
 export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null
@@ -287,6 +288,30 @@ eq "a token push clears the persisted auth header" "$(grep -c '^-c http.https://
 : > "$TMP/git.log"
 (cd "$R4" && PATH="$SHIM:$PATH" "$SCRIPT" promote --version 1.5.0 >/dev/null 2>&1)
 eq "a plain push leaves the header alone" "$(grep -c 'extraheader' "$TMP/git.log")" 0
+
+# ---------------------------------------------------------------- refused push
+# A pre-receive hook stands in for GitHub refusing the push the way it did on
+# 2026-10-27, so the summary text is checked against the real git output.
+R6="$TMP/r6"; make_repo "$R6" 1; release "$R6" 1.0.0; git -C "$R6" tag v1 v1.0.0
+git -C "$R6" push -q origin v1
+release "$R6" 1.1.0
+run "$R6" pin >/dev/null
+refuse() { printf '#!/bin/sh\necho \047%s\047\nexit 1\n' "$1" > "$R6.git/hooks/pre-receive"; chmod +x "$R6.git/hooks/pre-receive"; }
+refuse "Permission to o/r.git denied to some-app[bot]."
+out="$(run "$R6" promote)"; rc=$?
+ne "a refused push fails the promotion" "$rc" 0
+eq "and the remote v1 stays" "$(remote_sha "$R6" v1)" "$(sha "$R6" v1.0.0)"
+has "the summary names the refused tag" "$out" "push: GitHub refused v1, so it did not move:"
+has "and quotes GitHub's own words" "$out" "push:   remote: Permission to o/r.git denied to some-app[bot]."
+has "an App refusal points at the installation" "$out" "re-run the job for a fresh token"
+refuse "Permission to o/r.git denied to github-actions[bot]."
+has "a GITHUB_TOKEN refusal points at the App secrets" "$(run "$R6" promote)" "push: that is GITHUB_TOKEN"
+refuse 'refusing to allow a GitHub App to create or update workflow .github/workflows/wf.yml without "workflows" permission'
+has "a missing workflows permission points at the installation" "$(run "$R6" promote)" "contents: write and workflows: write"
+refuse "some other rejection"
+out="$(run "$R6" promote)"
+has "an unknown rejection is still quoted" "$out" "push:   remote: some other rejection"
+no "and gets no guessed hint" grep -qE 'fresh token|GITHUB_TOKEN' <<<"$out"
 
 echo
 echo "$pass passed, $fail failed"

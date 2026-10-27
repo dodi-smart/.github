@@ -1,3 +1,9 @@
+## [1.44.7](https://github.com/dodi-smart/.github/compare/v1.44.6...v1.44.7) (2026-10-27)
+
+### 🐛 Bug Fixes
+
+* **run-agent,pr-review,deps-verify:** allow the agent to write its report files outside the checkout by exact path ([#218](https://github.com/dodi-smart/.github/issues/218)) ([9f7eb6f](https://github.com/dodi-smart/.github/commit/9f7eb6fb9a361b974daced2713b4142adc1489b7)), closes [#216](https://github.com/dodi-smart/.github/issues/216)
+
 ## [1.44.6](https://github.com/dodi-smart/.github/compare/v1.44.5...v1.44.6) (2026-10-27)
 
 ### 🐛 Bug Fixes

@@ -7,7 +7,7 @@
 # other condition, and public repos and fork PRs never touch a self-hosted
 # runner.
 #
-# Six footguns are repeated below because the code reads as wrong without them:
+# The footguns below are repeated because the code reads as wrong without them:
 #
 #   `--allowed-tools` is VARIADIC, space-separated, each entry quoted if it
 #   contains parentheses. A comma-joined list parses as one meaningless token:
@@ -40,6 +40,13 @@
 #   prompt, and the run "succeeds" after 0 turns. So every run passes
 #   `--settings '{"disableAllHooks":true}'`. It has to be the flag: the
 #   `settings` input is user settings, which a project's own value overrides.
+#
+#   RUNNER_TEMP is outside the checkout on every runner, and Claude Code
+#   refuses a Write call or a Bash `> file` to a path outside its working
+#   directories unless an `Edit` allow rule names it. A headless run cannot
+#   ask, so it refuses. Hence one `Edit(//path)` rule per report file. Never
+#   `--add-dir` RUNNER_TEMP instead: the agent's settings file, secrets
+#   included, lives there.
 name: Run agent
 description: Invoke claude-code-action with the org's tool allowlist, model policy and reporting defaults.
 
@@ -168,6 +175,12 @@ inputs:
       `report-valid` rejects, it writes `report-fallback` with a `why` field
       naming the cause. Callers read one file on every path.
     default: ''
+  write-files:
+    description: >-
+      Other files the prompt tells the agent to write, as absolute paths,
+      space or newline separated. Each one, and `report-file`, becomes an
+      `Edit(//path)` allow rule for that exact file. See the header.
+    default: ''
   report-valid:
     description: 'jq expression that is `true` for an acceptable report, e.g. `.verdict | IN("a", "b")`.'
     default: 'true'
@@ -244,6 +257,25 @@ runs:
         AGENT_ENV:        ${{ inputs.agent-env }}
         AGENT_ENV_SECRET: ${{ inputs.agent-env-secret }}
       run: '"$GITHUB_ACTION_PATH/agent-env.sh"'
+
+    # See the header. A path is refused rather than quoted when it holds a
+    # character the rule would read as a pattern or the tool list would split on.
+    - id: writable
+      if: inputs.report-file != '' || inputs.write-files != ''
+      shell: bash
+      env:
+        FILES: ${{ inputs.report-file }} ${{ inputs.write-files }}
+      run: |
+        set -euf -o pipefail
+        rules=''
+        for f in $FILES; do
+          if ! [[ $f =~ ^/[A-Za-z0-9._/+@-]+$ ]] || [[ $f/ == */./* || $f/ == */../* ]]; then
+            echo "::error title=Agent write path refused::$f is not a plain absolute path, so no exact allow rule can name it."
+            exit 1
+          fi
+          rules+="${rules:+ }\"Edit(/$f)\""
+        done
+        echo "rules=$rules" >> "$GITHUB_OUTPUT"
 
     # Fail fast on the combination that silently posts nothing. See the header.
     - name: Reject a sticky comment agent mode will ignore
@@ -343,7 +375,7 @@ runs:
         claude_args: >-
           --model ${{ steps.model.outputs.model }}
           --settings '{"disableAllHooks":true}'
-          --allowed-tools ${{ inputs.allowed-tools }}
+          --allowed-tools ${{ inputs.allowed-tools }} ${{ steps.writable.outputs.rules }}
           ${{ steps.model.outputs.max-turns != '' && format('--max-turns {0}', steps.model.outputs.max-turns) || '' }}
           ${{ format('--append-system-prompt "{0} {1}"', inputs.house-style, inputs.append-system-prompt) }}
 
@@ -383,6 +415,11 @@ runs:
             ((.num_turns // 0) == 0 and ((.modelUsage // {}) | length) == 0), (.num_turns // ""),
             ((.result // ((.errors // []) | map(tostring) | join("; "))) | gsub("[\\t\\r\\n]+"; " ") | .[:300])] | @tsv' <<<"$r")
         cost=$(jq -r '.total_cost_usd // empty' <<<"$r")
+        # Tool calls Claude Code refused, named by tool and file only: a
+        # command line or file content can carry what a log should not.
+        denied=$(jq -r '[(.permission_denials // [])[] | [.tool_name, .tool_input.file_path // empty] | join(" ")]
+            | unique | join(", ")' <<<"$r")
+        [ -z "$denied" ] || echo "::warning title=Agent tool calls refused::$denied"
         why=''
         if [ "$subtype" = error_max_turns ]; then why="The agent reached its turn cap after $turns turns."
         elif [ "$is_error" = true ]; then why="The agent stopped with an error after $turns turn(s): ${text:-no message}."
@@ -391,6 +428,7 @@ runs:
         {
           echo "turns=$turns"
           echo "cost=$cost"
+          echo "denied=$denied"
           echo "why=$why"
         } >> "$GITHUB_OUTPUT"
         # One line per run, the same shape everywhere, for comparing models.
@@ -408,12 +446,14 @@ runs:
         FALLBACK: ${{ inputs.report-fallback }}
         WHY:      ${{ steps.outcome.outputs.why || steps.validate.outputs.why }}
         TURNS:    ${{ steps.outcome.outputs.turns }}
+        DENIED:   ${{ steps.outcome.outputs.denied }}
       run: |
         set -euo pipefail
         if [ -s "$FILE" ] && [ "$(jq -r "$VALID" "$FILE" 2>/dev/null || true)" = true ]; then
           echo "source=agent" >> "$GITHUB_OUTPUT"; exit 0
         fi
         why="${WHY:-The agent finished${TURNS:+ after $TURNS turn(s)} without writing a valid $(basename "$FILE").}"
+        why+="${DENIED:+ Claude Code refused: $DENIED.}"
         mkdir -p "$(dirname "$FILE")"
         jq -n --argjson f "$FALLBACK" --arg why "$why" '$f + {why: $why}' > "$FILE"
         {

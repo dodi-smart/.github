@@ -582,6 +582,8 @@ jobs:
           # run-agent writes a needs-manual verdict naming the cause whenever
           # the agent leaves no valid one, so publish reads one file always.
           report-file:     ${{ runner.temp }}/deps-verdict.json
+          # Written outside the checkout; see run-agent's header.
+          write-files:     ${{ runner.temp }}/deps-bumps.json ${{ runner.temp }}/deps-verdict.md
           report-valid:    '.verdict | IN("verified", "fixed", "needs-manual")'
           report-fallback: '{"verdict": "needs-manual"}'
           allowed-tools: 'Bash "Bash(gh:*)" Read Write Edit Grep Glob WebFetch'

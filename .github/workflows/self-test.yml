@@ -497,8 +497,9 @@ jobs:
         run: |
           set -euo pipefail
           python3 -c "
-          import sys, yaml
-          steps = yaml.safe_load(open('.github/workflows/pr-review.yml'))['jobs']['review']['steps']
+          import sys
+          from lib import load, D
+          steps = load('.github/workflows/pr-review.yml')['jobs']['review']['steps']
 
           agent = [s for s in steps if 'run-agent@' in str(s.get('uses', ''))][0]
           env = agent.get('env') or {}
@@ -513,6 +514,13 @@ jobs:
           if '--comment' not in prompt:
               sys.exit('::error::the PR Review prompt lost --comment. Inline comments come from the '
                        'plugin steps that flag unlocks.')
+
+          w = agent.get('with') or {}
+          named = str(w.get('report-file', '')) + ' ' + str(w.get('write-files', ''))
+          for f in ('review-body.md', 'review-verdict.json'):
+              if D + 'runner.temp }}/' + f not in named:
+                  sys.exit('::error::PR Review asks the agent to write %s but does not pass it to run-agent as '
+                           'report-file or write-files, so Claude Code refuses the write.' % f)
 
           verdict = [s for s in steps if s.get('id') == 'verdict'][0]
           if 'review-body.md' not in verdict['run']:

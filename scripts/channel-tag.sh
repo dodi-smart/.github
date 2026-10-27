@@ -85,7 +85,25 @@ version_at() {
 
 push_tag() { # push_tag <tag> [--force]
   [ "$push" = 1 ] || return 0
-  git ${remote_opts[@]+"${remote_opts[@]}"} push ${2:+"$2"} "$remote" "refs/tags/$1:refs/tags/$1"
+  local err rc=0
+  err="$(git ${remote_opts[@]+"${remote_opts[@]}"} push ${2:+"$2"} "$remote" "refs/tags/$1:refs/tags/$1" 2>&1 >/dev/null)" || rc=$?
+  [ -z "$err" ] || printf '%s\n' "$err" >&2
+  [ "$rc" = 0 ] || explain_refusal "$1" "$err"
+  return "$rc"
+}
+
+# Puts GitHub's own refusal on stdout, which the workflows add to the step
+# summary, so a red run explains itself without its log. The hint after it
+# covers the two refusals these workflows have actually met.
+explain_refusal() { # explain_refusal <tag> <push stderr>
+  echo "push: GitHub refused $1, so it did not move:"
+  sed -nE '/^(remote|fatal|error):|\[remote rejected\]/{s/[[:space:]]*$//; s/^/push:   /; p;}' <<<"$2"
+  case "$2" in
+    *"denied to github-actions[bot]"*)
+      echo "push: that is GITHUB_TOKEN, which may not push workflow-file changes. Set GH_APP_CLIENT_ID and GH_APP_PRIVATE_KEY so the App pushes instead." ;;
+    *"Permission to "*" denied to "*|*"workflows"*" permission"*)
+      echo "push: check that the App installation still has contents: write and workflows: write, then re-run the job for a fresh token. If a fresh token is refused too, an org owner re-saves the installation's permissions." ;;
+  esac
 }
 
 move_tag() { # move_tag <tag> <commit>

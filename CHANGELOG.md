@@ -1,3 +1,9 @@
+## [1.44.6](https://github.com/dodi-smart/.github/compare/v1.44.5...v1.44.6) (2026-10-27)
+
+### 🐛 Bug Fixes
+
+* **promote:** say in the job summary why GitHub refused a tag push ([#217](https://github.com/dodi-smart/.github/issues/217)) ([9ba0ab3](https://github.com/dodi-smart/.github/commit/9ba0ab35dbb4de8ee193468a50217505dcceb549)), references [#215](https://github.com/dodi-smart/.github/issues/215)
+
 ## [1.44.5](https://github.com/dodi-smart/.github/compare/v1.44.4...v1.44.5) (2026-10-26)
 
 ### ⚡ Performance Improvements

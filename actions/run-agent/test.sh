@@ -105,6 +105,22 @@ EOF
 }
 expect "run-agent turns the repo's hooks off with --settings" hooks_off
 
+# The files the agent writes outside the checkout reach the tool list. That
+# pr-review names both of its own is a Self test check.
+writable_wired() {
+python3 - "$ROOT" <<'EOF'
+import sys, yaml
+steps = yaml.safe_load(open(sys.argv[1] + '/actions/run-agent/action.yml'))['runs']['steps']
+ids = [s.get('id') for s in steps]
+w = steps[ids.index('writable')]
+assert ids.index('writable') < ids.index('agent'), ids
+assert w['env']['FILES'] == '${{ inputs.report-file }} ${{ inputs.write-files }}', w['env']
+call = steps[ids.index('agent')]['with']
+assert '--allowed-tools ${{ inputs.allowed-tools }} ${{ steps.writable.outputs.rules }}' in call['claude_args'], call['claude_args']
+EOF
+}
+expect "run-agent allows report-file and write-files by exact path" writable_wired
+
 # 2. Lift the steps out of the workflow. The push itself is actions/push-round,
 # tested there.
 python3 - "$ROOT" "$WORK" <<'EOF' || { echo 'cannot read the deps-verify steps'; exit 1; }
@@ -116,7 +132,7 @@ fix = job['env']
 for sid in ('publish', 'actor', 'renovate'):
     open('%s/%s.sh' % (work, sid), 'w').write(steps[sid]['run'])
 ra = {s.get('id'): s for s in yaml.safe_load(open(root + '/actions/run-agent/action.yml'))['runs']['steps']}
-for sid in ('outcome', 'validate', 'report'):
+for sid in ('outcome', 'validate', 'report', 'writable'):
     open('%s/%s.sh' % (work, sid), 'w').write(ra[sid]['run'])
 open(work + '/fix.env', 'w').write('FIX_NAME=%r\nFIX_EMAIL=%r\n' % (fix['FIX_NAME'], fix['FIX_EMAIL']))
 push = steps['push']['with']
@@ -200,7 +216,7 @@ report() {
   [ -n "${RAW:-}" ] && printf '%s' "$RAW" > "$WORK/deps-verdict.json"
   ( cd "$WORK" && env -i PATH="$PATH" HOME="$WORK" FILE="$WORK/deps-verdict.json" \
       VALID='.verdict | IN("verified", "fixed", "needs-manual")' FALLBACK='{"verdict": "needs-manual"}' \
-      WHY="${1:-}" TURNS="${TURNS:-}" GITHUB_OUTPUT="$WORK/out" bash "$WORK/report.sh" ) > "$WORK/log" 2>&1
+      WHY="${1:-}" TURNS="${TURNS:-}" DENIED="${DENIED:-}" GITHUB_OUTPUT="$WORK/out" bash "$WORK/report.sh" ) > "$WORK/log" 2>&1
 }
 field() { jq -r ".$1" "$WORK/deps-verdict.json"; }
 
@@ -215,6 +231,10 @@ REPORT=bogus report
 expect "an invalid verdict word is replaced" test "$(field verdict)" = needs-manual
 RAW='not json' TURNS=12 report
 expect "unreadable JSON is replaced, naming the turns" grep -q 'finished after 12 turn(s) without writing a valid deps-verdict.json' <(field why)
+TURNS=11 DENIED='Write /x/_temp/deps-verdict.json' report
+expect "a missing report names the writes Claude Code refused" test "$(field why)" = 'The agent finished after 11 turn(s) without writing a valid deps-verdict.json. Claude Code refused: Write /x/_temp/deps-verdict.json.'
+REPORT=verified DENIED='Write /x/other.md' report
+expect "a refusal beside a valid report changes nothing" grep -qx 'source=agent' "$WORK/out"
 
 # 8b. Publish words what run-agent wrote, and fails only on a real failure.
 printf '{"verdict":"needs-manual","why":"claude-code-action refuses to run while x.yml differs"}' > "$WORK/mismatch.json"
@@ -263,10 +283,42 @@ outcome success '[{"type":"result","subtype":"success","is_error":false,"num_tur
 expect "with the text the session left, if any" grep -q 'blocked the prompt. It said: UserPromptSubmit operation blocked' <(out_why)
 outcome success '[{"type":"result","subtype":"success","is_error":false,"num_turns":0,"modelUsage":{"m":{"inputTokens":9}},"result":"done"}]'
 expect "0 turns with model usage is a normal finish" test -z "$(out_why)"
+outcome success '[{"type":"result","subtype":"success","is_error":false,"num_turns":11,"result":"merge","permission_denials":[
+  {"tool_name":"Write","tool_input":{"file_path":"/w/_temp/review-body.md","content":"s3cret"}},
+  {"tool_name":"Write","tool_input":{"file_path":"/w/_temp/review-verdict.json","content":"{}"}},
+  {"tool_name":"Bash","tool_input":{"command":"echo s3cret > /w/_temp/x"}}]}]'
+expect "refused tool calls are named by tool and file" grep -qx 'denied=Bash, Write /w/_temp/review-body.md, Write /w/_temp/review-verdict.json' "$WORK/out"
+expect "and warned about, without content or command text" bash -c 'grep -q "::warning title=Agent tool calls refused::" "$1" && ! grep -q s3cret "$1" "$2"' _ "$WORK/log" "$WORK/out"
+expect "a refusal alone is not a why" test -z "$(out_why)"
+outcome success '[{"type":"result","subtype":"success","is_error":false,"num_turns":3,"result":"ok"}]'
+expect "no refusals, no warning" bash -c 'grep -qx "denied=" "$1" && ! grep -q "calls refused" "$2"' _ "$WORK/out" "$WORK/log"
 outcome success
 expect "no result after a success is the action skipping itself" grep -q 'skipped itself' <(out_why)
 outcome failure
 expect "no result after a failure says the action failed first" grep -q 'failed before the agent produced a result' <(out_why)
+
+# 8d1. run-agent's writable step: one exact Edit rule per report file, wherever
+# RUNNER_TEMP is. A self-hosted slot keeps it under its own work root, beside
+# the workspace rather than inside it, and the rule must not care.
+# writable FILES: prints the rules, exit status is the step's.
+writable() {
+  : > "$WORK/out"
+  ( cd "$WORK" && env -i PATH="$PATH" HOME="$WORK" FILES="$1" GITHUB_OUTPUT="$WORK/out" bash "$WORK/writable.sh" ) > "$WORK/log" 2>&1
+  local rc=$?; sed -n 's/^rules=//p' "$WORK/out"; return $rc
+}
+# The tool list as claude-code-action splits it: shell words.
+tools() { python3 -c 'import shlex, sys; print("\n".join(shlex.split(sys.argv[1])))' "$1"; }
+slot=/var/lib/github-runner/slots/1/work/_temp
+rules=$(writable "$slot/review-verdict.json $slot/review-body.md")
+expect "a RUNNER_TEMP outside the workspace gets one absolute rule per file" test "$rules" = "\"Edit(/$slot/review-verdict.json)\" \"Edit(/$slot/review-body.md)\""
+expect "and they split into tool-list entries of their own" test "$(tools "Bash \"Bash(gh:*)\" Read $rules" | tail -2)" = "Edit(/$slot/review-verdict.json)"$'\n'"Edit(/$slot/review-body.md)"
+expect "a hosted RUNNER_TEMP the same way" test "$(writable /home/runner/work/_temp/review-verdict.json)" = '"Edit(//home/runner/work/_temp/review-verdict.json)"'
+expect "newline-separated paths too" test "$(writable $'/t/a.json\n/t/b.md')" = '"Edit(//t/a.json)" "Edit(//t/b.md)"'
+expect "no files, no rules" test -z "$(writable ' ')"
+for p in 'review.json' '/t/*.md' '/t/../etc/passwd' '/t/./a' '/t/a)b' '/t/a"b' '/t/[ab]'; do
+  writable "$p" > /dev/null; rc=$?
+  expect "$p is refused, and fails the step" bash -c '[ "$1" != 0 ] && grep -q "Agent write path refused" "$2" && ! grep -q "^rules=" "$3"' _ "$rc" "$WORK/log" "$WORK/out"
+done
 
 # 8d2. agent-env.sh: the org's plugins on top of the caller's, and env for the agent alone.
 # agent_env [ENV=value ...]: runs it, outputs in $WORK/out, log in $WORK/log.

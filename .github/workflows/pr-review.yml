@@ -414,6 +414,8 @@ jobs:
           plugin-marketplaces: ${{ needs.gate.outputs.mode != 'scoped' && 'https://github.com/anthropics/claude-code.git' || '' }}
           plugins: ${{ needs.gate.outputs.mode != 'scoped' && 'code-review@claude-code-plugins' || '' }}
           report-file:     ${{ runner.temp }}/review-verdict.json
+          # Written outside the checkout; see run-agent's header.
+          write-files:     ${{ runner.temp }}/review-body.md
           report-valid:    '(.verdict | IN("approve", "changes")) and ((.blocking // []) | type == "array")'
           report-fallback: '{"verdict": "changes", "blocking": []}'
           # The org default plus the inline-comment tool. Variadic, space

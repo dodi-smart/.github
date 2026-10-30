@@ -73,6 +73,19 @@ jobs:
           fi
           echo "no shipped script pipes into head without draining the rest"
 
+      # Linux caps one environment string at 128 KiB, and a large pull request's
+      # changed-file list passes it: the step's shell never starts. A step reads
+      # changed-files' `files-path` instead of being handed `files`.
+      - name: No step is handed changed-files' list itself
+        run: |
+          set -euo pipefail
+          if hits=$(grep -nE 'outputs\.files[[:space:]]*\}\}' .github/workflows/*.yml actions/*/action.yml \
+                      | grep -v '^actions/changed-files/action\.yml:'); then
+            echo "::error::pass changed-files' files-path, not files, which a large pull request makes too long for a step's environment:"
+            echo "$hits"; exit 1
+          fi
+          echo "every step reads the changed-file list from files-path"
+
       # A download without retries turns one network blip into a red job on
       # every repo at once; an API call without a time limit hangs a job until
       # its timeout. Every shipped curl carries one or the other, a download both.
@@ -1967,8 +1980,8 @@ jobs:
               vw = steps[vguard[0]].get('with') or {}
               if not docs or vguard[0] != docs[0] + 1:
                   errors.append('the version guard must be the step right after the docs changed-files step, whose list it reads')
-              elif vw.get('files') != D + 'steps.docs.outputs.files }}' or vw.get('complete') != D + 'steps.docs.outputs.complete }}':
-                  errors.append('the version guard must be given the docs step\'s files and complete outputs')
+              elif vw.get('files-path') != D + 'steps.docs.outputs.files-path }}' or vw.get('complete') != D + 'steps.docs.outputs.complete }}':
+                  errors.append('the version guard must be given the docs step\'s files-path and complete outputs')
           if pick.get('permissions', {}).get('pull-requests') != 'read':
               errors.append('pick needs pull-requests: read, which the target guard reads the commits with')
           if pick.get('permissions', {}).get('contents') != 'read':

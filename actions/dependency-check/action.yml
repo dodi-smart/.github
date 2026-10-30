@@ -67,7 +67,7 @@ runs:
         REPO:          ${{ inputs.repository }}
         BASE_SHA:      ${{ inputs.base-sha }}
         GH_TOKEN:      ${{ inputs.token }}
-        FILES:         ${{ steps.files.outputs.files }}
+        FILES_PATH:    ${{ steps.files.outputs.files-path }}
         LIST_COMPLETE: ${{ steps.files.outputs.complete }}
         ACTION_PATH:   ${{ github.action_path }}
       run: '"$ACTION_PATH/dependency-check.sh"'

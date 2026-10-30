@@ -51,7 +51,7 @@ lint() {
       SQUAWK="$WORK/bin/squawk" STUB_ARGS="$WORK/args" \
       MIGRATIONS_PATH="${MIGRATIONS_PATH-supabase/migrations}" EXCLUDED_RULES="${EXCLUDED_RULES-}" \
       BLOCKING="${BLOCKING-false}" NUMBER="${NUMBER-7}" \
-      CHANGED_FILES="${CHANGED_FILES-}" LIST_COMPLETE="${LIST_COMPLETE-true}" \
+      CHANGED_FILES="${CHANGED_FILES-}" CHANGED_FILES_PATH="${CHANGED_FILES_PATH-}" LIST_COMPLETE="${LIST_COMPLETE-true}" \
       STUB_MODE="${STUB_MODE-clean}" GITHUB_STEP_SUMMARY="$WORK/summary" \
       "$HERE/lint.sh") > "$WORK/out" 2>&1
   rc=$?
@@ -78,6 +78,10 @@ eq "only the migration is linted" "supabase/migrations/1_a.sql" "$(grep '\.sql' 
 
 CHANGED_FILES="$LISTED" MIGRATIONS_PATH='./supabase/migrations/' lint "a path with ./ and a trailing slash" 0
 eq "the path is normalised" "2" "$(grep -c '\.sql' "$WORK/args")"
+
+printf '%s\n' src/app.ts "$LISTED" > "$WORK/list"
+CHANGED_FILES_PATH="$WORK/list" lint "the list read from CHANGED_FILES_PATH" 0
+eq "both migrations in the file are linted" "2" "$(grep -c '\.sql' "$WORK/args")"
 
 CHANGED_FILES=$'supabase/migrations/odd[1]*.sql' lint "a glob character in a name" 0
 has "is escaped so squawk reads the file, not a pattern" "$WORK/args" 'supabase/migrations/odd[[]1][*].sql'

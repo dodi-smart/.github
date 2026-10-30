@@ -49,7 +49,7 @@ runs:
       env:
         LCOV_FILE:     ${{ inputs.path }}
         ROOT:          ${{ inputs.source-root || github.workspace }}
-        CHANGED_FILES: ${{ steps.files.outputs.files }}
+        CHANGED_FILES_PATH: ${{ steps.files.outputs.files-path }}
         MIN_OVERALL:   ${{ inputs.min-overall }}
         MIN_CHANGED:   ${{ inputs.min-changed }}
         OUT:           ${{ runner.temp }}/lcov-report.md

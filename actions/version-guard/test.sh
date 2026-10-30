@@ -144,6 +144,14 @@ guard "an incomplete file list: a warning, not a block"       skip   FILES=packa
 grep -q '^::warning title=Version guard::' "$WORK/log" && ok "the incomplete list is a warning" || bad "the incomplete list is silent"
 guard "a file that cannot be read: a warning, not a pass in silence" pass FILES=package.json FAKE_FAIL=package.json
 grep -q '^::warning title=Version guard::package.json could not be read' "$WORK/log" && ok "the unreadable file is named" || bad "the unreadable file is silent"
+# Thousands of long paths, past the 128 KiB a single environment string may hold.
+for i in $(seq 1 4000); do printf 'packages/some-rather-long-directory-name/src/components/file-%s.ts\n' "$i"; done > "$WORK/big"
+echo package.json >> "$WORK/big"
+put head package.json "$(pkg 1.9.1)"
+[ "$(wc -c < "$WORK/big")" -gt 131072 ] && ok "the big list is over 128 KiB" || bad "the big list is under 128 KiB"
+guard "a list past 128 KiB, read from FILES_PATH"            reject FILES_PATH="$WORK/big"
+: > "$WORK/none"
+guard "FILES_PATH wins over FILES"                            pass   FILES_PATH="$WORK/none" FILES=package.json
 guard "a push is skipped"                                     skip   EVENT=push
 
 printf '\n%s passed, %s failed\n' "$pass" "$fail"

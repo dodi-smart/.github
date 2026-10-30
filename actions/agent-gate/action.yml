@@ -68,6 +68,11 @@ inputs:
   changed-files:
     description: 'Newline-separated changed files. When given, a docs-only change stops the run.'
     default: ''
+  changed-files-path:
+    description: >-
+      A file of the changed files, one per line: actions/changed-files' `files-path`.
+      Use it, not `changed-files`, which a large pull request cannot pass.
+    default: ''
 
 outputs:
   proceed:
@@ -112,6 +117,7 @@ runs:
         BOTS:     ${{ inputs.bots }}
         EVENTS:   ${{ inputs.events }}
         SKIPDRAFT: ${{ inputs.skip-draft }}
-        FILES:    ${{ inputs.changed-files }}
+        FILES:    ${{ inputs.changed-files-path == '' && inputs.changed-files || '' }}
+        FILES_PATH: ${{ inputs.changed-files-path }}
         ACTION_PATH: ${{ github.action_path }}
       run: '"$ACTION_PATH/gate.sh"'

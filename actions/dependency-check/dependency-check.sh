@@ -34,8 +34,9 @@
 #
 # Env: LOCKFILES (newline list; overrides the computed one), AUTHOR_KIND
 # (action.yml classifies the author), FAIL_ON, REPO, NUMBER, BASE_SHA, GH_TOKEN,
-# FILES and LIST_COMPLETE (changed-files' `files` and `complete`: every changed
-# path, and whether the list was read in full), OSV_SCANNER (a binary to use
+# FILES_PATH and LIST_COMPLETE (changed-files' `files-path` and `complete`: a file
+# of every changed path, and whether the list was read in full), FILES (the list
+# itself, for a caller with no path), OSV_SCANNER (a binary to use
 # instead of installing one). Writes a short report to $GITHUB_STEP_SUMMARY and
 # logs a one-line verdict. test.sh runs it with a fake binary and gh.
 set -euo pipefail
@@ -129,6 +130,7 @@ elif [ -z "${NUMBER:-}" ]; then
   skip "not a pull request, so there is no base to compare against"
 else
   files="${FILES:-}"
+  [ -z "${FILES_PATH:-}" ] || files=$(<"$FILES_PATH")
   if [ "${LIST_COMPLETE:-}" != true ]; then
     # changed-files could not read the list in full (an API error, an empty list,
     # the 3000-file cap). That does not say no lockfile changed, so look at every

@@ -115,6 +115,7 @@ esac
 
 # RULE 3, docs-only. Passed in rather than computed, because the
 # caller already has the diff and a second checkout is not free.
+[ -z "${FILES_PATH:-}" ] || FILES=$(<"$FILES_PATH")
 if [ -n "${FILES:-}" ]; then
   if ! printf '%s\n' "$FILES" | grep -qvE '(\.md$|^docs/)'; then
     stop "docs only"

@@ -4,9 +4,14 @@ name: Version guard
 description: Fail a pull request that sets a version lower than its base already has.
 
 inputs:
+  files-path:
+    description: >-
+      A file of the pull request's changed paths, one per line: actions/changed-files'
+      `files-path` output. Use it, not `files`, which a large pull request cannot pass.
+    default: ''
   files:
-    description: "The pull request's changed paths, one per line: actions/changed-files' `files` output."
-    required: true
+    description: "The changed paths themselves, one per line, for a caller that has no `files-path`. Ignored when `files-path` is given."
+    default: ''
   complete:
     description: "actions/changed-files' `complete` output. Anything but `true` skips the check with a warning."
     required: true
@@ -28,7 +33,8 @@ runs:
     - id: guard
       shell: bash
       env:
-        FILES:       ${{ inputs.files }}
+        FILES_PATH:  ${{ inputs.files-path }}
+        FILES:       ${{ inputs.files-path == '' && inputs.files || '' }}
         COMPLETE:    ${{ inputs.complete }}
         EVENT:       ${{ github.event_name }}
         REPO:        ${{ inputs.repository }}

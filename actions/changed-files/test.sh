@@ -8,6 +8,7 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SCRIPT="$HERE/changed-files.sh"
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/changed-files-test.XXXXXX")"
 trap 'rm -rf "$WORK"' EXIT
+export RUNNER_TEMP="$WORK"   # where changed-files.sh writes files-path
 pass=0; fail=0
 
 mkdir "$WORK/bin"
@@ -129,6 +130,18 @@ if grep -qxF 'matched=true' "$out" && [ "$(sed -n '/^files</,$p' "$out")" = "$wa
 else
   bad "files output lists both names of a rename" "$(cat "$out")"
 fi
+fpath="$(sed -n 's/^files-path=//p' "$out")"
+if [ -f "$fpath" ] && [ "$(cat "$fpath")" = $'src/a.ts\nsupabase/migrations/1.sql' ]; then
+  ok "files-path holds the same list"
+else
+  bad "files-path holds the same list" "${fpath:-<none>}"
+fi
+: > "$out"
+env PATH="$WORK/bin:$PATH" FAKE_GH_FILE="$WORK/irrelevant" GITHUB_OUTPUT="$out" REPO=o/r NUMBER=1 FAKE_GH_FAIL=1 \
+  "$SCRIPT" > /dev/null 2>&1
+fpath="$(sed -n 's/^files-path=//p' "$out")"
+if [ -f "$fpath" ] && [ ! -s "$fpath" ]; then ok "files-path is an empty file when the list was not read"
+else bad "files-path is an empty file when the list was not read" "${fpath:-<none>}"; fi
 
 # The gate jobs run on an image that guarantees bash, gh and jq only.
 if grep -q 'python' "$SCRIPT"; then bad "no python3 dependency" "changed-files.sh mentions python"; else ok "no python3 dependency"; fi

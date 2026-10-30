@@ -1,3 +1,9 @@
+## [1.44.8](https://github.com/dodi-smart/.github/compare/v1.44.7...v1.44.8) (2026-10-30)
+
+### 🐛 Bug Fixes
+
+* **changed-files,version-guard:** pass the changed-file list by path so a large PR cannot break a step ([#221](https://github.com/dodi-smart/.github/issues/221)) ([9c18d47](https://github.com/dodi-smart/.github/commit/9c18d47abd0ff45facb05a42f2f52caa73e58e2b)), closes [#220](https://github.com/dodi-smart/.github/issues/220)
+
 ## [1.44.7](https://github.com/dodi-smart/.github/compare/v1.44.6...v1.44.7) (2026-10-27)
 
 ### 🐛 Bug Fixes

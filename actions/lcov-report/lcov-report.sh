@@ -10,7 +10,8 @@
 # LCOV paths are the test runner's, often absolute. ROOT is that runner's
 # workspace, which is not this job's: the report was written on another machine.
 #
-# Reads its inputs from the environment and writes overall/changed/failed to
+# CHANGED_FILES_PATH is changed-files' `files-path`; CHANGED_FILES, the list itself,
+# serves a caller with no path. Reads its inputs from the environment and writes overall/changed/failed to
 # $GITHUB_OUTPUT. It never exits non-zero for a breached floor, so the comment
 # can be posted first; the action fails the job from `failed` afterwards.
 # action.yml is a thin wrapper; test.sh runs this script directly.
@@ -28,7 +29,10 @@ if [ ! -f "$LCOV_FILE" ]; then
   exit 1
 fi
 
-LCOV_FILE="$LCOV_FILE" ROOT="${ROOT:-}" CHANGED="${CHANGED_FILES:-}" \
+# awk reads the changed-file list as a file, never from its environment, where a
+# large pull request's list is too long to pass. Without a path, stdin carries it.
+printf '%s\n' "${CHANGED_FILES:-}" |
+LCOV_FILE="$LCOV_FILE" ROOT="${ROOT:-}" CHANGED="${CHANGED_FILES_PATH:-/dev/stdin}" \
 MIN_OVERALL="${MIN_OVERALL:-0}" MIN_CHANGED="${MIN_CHANGED:-0}" OUT="$OUT" \
 awk '
 function norm(p) {
@@ -47,8 +51,7 @@ function clean(s) { gsub(/[|`\r]/, "", s); return s }
 function floor_(m) { return m > 0 ? m "%" : "none" }
 BEGIN {
   ROOT = ENVIRON["ROOT"]; sub(/\/+$/, "", ROOT)
-  n = split(ENVIRON["CHANGED"], list, "\n")
-  for (i = 1; i <= n; i++) { c = norm(list[i]); if (c != "") { changed[c] = 1; nlisted++ } }
+  while ((getline line < ENVIRON["CHANGED"]) > 0) { c = norm(line); if (c != "") { changed[c] = 1; nlisted++ } }
   min_o = ENVIRON["MIN_OVERALL"] + 0; min_c = ENVIRON["MIN_CHANGED"] + 0
   cur = ""
   while ((getline line < ENVIRON["LCOV_FILE"]) > 0) {

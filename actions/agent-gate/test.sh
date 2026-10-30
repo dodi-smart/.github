@@ -56,6 +56,9 @@ case_ false "docs-only change"                  '[]' pull_request ready_for_revi
 docs/x.md'
 case_ true  "docs + code"                       '[]' pull_request ready_for_review '' agent:review alice false '' '' reject true 'README.md
 src/a.ts'
+printf 'README.md\ndocs/x.md\n' > "$TMP/docs"; printf 'README.md\nsrc/a.ts\n' > "$TMP/mixed"
+FILES_PATH="$TMP/docs"  case_ false "docs-only change, from changed-files-path" '[]' pull_request ready_for_review '' agent:review alice false '' '' reject true ''
+FILES_PATH="$TMP/mixed" case_ true  "docs + code, from changed-files-path"      '[]' pull_request ready_for_review '' agent:review alice false '' '' reject true ''
 case_ true  "labeled agent:review"              '["agent:review"]' pull_request labeled agent:review agent:review alice false '' '' reject true 'src/a.ts'
 
 echo "== deps-verify (bots: only) =="

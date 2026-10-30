@@ -8,7 +8,8 @@
 # Only the version keys the pull request itself changes count: a feature branch
 # cut before the base's last prerelease still carries the older version line,
 # but never touched it, so the merge keeps the base's. For each version file in
-# FILES (actions/changed-files' list; versions.pl says which are version files),
+# FILES_PATH (actions/changed-files' `files-path`; FILES, the list itself, for a
+# caller with no path; versions.pl says which are version files),
 # compare, through the API so this needs no checkout, the base as it is now
 # with the head. Only when the head is lower is the merge base read, to tell a
 # line the pull request lowered from one it never touched.
@@ -51,6 +52,7 @@ if [ "${COMPLETE:-}" != true ]; then
   emit skip "the changed files could not be read in full"
   exit 0
 fi
+[ -z "${FILES_PATH:-}" ] || FILES=$(<"$FILES_PATH")
 files=$(printf '%s\n' "${FILES:-}" | perl "$VERSIONS" files)
 if [ -z "$files" ]; then
   emit pass "no version file changed"

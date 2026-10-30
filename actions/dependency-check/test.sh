@@ -126,6 +126,12 @@ expect "no lockfile changed is skipped" result skipped
 expect_in "the summary says no lockfile changed" "$SUMM" "no lockfile it can check changed"
 expect "nothing counted when skipped" new 0
 
+# The list read from changed-files' files-path, as action.yml passes it.
+fresh; put ios/App.xcworkspace/xcshareddata/swiftpm/Package.resolved head-clean; fx head-clean 0
+printf 'README.md\nios/App.xcworkspace/xcshareddata/swiftpm/Package.resolved\n' > "$WORK/list"
+run FILES_PATH="$WORK/list"
+expect_scans "a lockfile listed in FILES_PATH is scanned" 1
+
 # SwiftPM's lockfile is scanned like any other.
 fresh; put ios/App.xcworkspace/xcshareddata/swiftpm/Package.resolved head-clean; fx head-clean 0
 run FILES=ios/App.xcworkspace/xcshareddata/swiftpm/Package.resolved

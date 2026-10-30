@@ -16,8 +16,8 @@
 # than from `matched`: `true` only when the whole list was read, so `files` is
 # every changed path. It is `false` on the same doubts, whatever the patterns.
 #
-# Reads its inputs from the environment and writes files/matched/all-matched/
-# complete to $GITHUB_OUTPUT. action.yml is a thin wrapper; test.sh runs `--names`, `--match`
+# Reads its inputs from the environment and writes files/files-path/matched/
+# all-matched/complete to $GITHUB_OUTPUT. action.yml is a thin wrapper; test.sh runs `--names`, `--match`
 # and `--all` directly.
 set -euo pipefail
 
@@ -73,13 +73,20 @@ esac
 : "${REPO:?}"
 out="${GITHUB_OUTPUT:-/dev/stdout}"
 
+# The list also goes to a file, `files-path`. Linux caps one environment string at
+# 128 KiB, and a few thousand paths in an `env:` stop the next step's shell from
+# starting at all ("Argument list too long"), so a step reads the file instead.
 finish() { # matched, files, all-matched (false unless given), complete (false unless given)
+  local path
+  path=$(mktemp "${RUNNER_TEMP:-${TMPDIR:-/tmp}}/changed-files.XXXXXX")
+  [ -z "$2" ] || printf '%s\n' "$2" > "$path"
   {
     echo "matched=$1"
     echo "all-matched=${3:-false}"
     echo "complete=${4:-false}"
+    echo "files-path=$path"
     echo "files<<CHANGED_FILES_EOF"
-    [ -z "$2" ] || printf '%s\n' "$2"
+    cat "$path"
     echo "CHANGED_FILES_EOF"
   } >> "$out"
   echo "matched=$1 all-matched=${3:-false} complete=${4:-false}"

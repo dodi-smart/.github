@@ -22,7 +22,8 @@
 # `excluded_rules` rather than adding to it, so EXCLUDED_RULES, when set, wins.
 #
 # Env: MIGRATIONS_PATH, EXCLUDED_RULES, BLOCKING, NUMBER (the pull request, empty
-# for any other event), CHANGED_FILES (newline-separated), LIST_COMPLETE.
+# for any other event), CHANGED_FILES_PATH (changed-files'
+# `files-path`) or CHANGED_FILES (the list itself), LIST_COMPLETE.
 # test.sh sets SQUAWK to a stub; otherwise squawk is installed by install.sh.
 set -euo pipefail
 
@@ -58,6 +59,7 @@ files=()
 if [ "${LIST_COMPLETE:-false}" = true ]; then
   # A deleted file, and the old name of a renamed one, are in the list but not
   # in the checkout, so the existence test drops them.
+  [ -z "${CHANGED_FILES_PATH:-}" ] || CHANGED_FILES=$(<"$CHANGED_FILES_PATH")
   while IFS= read -r f; do
     [ -n "$f" ] || continue
     case "$f" in "$path"/*.sql) ;; *) continue ;; esac

@@ -156,7 +156,7 @@ jobs:
           BASE:      ${{ github.event.pull_request.base.sha }}
           HEAD:      ${{ github.event.pull_request.head.sha }}
           LABELS:    ${{ toJson(github.event.pull_request.labels.*.name) }}
-          FILES:     ${{ steps.changed.outputs.files }}
+          FILES_PATH: ${{ steps.changed.outputs.files-path }}
           DOCS_ONLY: ${{ steps.changed.outputs.all-matched }}
           SENSITIVE: ${{ inputs.sensitive-paths }}
           LEVEL:     ${{ inputs.level }}
@@ -180,7 +180,7 @@ jobs:
           fi
 
           if [ "$proceed" = "true" ]; then
-            files="$FILES"
+            files=$(<"$FILES_PATH")
             if [ -z "$files" ]; then
               proceed=false; reason="no changed files"
             elif [ "$DOCS_ONLY" = "true" ]; then

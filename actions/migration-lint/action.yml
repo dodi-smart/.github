@@ -44,7 +44,7 @@ runs:
         EXCLUDED_RULES:  ${{ inputs.excluded-rules }}
         BLOCKING:        ${{ inputs.blocking }}
         NUMBER:          ${{ github.event.pull_request.number }}
-        CHANGED_FILES:   ${{ steps.changed.outputs.files }}
+        CHANGED_FILES_PATH: ${{ steps.changed.outputs.files-path }}
         LIST_COMPLETE:   ${{ steps.changed.outputs.complete }}
         GH_TOKEN:        ${{ inputs.token }}
         ACTION_PATH:     ${{ github.action_path }}

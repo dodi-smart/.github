@@ -29,6 +29,12 @@ outputs:
       Changed paths, one per line. A renamed file appears under both names. Empty
       when the list was not read.
     value: ${{ steps.list.outputs.files }}
+  files-path:
+    description: >-
+      A file under $RUNNER_TEMP holding `files`, empty when the list was not read.
+      Pass this, not `files`, to a step's `env:`: Linux caps one environment string
+      at 128 KiB, and a large pull request's list stops the step from starting.
+    value: ${{ steps.list.outputs.files-path }}
   matched:
     description: >-
       `true` when any changed file matches `patterns`, and whenever that cannot be

@@ -199,12 +199,12 @@ jobs:
       coverage:  ${{ steps.plan.outputs.coverage }}
       key:       ${{ steps.key.outputs.key }}
     steps:
-      - uses: dodi-smart/.github/actions/runner-report@v1
+      - uses: dodi-smart/.github/actions/runner-report@pinned/v1.44.8
       # A pull request aimed at the release branch that is neither a release nor
       # an opted-in security patch fails HERE, so `PR Checks` goes red without
       # booking a build runner. Does nothing on any other base, and where the
       # release branch is the default branch.
-      - uses: dodi-smart/.github/actions/target-guard@v1
+      - uses: dodi-smart/.github/actions/target-guard@pinned/v1.44.8
         with:
           release-branch: ${{ inputs.release-branch }}
       # Artifact names are per run and a caller may call this workflow twice, so
@@ -225,7 +225,7 @@ jobs:
       # Whether `test` and `build` have a command, so an empty one never starts a
       # large runner. Bash only, no checkout; an unknown stack fails here.
       - id: cmds
-        uses: dodi-smart/.github/actions/setup-stack/resolve@v1
+        uses: dodi-smart/.github/actions/setup-stack/resolve@pinned/v1.44.8
         with:
           stack: ${{ inputs.stack }}
           test:  ${{ inputs.test }}
@@ -234,31 +234,31 @@ jobs:
       # `all-matched` is `true` only when the whole list was read and every file
       # matches; any doubt (no PR, API error, empty list, the cap) is `false`.
       - id: docs
-        uses: dodi-smart/.github/actions/changed-files@v1
+        uses: dodi-smart/.github/actions/changed-files@pinned/v1.44.8
         with:
           patterns: ${{ inputs.docs-only-paths }}
 
       # Fails a pull request that lowers a version its base already has, from
       # the list just read (actions/version-guard).
-      - uses: dodi-smart/.github/actions/version-guard@v1
+      - uses: dodi-smart/.github/actions/version-guard@pinned/v1.44.8
         with:
           files-path: ${{ steps.docs.outputs.files-path }}
           complete:   ${{ steps.docs.outputs.complete }}
 
       - id: rd
         if: ${{ inputs.react-doctor }}
-        uses: dodi-smart/.github/actions/changed-files@v1
+        uses: dodi-smart/.github/actions/changed-files@pinned/v1.44.8
         with:
           patterns: ${{ inputs.react-doctor-paths }}
 
       # Static (no API call, no token), so both always run and the plan below
       # gives each lane the one it needs.
       - id: light
-        uses: dodi-smart/.github/actions/pick-runner@v1
+        uses: dodi-smart/.github/actions/pick-runner@pinned/v1.44.8
         with:
           weight: ${{ inputs.light-weight }}
       - id: heavy
-        uses: dodi-smart/.github/actions/pick-runner@v1
+        uses: dodi-smart/.github/actions/pick-runner@pinned/v1.44.8
         with:
           weight: ${{ inputs.heavy-weight }}
 
@@ -266,7 +266,7 @@ jobs:
       # The iOS label is read from the event, so one added after the last push
       # needs `labeled` in the caller's types.
       - id: plan
-        uses: dodi-smart/.github/actions/pr-checks-plan@v1
+        uses: dodi-smart/.github/actions/pr-checks-plan@pinned/v1.44.8
         with:
           stack:            ${{ inputs.stack }}
           single-job:       ${{ inputs.single-job }}
@@ -310,7 +310,7 @@ jobs:
     # pull-requests: commitlint's commit list, dependency-check's changed files, zavet's author, React Doctor's API fallback
     permissions: { contents: read, pull-requests: read }
     steps:
-      - uses: dodi-smart/.github/actions/runner-report@v1
+      - uses: dodi-smart/.github/actions/runner-report@pinned/v1.44.8
         with:
           selector: ${{ matrix.runs_on }}
       # Full history only where zavet or React Doctor runs: zavet's guards walk
@@ -329,7 +329,7 @@ jobs:
           persist-credentials: false
           clean: ${{ !(inputs.stack == 'flutter' && runner.environment == 'self-hosted' && runner.os == 'Linux') }}
       - if: ${{ steps.checkout.outcome == 'success' && inputs.stack == 'flutter' }}
-        uses: dodi-smart/.github/actions/dart-hooks-cache@v1
+        uses: dodi-smart/.github/actions/dart-hooks-cache@pinned/v1.44.8
         with:
           toolchain: ${{ inputs.flutter-version }}
       # One setup for every lane, the Mac included: only the inputs that differ
@@ -337,7 +337,7 @@ jobs:
       # phases step below reads the ones its lane runs.
       - id: setup
         if: ${{ contains(matrix.phases, 'install') }}
-        uses: dodi-smart/.github/actions/setup-stack@v1
+        uses: dodi-smart/.github/actions/setup-stack@pinned/v1.44.8
         with:
           stack:             ${{ inputs.stack }}
           isolate:           false
@@ -367,12 +367,12 @@ jobs:
       - id: install
         name: Run phases (install)
         if: ${{ matrix.hk }}
-        uses: dodi-smart/.github/actions/run-phases@v1
+        uses: dodi-smart/.github/actions/run-phases@pinned/v1.44.8
         with:
           env-file: ${{ steps.setup.outputs.env-file }}
           install:  ${{ steps.setup.outputs.install }}
       - if: ${{ matrix.hk }}
-        uses: dodi-smart/.github/actions/hk-check@v1
+        uses: dodi-smart/.github/actions/hk-check@pinned/v1.44.8
         with:
           cache:         ${{ steps.setup.outputs.cache-enabled }}
           cache-save:    ${{ steps.setup.outputs.cache-save }}
@@ -384,7 +384,7 @@ jobs:
       - id: phases
         name: Run phases
         if: ${{ contains(matrix.phases, 'install') && (success() || (matrix.hk && !cancelled() && steps.install.outcome == 'success')) }}
-        uses: dodi-smart/.github/actions/run-phases@v1
+        uses: dodi-smart/.github/actions/run-phases@pinned/v1.44.8
         with:
           env-file:       ${{ steps.setup.outputs.env-file }}
           build-env-file: ${{ steps.setup.outputs.build-env-file }}
@@ -425,7 +425,7 @@ jobs:
       # checkout so a red lint does not hide it.
       - name: Dependency check
         if: ${{ !cancelled() && matrix.dependency_check && steps.checkout.outcome == 'success' }}
-        uses: dodi-smart/.github/actions/dependency-check@v1
+        uses: dodi-smart/.github/actions/dependency-check@pinned/v1.44.8
         with:
           fail-on: ${{ inputs.dependency-check-fail-on }}
       # In `checks` or `all` it reuses the lane's toolchain and install (the env
@@ -441,7 +441,7 @@ jobs:
         name: Zavet Check
         if: ${{ !cancelled() && matrix.zavet && steps.checkout.outcome == 'success' && steps.setup.outcome != 'failure' && steps.install.outcome != 'failure' && !contains(steps.phases.outputs.failed, 'install') }}
         continue-on-error: ${{ !inputs.zavet-blocking }}
-        uses: dodi-smart/.github/actions/zavet-check@v1
+        uses: dodi-smart/.github/actions/zavet-check@pinned/v1.44.8
         with:
           zavet-dir:       ${{ inputs.zavet-dir }}
           stack:           ${{ inputs.zavet-stack }}
@@ -470,7 +470,7 @@ jobs:
         name: React Doctor
         if: ${{ !cancelled() && matrix.react_doctor && steps.checkout.outcome == 'success' }}
         continue-on-error: ${{ !inputs.react-doctor-blocking }}
-        uses: dodi-smart/.github/actions/react-doctor@v1
+        uses: dodi-smart/.github/actions/react-doctor@pinned/v1.44.8
         with:
           directory: ${{ inputs.react-doctor-directory }}
           blocking:  ${{ inputs.react-doctor-blocking && 'error' || 'none' }}
@@ -488,7 +488,7 @@ jobs:
       # request to list commits from, so it skips.
       - name: commitlint
         if: ${{ !cancelled() && matrix.commitlint && github.event.pull_request }}
-        uses: dodi-smart/.github/actions/commitlint@v1
+        uses: dodi-smart/.github/actions/commitlint@pinned/v1.44.8
         with:
           config: ${{ inputs.commitlint-config }}
           number: ${{ github.event.pull_request.number }}
@@ -510,10 +510,10 @@ jobs:
     timeout-minutes: 5
     permissions: { contents: read, pull-requests: write }   # pull-requests: the zavet, React Doctor and coverage comments
     steps:
-      - uses: dodi-smart/.github/actions/runner-report@v1
+      - uses: dodi-smart/.github/actions/runner-report@pinned/v1.44.8
       # The "Where it ran" table for every job of this run attempt, before the
       # summary, which exits non-zero on a red run.
-      - uses: dodi-smart/.github/actions/runner-report@v1
+      - uses: dodi-smart/.github/actions/runner-report@pinned/v1.44.8
         with:
           mode: run
 
@@ -543,7 +543,7 @@ jobs:
           done >> "$GITHUB_OUTPUT"
       - if: steps.comments.outputs.zavet != ''
         continue-on-error: true
-        uses: dodi-smart/.github/actions/sticky-comment@v1
+        uses: dodi-smart/.github/actions/sticky-comment@pinned/v1.44.8
         with:
           key:       zavet-check
           number:    ${{ github.event.pull_request.number }}
@@ -551,7 +551,7 @@ jobs:
           delete:    ${{ steps.comments.outputs.zavet == 'delete' }}
       - if: steps.comments.outputs.react-doctor != ''
         continue-on-error: true
-        uses: dodi-smart/.github/actions/sticky-comment@v1
+        uses: dodi-smart/.github/actions/sticky-comment@pinned/v1.44.8
         with:
           key:       react-doctor
           number:    ${{ github.event.pull_request.number }}
@@ -583,7 +583,7 @@ jobs:
           json-final-path:   ${{ runner.temp }}/pr-checks-coverage/report/coverage-final.json
           file-coverage-root-path: ${{ steps.writer.outputs.workspace }}
       - if: steps.coverage.outcome == 'success' && inputs.coverage == 'lcov'
-        uses: dodi-smart/.github/actions/lcov-report@v1
+        uses: dodi-smart/.github/actions/lcov-report@pinned/v1.44.8
         with:
           path:        ${{ runner.temp }}/pr-checks-coverage/report/*
           source-root: ${{ steps.writer.outputs.workspace }}
@@ -603,7 +603,7 @@ jobs:
       # kover-report only comments on a breached minimum, so the overall floor is
       # enforced here; the changed-files floor stays comment-only.
       - if: steps.kover.outcome == 'success'
-        uses: dodi-smart/.github/actions/kover-floor@v1
+        uses: dodi-smart/.github/actions/kover-floor@pinned/v1.44.8
         with:
           overall:     ${{ steps.kover.outputs.coverage-overall }}
           min-overall: ${{ inputs.coverage-min-overall }}
@@ -612,7 +612,7 @@ jobs:
 
       - name: Summarize
         if: ${{ !cancelled() }}
-        uses: dodi-smart/.github/actions/pr-checks-summary@v1
+        uses: dodi-smart/.github/actions/pr-checks-summary@pinned/v1.44.8
         with:
           needs:     ${{ toJSON(needs) }}
           docs-only: ${{ needs.pick.outputs.docs_only }}

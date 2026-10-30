@@ -88,7 +88,7 @@ jobs:
       checks: read          # the required check run
       statuses: read        # review / verdict and the standards statuses
     steps:
-      - uses: dodi-smart/.github/actions/runner-report@v1
+      - uses: dodi-smart/.github/actions/runner-report@pinned/v1.44.8
         with:
           selector: '["self-hosted","Linux","light"]'
 
@@ -107,7 +107,7 @@ jobs:
             && (startsWith(github.event.branches[0].name, 'renovate/') || startsWith(github.event.branches[0].name, 'dependabot/')))
           || (github.event_name == 'workflow_run'
             && (startsWith(github.event.workflow_run.head_branch, 'renovate/') || startsWith(github.event.workflow_run.head_branch, 'dependabot/'))))
-        uses: dodi-smart/.github/actions/merge-gate@v1
+        uses: dodi-smart/.github/actions/merge-gate@pinned/v1.44.8
         with:
           policy:         deps
           required-check: ${{ inputs.required-check }}
@@ -128,7 +128,7 @@ jobs:
             && github.event.label.name == 'backmerge:regenerated'
             && github.event.pull_request.head.repo.full_name == github.repository
             && startsWith(github.event.pull_request.head.ref, 'chore/backmerge-')))
-        uses: dodi-smart/.github/actions/merge-gate@v1
+        uses: dodi-smart/.github/actions/merge-gate@pinned/v1.44.8
         with:
           policy:         backmerge
           required-check: ${{ inputs.required-check }}
@@ -155,7 +155,7 @@ jobs:
             && github.event.context == 'review / verdict'
             && (startsWith(github.event.branches[0].name, 'fix/security-')
               || startsWith(github.event.branches[0].name, format('renovate/{0}-', inputs.release-branch)))))
-        uses: dodi-smart/.github/actions/merge-gate@v1
+        uses: dodi-smart/.github/actions/merge-gate@pinned/v1.44.8
         with:
           policy:         hotfix
           required-check: ${{ inputs.required-check }}
@@ -172,7 +172,7 @@ jobs:
           || (github.event_name == 'status'
             && contains(fromJson('["review / verdict","standards / verify","standards / render"]'), github.event.context)
             && github.event.branches[0].name == 'chore/standards-sync'))
-        uses: dodi-smart/.github/actions/merge-gate@v1
+        uses: dodi-smart/.github/actions/merge-gate@pinned/v1.44.8
         with:
           policy:         standards-sync
           required-check: ${{ inputs.required-check }}

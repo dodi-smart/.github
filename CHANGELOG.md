@@ -1,3 +1,10 @@
+## [1.44.9](https://github.com/dodi-smart/.github/compare/v1.44.8...v1.44.9) (2026-11-05)
+
+### ⬆️ Dependencies
+
+* **deps:** update dependency cyclonedx/cdxgen to v13.5.0 ([#223](https://github.com/dodi-smart/.github/issues/223)) ([e3bb040](https://github.com/dodi-smart/.github/commit/e3bb040ca0e8c960f9743513582d80fa046eeb4d))
+* **deps:** update dependency firebase-tools to v15.34.2 ([#222](https://github.com/dodi-smart/.github/issues/222)) ([6aacdaa](https://github.com/dodi-smart/.github/commit/6aacdaa3f97cd4875db471e4c76562ee8b72936a))
+
 ## [1.44.8](https://github.com/dodi-smart/.github/compare/v1.44.7...v1.44.8) (2026-10-30)
 
 ### 🐛 Bug Fixes

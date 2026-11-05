@@ -359,9 +359,10 @@ release notes are the GitHub Release's body. An empty body becomes `Release
 | `op-key-password` | *(required)* | Reference of the key password |
 | `op-firebase-credentials` | `""` | Reference of the Firebase service-account JSON. Required with `firebase-app-id` |
 | `firebase-app-id` | `""` | Firebase app id. Empty builds, signs and attaches the APKs and distributes nothing |
+| `firebase-apk` | `""` | The APK to distribute when `apk-glob` matches several, for a repo with more than one application module. Its exact path relative to the workspace, never a glob. Anything but a signed match fails before the upload. Empty needs `apk-glob` to match exactly one |
 | `firebase-groups` | `""` | Comma-separated tester group aliases. Empty uploads the build to nobody |
 | `gradle-task` | `assembleRelease` | Run as `./gradlew <gradle-task>`, split on spaces |
-| `apk-glob` | `**/build/outputs/apk/release/*.apk` | Newline-separated globs of the built APKs. Zero matches fails; an APK with `unsigned` in its name is ignored; every match is attached, but Firebase takes one, so more than one fails the distribution after the upload |
+| `apk-glob` | `**/build/outputs/apk/release/*.apk` | Newline-separated globs of the built APKs. Zero matches fails; an APK with `unsigned` in its name is ignored; every match is attached, but Firebase takes one, so more than one fails the distribution after the upload unless `firebase-apk` names it |
 | `env` | `""` | Newline-separated `KEY=VALUE` applied to the build through setup-stack, parsed as in `pr-checks.yml`. Tuning and placeholders only, never secrets |
 | `environment` | `""` | A GitHub environment in the caller's repo, as in `supabase-deploy.yml`. Empty means none |
 | `timeout-minutes` | `45` | Job timeout |

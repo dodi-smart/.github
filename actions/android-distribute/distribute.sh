@@ -7,6 +7,8 @@
 #   TAG                    the release tag the APKs belong to (required)
 #   APK_GLOB               newline-separated globs, `**` allowed (default below)
 #   FIREBASE_APP_ID        empty skips distribution; the APKs are still attached
+#   FIREBASE_APK           the matched APK to distribute, as its exact path; empty
+#                          means APK_GLOB has to match exactly one
 #   FIREBASE_GROUPS        comma-separated group aliases; empty distributes to nobody
 #   FIREBASE_TOOLS_VERSION exact version, run through npx (required with an app id)
 #   CREDENTIALS_FILE       service-account JSON, required with an app id
@@ -29,6 +31,7 @@ fi
 TAG="${TAG:-}"
 APK_GLOB="${APK_GLOB:-**/build/outputs/apk/release/*.apk}"
 FIREBASE_APP_ID="${FIREBASE_APP_ID:-}"
+FIREBASE_APK="${FIREBASE_APK:-}"
 FIREBASE_GROUPS="${FIREBASE_GROUPS:-}"
 FIREBASE_TOOLS_VERSION="${FIREBASE_TOOLS_VERSION:-}"
 CREDENTIALS_FILE="${CREDENTIALS_FILE:-}"
@@ -86,9 +89,21 @@ dups="$(printf '%s\n' "${signed[@]}" | sed 's|.*/||' | sort | uniq -d)"
 # Decided before anything is uploaded, acted on after: the assets belong on the
 # release either way.
 mode=go
+target=""
 if [ -z "$FIREBASE_APP_ID" ]; then
+  [ -z "$FIREBASE_APK" ] || fail "firebase-apk is set with no firebase-app-id, so it has no app to go to. Nothing was uploaded."
   mode=skip
-elif [ "${#signed[@]}" -ne 1 ]; then
+elif [ -n "$FIREBASE_APK" ]; then
+  # Compared whole, never as a glob. A Firebase app accepts any APK it is handed,
+  # so which binary reaches it is the caller's exact choice. Only a signed match
+  # counts, and a wrong name stops here, before the release changes.
+  for f in "${signed[@]}"; do
+    [ "$f" != "$FIREBASE_APK" ] || target="$f"
+  done
+  [ -n "$target" ] || fail "firebase-apk '$FIREBASE_APK' is not one of the signed APKs apk-glob matched (${signed[*]}), so nothing was uploaded."
+elif [ "${#signed[@]}" -eq 1 ]; then
+  target="${signed[0]}"
+else
   mode=ambiguous
 fi
 
@@ -110,7 +125,7 @@ if [ "$mode" = skip ]; then
   exit 0
 fi
 if [ "$mode" = ambiguous ]; then
-  fail "${#signed[@]} APKs matched and Firebase App Distribution takes one binary per release, so none was distributed (all are attached to $TAG): ${signed[*]}. Narrow apk-glob to the one to distribute."
+  fail "${#signed[@]} APKs matched and Firebase App Distribution takes one binary per release, so none was distributed (all are attached to $TAG): ${signed[*]}. Narrow apk-glob to the one to distribute, or name it in firebase-apk."
 fi
 
 # --- the notes -----------------------------------------------------------------
@@ -136,7 +151,7 @@ else
 fi
 
 # --- Firebase ------------------------------------------------------------------
-args=( appdistribution:distribute "${signed[0]}" --app "$FIREBASE_APP_ID" --release-notes-file "$notes" )
+args=( appdistribution:distribute "$target" --app "$FIREBASE_APP_ID" --release-notes-file "$notes" )
 groups="$(printf '%s' "$FIREBASE_GROUPS" | tr -d '[:space:]')"
 [ -z "$groups" ] || args+=( --groups "$groups" )
 

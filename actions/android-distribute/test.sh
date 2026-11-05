@@ -67,7 +67,7 @@ body() { printf '%s' "$1" > "$FAKE_BODY_FILE"; }
 
 # run [VAR=value ...]: the script in the case's workspace. Sets RC; output in $OUT.
 run() {
-  ( cd "$CASE/ws" && env -u TAG -u REPO -u APK_GLOB -u FIREBASE_APP_ID -u FIREBASE_GROUPS -u FIREBASE_TOOLS_VERSION \
+  ( cd "$CASE/ws" && env -u TAG -u REPO -u APK_GLOB -u FIREBASE_APP_ID -u FIREBASE_GROUPS -u FIREBASE_APK -u FIREBASE_TOOLS_VERSION \
       -u CREDENTIALS_FILE -u GITHUB_REPOSITORY -u NOTES_MAX \
       PATH="$ROOT/bin:$PATH" RUNNER_TEMP="$CASE" \
       GITHUB_SERVER_URL=https://example.invalid "${ENVV[@]}" "$@" "$SCRIPT" ) > "$OUT" 2>&1
@@ -216,8 +216,71 @@ run FIREBASE_APP_ID=app FIREBASE_TOOLS_VERSION=15.32.1 CREDENTIALS_FILE="$CREDS"
 expect_rc 1 "several APKs with an app id fail the distribution"
 expect_calls "  after attaching both" 1 0
 expect_out "  and say which to narrow" "Narrow apk-glob"
+expect_out "  or which input names one" "firebase-apk"
 grep -q $'upload\tv1.2.3\tapp/build/outputs/apk/release/app-release.apk\tother/build/outputs/apk/release/other-release.apk\t' "$CALLS" \
   && ok "  both were uploaded in one call" || bad "  upload" "$(grep upload "$CALLS")"
+
+# Two application modules in one repo: both belong on the release, one on Firebase.
+new_case named
+apk app/build/outputs/apk/release/app-release.apk
+apk other/build/outputs/apk/release/other-release.apk
+run FIREBASE_APK=app/build/outputs/apk/release/app-release.apk FIREBASE_APP_ID=app FIREBASE_TOOLS_VERSION=15.32.1 CREDENTIALS_FILE="$CREDS"
+expect_rc 0 "firebase-apk picks one of several APKs"
+expect_calls "  upload once, distribute once" 1 1
+grep -q $'upload\tv1.2.3\tapp/build/outputs/apk/release/app-release.apk\tother/build/outputs/apk/release/other-release.apk\t' "$CALLS" \
+  && ok "  and every match is still attached" || bad "  attached" "$(grep upload "$CALLS")"
+grep -q $'^npx\t--yes\tfirebase-tools@15.32.1\tappdistribution:distribute\tapp/build/outputs/apk/release/app-release.apk\t--app\tapp\t' "$CALLS" \
+  && ok "  and Firebase gets the named one" || bad "  distributed" "$(grep '^npx' "$CALLS")"
+grep '^npx' "$CALLS" | grep -q other-release && bad "  and never the other" "$(grep '^npx' "$CALLS")" || ok "  and never the other"
+
+new_case named-second
+apk app/build/outputs/apk/release/app-release.apk
+apk other/build/outputs/apk/release/other-release.apk
+run FIREBASE_APK=other/build/outputs/apk/release/other-release.apk FIREBASE_APP_ID=app FIREBASE_TOOLS_VERSION=15.32.1 CREDENTIALS_FILE="$CREDS"
+expect_rc 0 "firebase-apk is not the first match by accident"
+grep -q $'\tappdistribution:distribute\tother/build/outputs/apk/release/other-release.apk\t' "$CALLS" \
+  && ok "  the second match can be named" || bad "  distributed" "$(grep '^npx' "$CALLS")"
+
+new_case named-alone
+apk app/build/outputs/apk/release/app-release.apk
+run FIREBASE_APK=app/build/outputs/apk/release/app-release.apk FIREBASE_APP_ID=app FIREBASE_TOOLS_VERSION=15.32.1 CREDENTIALS_FILE="$CREDS"
+expect_rc 0 "firebase-apk works with a single match"
+expect_calls "  upload once, distribute once" 1 1
+
+new_case named-outside-glob
+apk app/build/outputs/apk/release/app-release.apk
+apk elsewhere/other.apk
+run FIREBASE_APK=elsewhere/other.apk FIREBASE_APP_ID=app FIREBASE_TOOLS_VERSION=15.32.1 CREDENTIALS_FILE="$CREDS"
+expect_rc 1 "firebase-apk outside what apk-glob matched is refused, even if the file exists"
+expect_out "  and says what did match" "is not one of the signed APKs"
+expect_calls "  before anything is uploaded" 0 0
+
+new_case named-missing
+apk app/build/outputs/apk/release/app-release.apk
+run FIREBASE_APK=app/build/outputs/apk/release/gone.apk FIREBASE_APP_ID=app FIREBASE_TOOLS_VERSION=15.32.1 CREDENTIALS_FILE="$CREDS"
+expect_rc 1 "firebase-apk naming a file the build did not make is refused"
+expect_calls "  before anything is uploaded" 0 0
+
+new_case named-unsigned
+apk app/build/outputs/apk/release/app-release-unsigned.apk
+apk other/build/outputs/apk/release/other-release.apk
+run FIREBASE_APK=app/build/outputs/apk/release/app-release-unsigned.apk FIREBASE_APP_ID=app FIREBASE_TOOLS_VERSION=15.32.1 CREDENTIALS_FILE="$CREDS"
+expect_rc 1 "firebase-apk naming an unsigned APK is refused"
+expect_calls "  before anything is uploaded" 0 0
+
+new_case named-glob
+apk app/build/outputs/apk/release/app-release.apk
+apk other/build/outputs/apk/release/other-release.apk
+run FIREBASE_APK='**/build/outputs/apk/release/app-release.apk' FIREBASE_APP_ID=app FIREBASE_TOOLS_VERSION=15.32.1 CREDENTIALS_FILE="$CREDS"
+expect_rc 1 "firebase-apk is compared whole, so a glob matches nothing"
+expect_calls "  before anything is uploaded" 0 0
+
+new_case named-no-app
+apk app/build/outputs/apk/release/app-release.apk
+run FIREBASE_APK=app/build/outputs/apk/release/app-release.apk
+expect_rc 1 "firebase-apk with no app id is refused"
+expect_out "  and says what is missing" "no firebase-app-id"
+expect_calls "  before anything is uploaded" 0 0
 
 new_case several-no-app
 apk app/build/outputs/apk/release/app-release.apk

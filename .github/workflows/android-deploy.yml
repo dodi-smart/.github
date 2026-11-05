@@ -89,6 +89,13 @@ on:
       firebase-app-id:
         type: string
         default: ""
+      # The APK to distribute when apk-glob matches several, for a repo with more
+      # than one application module: its exact path, relative to the workspace,
+      # never a glob. Every match is still attached to the release. Empty needs
+      # apk-glob to match exactly one.
+      firebase-apk:
+        type: string
+        default: ""
       # Comma-separated group aliases. Empty uploads the build to nobody.
       firebase-groups:
         type: string
@@ -161,9 +168,14 @@ jobs:
         env:
           APP_ID: ${{ inputs.firebase-app-id }}
           OP_FIREBASE: ${{ inputs.op-firebase-credentials }}
+          APK: ${{ inputs.firebase-apk }}
         run: |
           if [ -n "$APP_ID" ] && [ -z "$OP_FIREBASE" ]; then
             echo "::error::firebase-app-id is set, so op-firebase-credentials is required"
+            exit 1
+          fi
+          if [ -n "$APK" ] && [ -z "$APP_ID" ]; then
+            echo "::error::firebase-apk is set, so firebase-app-id is required"
             exit 1
           fi
 
@@ -281,6 +293,7 @@ jobs:
           tag: ${{ inputs.tag }}
           apk-glob: ${{ inputs.apk-glob }}
           firebase-app-id: ${{ inputs.firebase-app-id }}
+          firebase-apk: ${{ inputs.firebase-apk }}
           firebase-groups: ${{ inputs.firebase-groups }}
           firebase-tools-version: ${{ env.FIREBASE_TOOLS_VERSION }}
           credentials-file: ${{ steps.files.outputs.firebase }}

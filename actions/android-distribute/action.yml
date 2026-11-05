@@ -16,11 +16,19 @@ inputs:
     description: >-
       Newline-separated globs for the built APKs, relative to the workspace, `**`
       allowed. Zero signed matches fails, and an APK whose name contains
-      `unsigned` is ignored. Every match is attached to the release; Firebase
-      takes one, so more than one match fails the distribution after the upload.
+      `unsigned` is ignored. Every match is attached to the release. Firebase
+      takes one, so more than one match fails the distribution after the upload
+      unless `firebase-apk` names the one to send.
     default: '**/build/outputs/apk/release/*.apk'
   firebase-app-id:
     description: 'Firebase app id. Empty attaches the APKs and distributes nothing.'
+    default: ''
+  firebase-apk:
+    description: >-
+      The APK to distribute when `apk-glob` matches several: its exact path as
+      `apk-glob` resolves it, compared whole, never a glob. Anything but a signed
+      match fails before the upload, and so does setting this without
+      `firebase-app-id`. Empty needs `apk-glob` to match exactly one.
     default: ''
   firebase-groups:
     description: 'Comma-separated Firebase tester group aliases. Empty uploads the build to nobody.'
@@ -52,6 +60,7 @@ runs:
         TAG:                    ${{ inputs.tag }}
         APK_GLOB:               ${{ inputs.apk-glob }}
         FIREBASE_APP_ID:        ${{ inputs.firebase-app-id }}
+        FIREBASE_APK:           ${{ inputs.firebase-apk }}
         FIREBASE_GROUPS:        ${{ inputs.firebase-groups }}
         FIREBASE_TOOLS_VERSION: ${{ inputs.firebase-tools-version }}
         CREDENTIALS_FILE:       ${{ inputs.credentials-file }}

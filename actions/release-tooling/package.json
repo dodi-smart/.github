@@ -4,7 +4,7 @@
   "private": true,
   "description": "The semantic-release tooling release.yml installs when the caller does not name its own packages.",
   "dependencies": {
-    "@kilianpaquier/semantic-release-backmerge": "1.9.2",
+    "@kilianpaquier/semantic-release-backmerge": "1.9.3",
     "@semantic-release/changelog": "7.0.0",
     "@semantic-release/commit-analyzer": "14.0.0-beta.4",
     "@semantic-release/exec": "7.1.0",

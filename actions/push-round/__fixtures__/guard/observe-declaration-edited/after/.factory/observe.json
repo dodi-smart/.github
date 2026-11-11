@@ -1,0 +1,5 @@
+{
+  "credentials": [
+    {"secret": "LOGS_READ_TOKEN", "provider": "logs", "scopes": ["logs:read", "logs:write"], "pii": "masked", "pii_how": "redacted at ingest"}
+  ]
+}

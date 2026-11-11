@@ -262,6 +262,7 @@ outcome() {
   : > "$WORK/out"; rm -f "$WORK/exe.json"
   [ -n "${2:-}" ] && printf '%s' "$2" > "$WORK/exe.json"
   ( cd "$WORK" && env -i PATH="$PATH" HOME="$WORK" RUNNER_TEMP="$WORK/none" OUTCOME="$1" \
+      GITHUB_ACTION_PATH="$ROOT/actions/run-agent" STARTED="${STARTED:-}" STAGE=review MODEL=m ROUTE=r PR="${PR:-}" ISSUE="${ISSUE:-}" \
       EXECUTION_FILE="${2:+$WORK/exe.json}" GITHUB_OUTPUT="$WORK/out" bash "$WORK/outcome.sh" ) > "$WORK/log" 2>&1
 }
 out_why() { sed -n 's/^why=//p' "$WORK/out"; }
@@ -294,8 +295,46 @@ outcome success '[{"type":"result","subtype":"success","is_error":false,"num_tur
 expect "no refusals, no warning" bash -c 'grep -qx "denied=" "$1" && ! grep -q "calls refused" "$2"' _ "$WORK/out" "$WORK/log"
 outcome success
 expect "no result after a success is the action skipping itself" grep -q 'skipped itself' <(out_why)
-outcome failure
+expect "which is not a run, so it writes no notice" bash -c '! grep -q "title=Agent run" "$1"' _ "$WORK/log"
+STARTED=$(( $(date +%s) - 7 )) outcome failure
 expect "no result after a failure says the action failed first" grep -q 'failed before the agent produced a result' <(out_why)
+expect "and is still a run: counted unpriced, timed by the step's clock" \
+  grep -Eq '::notice title=Agent run::stage=review model=m turns=\? cost=\? priced=none wall=(7|8) \(r\)$' "$WORK/log"
+expect "with cost ? and priced none in the outputs" bash -c 'grep -qx "cost=?" "$1" && grep -qx "priced=none" "$1"' _ "$WORK/out"
+
+# 8d0. The cost comes from the tokens and actions/pick-model/prices.tsv, not from
+# what the CLI reported, so every run is priced from one list.
+usage='"modelUsage":{"claude-opus-5-5":{"inputTokens":40,"outputTokens":9000,"cacheReadInputTokens":900000,"cacheCreationInputTokens":60000},"claude-haiku-5-5[1m]":{"inputTokens":2000,"outputTokens":300}}'
+outcome success '[{"type":"result","subtype":"success","is_error":false,"num_turns":14,"duration_ms":312400,"total_cost_usd":0.57,'"$usage"',"result":"ok"}]'
+expect "tokens times the table, every model summed, a [1m] suffix ignored" grep -qx 'cost=0.66051' "$WORK/out"
+expect "priced by the table, timed by the session" bash -c 'grep -qx "priced=table" "$1" && grep -qx "wall=312" "$1"' _ "$WORK/out"
+expect "the notice carries cost, priced and wall" grep -q '::notice title=Agent run::stage=review model=m turns=14 cost=0.66051 priced=table wall=312 (r)' "$WORK/log"
+outcome success '[{"type":"result","subtype":"success","is_error":false,"num_turns":2,"total_cost_usd":0.42,"modelUsage":{"claude-sonnet-4-5-20250929":{"outputTokens":100000},"claude-new-9":{"inputTokens":9}},"result":"ok"}]'
+expect "a model with no row falls back to the reported cost" bash -c 'grep -qx "cost=0.42" "$1" && grep -qx "priced=reported" "$1"' _ "$WORK/out"
+expect "and warns, naming the model and the table" grep -q '::warning title=Model not in the price table::claude-new-9 has no row in actions/pick-model/prices.tsv' "$WORK/log"
+outcome success '[{"type":"result","subtype":"success","is_error":false,"num_turns":2,"modelUsage":{"claude-new-9":{"inputTokens":9}},"result":"ok"}]'
+expect "with no reported cost either, the run is unpriced, not free" bash -c 'grep -qx "cost=?" "$1" && grep -qx "priced=none" "$1" && grep -q "cost=? priced=none" "$2"' _ "$WORK/out" "$WORK/log"
+outcome success '[{"type":"result","subtype":"success","is_error":false,"num_turns":0,"modelUsage":{},"result":""}]'
+expect "a session that reached no model cost nothing" bash -c 'grep -qx "cost=0" "$1" && grep -qx "priced=table" "$1"' _ "$WORK/out"
+PR=42 outcome success '[{"type":"result","subtype":"success","is_error":false,"num_turns":1,"total_cost_usd":0.1,"result":"ok"}]'
+expect "a run on a PR names it, before the rule" grep -q 'wall=? pr=42 (r)$' "$WORK/log"
+ISSUE=7 outcome failure
+expect "a run on an issue names it, a resultless one too" grep -q 'cost=? priced=none wall=? issue=7 (r)$' "$WORK/log"
+pr_expr() {
+python3 - "$ROOT" <<'PY'
+import sys, yaml
+steps = yaml.safe_load(open(sys.argv[1] + '/actions/run-agent/action.yml'))['runs']['steps']
+env = [s for s in steps if s.get('id') == 'outcome'][0]['env']
+assert env['PR'].startswith('${{ inputs.pr || ') and env['ISSUE'].startswith('${{ inputs.issue || '), env
+for want in ('github.event.pull_request.number', 'github.event.workflow_run.pull_requests[0].number',
+             'github.event.issue.pull_request && github.event.issue.number'):
+    assert want in env['PR'], (want, env['PR'])
+assert '!github.event.issue.pull_request && github.event.issue.number' in env['ISSUE'], env['ISSUE']
+PY
+}
+expect "the caller's pr and issue win; else the PR comes from a pull_request, a workflow_run or a PR comment, the issue from an issue alone" pr_expr
+STARTED=$(( $(date +%s) - 3 )) outcome success '[{"type":"result","subtype":"success","is_error":false,"num_turns":1,"total_cost_usd":0.1,"result":"ok"}]'
+expect "with no duration_ms, the wall is the step's clock" grep -Eqx 'wall=(3|4)' "$WORK/out"
 
 # 8d1. run-agent's writable step: one exact Edit rule per report file, wherever
 # RUNNER_TEMP is. A self-hosted slot keeps it under its own work root, beside
@@ -347,6 +386,23 @@ for k in GH_TOKEN PATH ANTHROPIC_API_KEY CLAUDE_CODE_OAUTH_TOKEN GITHUB_TOKEN LD
 done
 agent_env AGENT_ENV='not a key value line'
 expect "a line that is not KEY=VALUE fails" grep -q 'Agent env line refused' "$WORK/log"
+
+# 8d'. run-agent's org hooks: a managed drop-in that holds the hooks and nothing else.
+org_hooks() {
+  : > "$WORK/out"; rm -rf "$WORK/managed"
+  env -i PATH="$PATH" HOME="$WORK" GITHUB_OUTPUT="$WORK/out" MANAGED_DIR="$WORK/managed" "$@" \
+    bash "$ROOT/actions/run-agent/org-hooks.sh" > "$WORK/log" 2>&1
+}
+org_hooks
+expect "no org hooks write no drop-in" bash -c 'grep -qx "file=" "$1" && [ ! -e "$2" ]' _ "$WORK/out" "$WORK/managed"
+org_hooks AGENT_HOOKS='{"SessionStart":[{"hooks":[{"type":"command","command":"true"}]}],"Stop":[]}'
+expect "org hooks become a managed drop-in under hooks, and its path is the output" test "$(jq -c . "$WORK/managed/50-agent-hooks.json")" = '{"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"true"}]}],"Stop":[]}}'
+expect "and the output names it" grep -qx "file=$WORK/managed/50-agent-hooks.json" "$WORK/out"
+expect "the drop-in is readable by everyone, since Claude Code reads it as the runner user" test "$(stat -c %a "$WORK/managed/50-agent-hooks.json" 2>/dev/null || stat -f %Lp "$WORK/managed/50-agent-hooks.json")" = 644
+for bad in '[]' '"x"' '{"permissions":{"allow":["Bash"]}}' 'not json'; do
+  org_hooks AGENT_HOOKS="$bad"; rc=$?
+  expect "AGENT_HOOKS $bad is refused, and fails the step" bash -c '[ "$1" != 0 ] && grep -q "Agent hooks refused" "$2" && [ ! -e "$3" ]' _ "$rc" "$WORK/log" "$WORK/managed"
+done
 
 # 8e. run-agent's validate step: only a differing file stops the agent.
 # validate HERE DEFAULT: the two copies gh returns; empty means unreadable.

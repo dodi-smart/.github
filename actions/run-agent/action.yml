@@ -40,6 +40,8 @@
 #   prompt, and the run "succeeds" after 0 turns. So every run passes
 #   `--settings '{"disableAllHooks":true}'`. It has to be the flag: the
 #   `settings` input is user settings, which a project's own value overrides.
+#   The flag cannot reach managed settings, which is where the org's own hooks
+#   go (agent-hooks, org-hooks.sh).
 #
 #   RUNNER_TEMP is outside the checkout on every runner, and Claude Code
 #   refuses a Write call or a Bash `> file` to a path outside its working
@@ -140,6 +142,21 @@ inputs:
   agent-env-secret:
     description: 'The same as agent-env, with masked values; its line wins on a clash. Shared workflows forward secrets.AGENT_ENV_SECRET.'
     default: ''
+  pr:
+    description: >-
+      The pull request this run works on, named in the Agent run notice. Defaults
+      to the event's. Pass the number the caller resolved when the event has none,
+      as on a workflow_run whose pull_requests list is empty.
+    default: ''
+  issue:
+    description: "The issue this run works on, the same way. Defaults to the event's issue, when it is not a pull request."
+    default: ''
+  agent-hooks:
+    description: >-
+      The org's Claude Code hooks, a JSON object shaped like a settings file's
+      `hooks`. Installed as managed settings, so they run although the repo's own
+      hooks do not; see org-hooks.sh. Shared workflows forward vars.AGENT_HOOKS.
+    default: ''
   plugins:
     description: 'Plugin spec, e.g. code-review@claude-code-plugins'
     default: ''
@@ -225,8 +242,17 @@ outputs:
     description: 'Turns the agent took. Empty when it never ran.'
     value: ${{ steps.outcome.outputs.turns }}
   cost-usd:
-    description: 'Cost claude-code-action reported for the run. Empty when it never ran.'
+    description: >-
+      What the run cost in USD, priced by price.sh from the tokens it used and
+      actions/pick-model/prices.tsv. `?` when it ran and cannot be priced. Empty
+      when it never ran.
     value: ${{ steps.outcome.outputs.cost }}
+  priced:
+    description: '`table`, `reported` (a model with no row in prices.tsv) or `none` (cost `?`). Empty when the agent never ran.'
+    value: ${{ steps.outcome.outputs.priced }}
+  wall-seconds:
+    description: "The agent session's wall-clock seconds; the step's own clock when the session left no result. Empty when it never ran."
+    value: ${{ steps.outcome.outputs.wall }}
 
 runs:
   using: composite
@@ -257,6 +283,13 @@ runs:
         AGENT_ENV:        ${{ inputs.agent-env }}
         AGENT_ENV_SECRET: ${{ inputs.agent-env-secret }}
       run: '"$GITHUB_ACTION_PATH/agent-env.sh"'
+
+    # The org's hooks, which disableAllHooks cannot turn off. See org-hooks.sh.
+    - id: hooks
+      shell: bash
+      env:
+        AGENT_HOOKS: ${{ inputs.agent-hooks }}
+      run: '"$GITHUB_ACTION_PATH/org-hooks.sh"'
 
     # See the header. A path is refused rather than quoted when it holds a
     # character the rule would read as a pattern or the tool list would split on.
@@ -353,6 +386,12 @@ runs:
           echo "::warning title=Agent not started::$path differs from $DEFAULT_BRANCH, and claude-code-action would skip itself."
         fi
 
+    # Wall-clock for a session that leaves no result to read it from.
+    - id: clock
+      if: steps.validate.outputs.skipped == ''
+      shell: bash
+      run: echo "started=$(date +%s)" >> "$GITHUB_OUTPUT"
+
     - id: agent
       if: steps.validate.outputs.skipped == ''
       uses: anthropics/claude-code-action@v1
@@ -387,15 +426,32 @@ runs:
         SETTINGS: ${{ steps.org.outputs.settings }}
       run: rm -f "$SETTINGS"
 
+    # A self-hosted runner keeps /etc, and the next job may be another repo's.
+    - if: always() && steps.hooks.outputs.file != ''
+      shell: bash
+      env:
+        FILE: ${{ steps.hooks.outputs.file }}
+      run: rm -f "$FILE" 2>/dev/null || sudo -n rm -f "$FILE"
+
     # Read even when the agent step failed, which is when it matters most.
     # The action writes its log to this path and leaves `execution_file` empty
     # on some failures, so the path is the fallback.
+    #
+    # Every run that reached the agent writes one `Agent run` notice, a failed
+    # one with no result included: it is counted as unpriced (`cost=?`), never
+    # as free and never left out. The notice is what the factory metrics read,
+    # so its keys only ever grow. See price.sh for `priced`.
     - id: outcome
       if: always() && steps.agent.outcome != 'skipped'
       shell: bash
       env:
         EXECUTION_FILE: ${{ steps.agent.outputs.execution_file }}
         OUTCOME:        ${{ steps.agent.outcome }}
+        STARTED:        ${{ steps.clock.outputs.started }}
+        # What the run worked on, so the metrics link it by number instead of by
+        # branch or title: a workflow_run's own branch is the default branch.
+        PR:             ${{ inputs.pr || github.event.pull_request.number || github.event.workflow_run.pull_requests[0].number || (github.event.issue.pull_request && github.event.issue.number) || '' }}
+        ISSUE:          ${{ inputs.issue || (!github.event.issue.pull_request && github.event.issue.number) || '' }}
         STAGE:          ${{ inputs.stage }}
         MODEL:          ${{ steps.model.outputs.model }}
         ROUTE:          ${{ steps.model.outputs.route }}
@@ -403,36 +459,44 @@ runs:
         set -euo pipefail
         exe="${EXECUTION_FILE:-$RUNNER_TEMP/claude-execution-output.json}"
         r=$(jq -c '[.[]? | select(.type == "result")] | last // empty' "$exe" 2>/dev/null || true)
+        clock=''; [ -z "${STARTED:-}" ] || clock=$(( $(date +%s) - STARTED ))
+        turns='' cost='?' priced=none wall='' denied='' why=''
         if [ -z "$r" ]; then
-          [ "$OUTCOME" = success ] && why="claude-code-action skipped itself and reported success." \
-                                   || why="claude-code-action failed before the agent produced a result."
-          echo "why=$why" >> "$GITHUB_OUTPUT"
-          exit 0
+          if [ "$OUTCOME" = success ]; then
+            echo "why=claude-code-action skipped itself and reported success." >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          why="claude-code-action failed before the agent produced a result."
+        else
+          # `unused`: 0 turns and no model usage, a session that never reached the
+          # model, which the action still calls a success. See the header on hooks.
+          IFS=$'\t' read -r subtype is_error unused turns text < <(jq -r '[.subtype // "", (.is_error // false),
+              ((.num_turns // 0) == 0 and ((.modelUsage // {}) | length) == 0), (.num_turns // ""),
+              ((.result // ((.errors // []) | map(tostring) | join("; "))) | gsub("[\\t\\r\\n]+"; " ") | .[:300])] | @tsv' <<<"$r")
+          IFS='|' read -r cost priced wall unknown < <("$GITHUB_ACTION_PATH/price.sh" \
+              "$GITHUB_ACTION_PATH/../pick-model/prices.tsv" <<<"$r")
+          [ -z "$unknown" ] || echo "::warning title=Model not in the price table::$unknown has no row in actions/pick-model/prices.tsv, so this run is priced $priced. Add the row."
+          # Tool calls Claude Code refused, named by tool and file only: a
+          # command line or file content can carry what a log should not.
+          denied=$(jq -r '[(.permission_denials // [])[] | [.tool_name, .tool_input.file_path // empty] | join(" ")]
+              | unique | join(", ")' <<<"$r")
+          [ -z "$denied" ] || echo "::warning title=Agent tool calls refused::$denied"
+          if [ "$subtype" = error_max_turns ]; then why="The agent reached its turn cap after $turns turns."
+          elif [ "$is_error" = true ]; then why="The agent stopped with an error after $turns turn(s): ${text:-no message}."
+          elif [ "$unused" = true ]; then why="The session ended before the first turn; a hook or setting blocked the prompt.${text:+ It said: $text}"
+          fi
         fi
-        # `unused`: 0 turns and no model usage, a session that never reached the
-        # model, which the action still calls a success. See the header on hooks.
-        IFS=$'\t' read -r subtype is_error unused turns text < <(jq -r '[.subtype // "", (.is_error // false),
-            ((.num_turns // 0) == 0 and ((.modelUsage // {}) | length) == 0), (.num_turns // ""),
-            ((.result // ((.errors // []) | map(tostring) | join("; "))) | gsub("[\\t\\r\\n]+"; " ") | .[:300])] | @tsv' <<<"$r")
-        cost=$(jq -r '.total_cost_usd // empty' <<<"$r")
-        # Tool calls Claude Code refused, named by tool and file only: a
-        # command line or file content can carry what a log should not.
-        denied=$(jq -r '[(.permission_denials // [])[] | [.tool_name, .tool_input.file_path // empty] | join(" ")]
-            | unique | join(", ")' <<<"$r")
-        [ -z "$denied" ] || echo "::warning title=Agent tool calls refused::$denied"
-        why=''
-        if [ "$subtype" = error_max_turns ]; then why="The agent reached its turn cap after $turns turns."
-        elif [ "$is_error" = true ]; then why="The agent stopped with an error after $turns turn(s): ${text:-no message}."
-        elif [ "$unused" = true ]; then why="The session ended before the first turn; a hook or setting blocked the prompt.${text:+ It said: $text}"
-        fi
+        wall="${wall:-$clock}"
         {
           echo "turns=$turns"
           echo "cost=$cost"
+          echo "priced=$priced"
+          echo "wall=$wall"
           echo "denied=$denied"
           echo "why=$why"
         } >> "$GITHUB_OUTPUT"
         # One line per run, the same shape everywhere, for comparing models.
-        echo "::notice title=Agent run::stage=${STAGE:-} model=${MODEL:-} turns=${turns:-?} cost=${cost:-?} (${ROUTE:-})"
+        echo "::notice title=Agent run::stage=${STAGE:-} model=${MODEL:-} turns=${turns:-?} cost=$cost priced=$priced wall=${wall:-?}${PR:+ pr=$PR}${ISSUE:+ issue=$ISSUE} (${ROUTE:-})"
 
     # The report contract. The agent is told to write the file; this makes
     # sure it exists and passes `report-valid` on every path, the skipped and

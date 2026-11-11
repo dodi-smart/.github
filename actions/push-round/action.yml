@@ -1,5 +1,6 @@
 # Check, relock and push one round of an agent's commits to a PR branch, or
-# refuse it with a reason. The rules are in round.sh. The App token is minted
+# refuse it with a reason. The rules are in round.sh; the test-weakening guard
+# every round passes through, with no input to turn it off, is guard.sh. The App token is minted
 # between the check (which runs lock tooling) and the push, so nothing the lock
 # command starts can read it.
 name: Push round

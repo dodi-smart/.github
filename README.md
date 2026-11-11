@@ -399,7 +399,7 @@ Renovate marker, and a bump releases as `chore(deps)`.
 | `actions/pr-facts` | Resolves the PR from a number or a pull_request, workflow_run or status event, and checks it is open, not a fork, and at the expected head |
 | `actions/request-review` | Applies `agent:review` with the App token when the head commit has no `review / verdict` yet |
 | `actions/merge-gate` | The one unattended merge: resolves the PR, runs `agent-gate`, decides by policy (`deps`, `factory`, `backmerge`, `hotfix` or `standards-sync`) from labels, the required check, `review / verdict`, Renovate's release-age status, mergeability, the base branch, commit authors, for a back-merge the head commit's parents, for a security patch `target-guard`'s verdict, and for a standards sync `standards / verify` and `standards / render`, and merges with the App token (a dependency PR by rebase, an agent PR, a security patch and a standards sync by squash, a back-merge by merge commit). A conflicted Renovate PR gets its rebase box ticked instead; a conflicted agent PR waits for the fix loop. For `hotfix` it takes target-guard's verdict from `guard.sh verdict`, which prints it without failing. When the policy needs a review the head does not have, it applies `agent:review` through `request-review` |
-| `actions/push-round` | Checks an agent's commits on a PR branch, regenerates lockfiles, and pushes them as one trailered commit with the App token, or refuses with a reason; its merge mode pushes the update job's merge of the base |
+| `actions/push-round` | Checks an agent's commits on a PR branch, regenerates lockfiles, and pushes them as one trailered commit with the App token, or refuses with a reason; its merge mode pushes the update job's merge of the base. Every round, round 0 included, passes `guard.sh`, which refuses a deleted, skipped or loosened test, a deleted snapshot, and any edit to a workflow, the merge gate or lint, test or CI config |
 | `actions/app-token` | Mints the org App token for this repo, optionally narrowed; empty when no App is configured. Also outputs the App's `app-slug` (its login is `<slug>[bot]`) |
 | `actions/factory` | The deterministic half of `issue-implement.yml` and `pr-iterate.yml`: the autonomy tier from `Agent mode`, `Risk` and `Effort`, the branch name, round 0's push, the holdout pattern fix rounds give `push-round` (one list per issue, `.factory/holdout.d/<issue>`), and the fix loop's next step |
 | `actions/setup-stack` | Installs a toolchain, resolves cache isolation, supplies conventional commands |
@@ -1767,6 +1767,10 @@ The rules on fixes:
 - The job pushes, never the agent, through `actions/push-round`. It checks
   every commit's author and files first, and pushes with the org App's token,
   so the checks run on the new commit.
+- A fix may not delete, skip or loosen a test, delete a snapshot, or edit a
+  workflow or lint, test or CI config to get green. push-round's guard refuses
+  that round, as it refuses it in every agent lane, and the PR ends
+  `needs-manual`.
 - The commits carry the author the preset lists under `gitIgnoredAuthors`, so
   Renovate still owns the branch. If Renovate rebases and drops the fix, the next
   run makes it again.

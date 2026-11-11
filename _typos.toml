@@ -3,3 +3,7 @@
 # hand-typed, so it is not linted.
 [files]
 extend-exclude = ["CHANGELOG.md"]
+
+# Jasmine's and Mocha's excluded suite, which push-round's guard refuses.
+[default.extend-words]
+xdescribe = "xdescribe"

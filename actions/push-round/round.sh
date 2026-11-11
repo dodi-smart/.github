@@ -24,12 +24,17 @@
 #     base's changes into the round), or MERGE=true and HEAD is not one merge
 #     of the base onto BASE_SHA
 #   - a commit touches a path matching REFUSE_PATHS (lockfiles; a holdout list)
+#   - guard.sh finds the round weakening a test or touching a gate file
+#     (a workflow, the merge gate, lint, test-runner or coverage config). Every
+#     round, no input turns it off; a merge round is checked for gate files on
+#     what its resolution changed
 #   - a commit removes or rewrites a line that a commit in KEEP_RANGE not by
 #     AUTHOR_EMAIL added (the dependency bot's chosen versions)
 #   - a path matching RECORD_PATHS changed with no entry in RECORDS
 #   - the lock command fails, or changes anything but a LOCKFILES path
 set -euo pipefail
 
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 out() { echo "$1" >> "$GITHUB_OUTPUT"; }
 refuse() { git reset -q --hard HEAD; out "refused=$1"; echo "::warning title=Round not pushed::$1"; exit 0; }
 oneline() { tr '\n' ' ' | sed 's/ *$//'; }
@@ -64,6 +69,7 @@ check() {
     hit=$(printf '%s\n' "$changed" | grep -E "$REFUSE_PATHS" || true)
     [ -z "$hit" ] || refuse "a commit touched a path it may not: $(printf '%s' "$hit" | oneline)"
   fi
+  guard "$changed"
   if [ -n "${KEEP_RANGE:-}" ]; then
     # The lines another author's commits in the range added: a round may sit
     # beside them, never replace them.
@@ -87,6 +93,30 @@ check() {
   fi
   out ready=true
   out "recorded=$([ -n "$recorded" ] && echo true || echo false)"
+}
+
+# The test-weakening guard, for every round here and round 0 in factory.sh
+# (`round.sh guard ARGS...`), so one rule words the refusal. Prints why a round
+# is refused and fails, or prints nothing. Exit 1 from guard.sh is findings;
+# any other failure is a guard that could not run, which refuses too: a broken
+# guard may only refuse more.
+guard_refusal() {
+  local hits rc=0
+  hits=$("$HERE/guard.sh" "$@") || rc=$?
+  case "$rc" in
+    0) return 0 ;;
+    1) echo "a round may not weaken a test or touch a gate file: $(printf '%s' "$hits" | paste -sd ';' - | sed 's/;/; /g')" ;;
+    *) echo "the test guard could not run (exit $rc), so the round is refused" ;;
+  esac
+  return 1
+}
+guard() {
+  local why
+  if [ "${MERGE:-}" = true ]; then
+    why=$(printf '%s\n' "$1" | guard_refusal --paths) || refuse "$why"
+  else
+    why=$(guard_refusal "$BASE_SHA" HEAD) || refuse "$why"
+  fi
 }
 
 # Rewrite the lockfile nearest each changed declaration with LOCK, once per
@@ -176,5 +206,6 @@ case "${1:-}" in
   check) check ;;
   push)  push ;;
   trailers) keep_trailers ;;
-  *) echo "usage: round.sh check|push|trailers" >&2; exit 2 ;;
+  guard) shift; guard_refusal "$@" ;;
+  *) echo "usage: round.sh check|push|trailers|guard" >&2; exit 2 ;;
 esac

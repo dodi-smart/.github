@@ -18,8 +18,9 @@
 #   - deletes a test file, or renames one to a path that is not a test
 #   - deletes a snapshot file, or removes a snapshot entry from one
 #   - touches a gate file: a workflow, a composite action, the merge gate,
-#     CODEOWNERS, the factory's own lists, or lint, format, test-runner,
-#     coverage or hook config
+#     CODEOWNERS, anything under .factory/ (the holdout lists, and the
+#     observe-lane declaration that says which credentials are read-only), or
+#     lint, format, test-runner, coverage or hook config
 #   - changes a test, lint, typecheck or coverage script in a package.json
 #   - adds a skip, focus or retry marker to a test (it.skip, .only, xit,
 #     @pytest.mark.skip, #[ignore], t.Skip, @Disabled, XCTSkip, skip: true)

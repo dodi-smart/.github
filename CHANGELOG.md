@@ -1,3 +1,9 @@
+## [1.45.0](https://github.com/dodi-smart/.github/compare/v1.44.9...v1.45.0) (2026-11-11)
+
+### ✨ Features
+
+* **run-agent,pick-model:** price, time and link every agent run, and run the org's hooks as managed settings ([f3c43a0](https://github.com/dodi-smart/.github/commit/f3c43a049f0aea05470437f64b58c1ed5e43c047))
+
 ## [1.44.9](https://github.com/dodi-smart/.github/compare/v1.44.8...v1.44.9) (2026-11-05)
 
 ### ⬆️ Dependencies

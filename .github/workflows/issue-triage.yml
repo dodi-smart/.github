@@ -200,11 +200,13 @@ jobs:
         with:
           oauth-token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           stage: triage
+          issue: ${{ inputs.issue-number }}
           model-pin: ${{ vars.AGENT_MODEL_PIN }}
           org-plugins:             ${{ vars.AGENT_PLUGINS }}
           org-plugin-marketplaces: ${{ vars.AGENT_PLUGIN_MARKETPLACES }}
           agent-env:               ${{ vars.AGENT_ENV }}
           agent-env-secret:        ${{ secrets.AGENT_ENV_SECRET }}
+          agent-hooks:             ${{ vars.AGENT_HOOKS }}
           # Live progress comment, so a run in flight is visible. Silence reads
           # the same whether the job is working or broken.
           track-progress: 'true'

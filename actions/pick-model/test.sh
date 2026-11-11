@@ -95,5 +95,11 @@ elif grep -q '::error title=Unknown agent signal' "$TMP/log"; then
   printf '  ok   a misspelt signal fails instead of being ignored\n'; pass=$((pass+1))
 else printf '  FAIL a misspelt signal: no error\n'; fail=$((fail+1)); fi
 
+# Every model the policy can pick has a row in prices.tsv, which run-agent prices runs from.
+while IFS= read -r m; do
+  if cut -f1 "$HERE/prices.tsv" | grep -qx "$m"; then printf '  ok   %s has a price\n' "$m"; pass=$((pass+1))
+  else printf '  FAIL %s has no row in prices.tsv\n' "$m"; fail=$((fail+1)); fi
+done < <(sed -n "s/^[A-Z_]*='\\(claude-[^']*\\)'$/\\1/p" "$HERE/pick.sh")
+
 echo "$pass passed, $fail failed"
 [ "$fail" -eq 0 ]

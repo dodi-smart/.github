@@ -3,7 +3,8 @@
 # assert it without a runner. Writes `model`, `max-turns` and `route` to
 # $GITHUB_OUTPUT. run-agent calls it before every agent run.
 #
-# The model ids live here and nowhere else. A model bump is one line below, and
+# The model ids live here and nowhere else, their prices in prices.tsv beside
+# this file. A model bump is one line below plus its price row, and
 # self-test fails any workflow that names an id itself.
 #
 # Reads STAGE, EFFORT, PRIORITY, RISK (the issue fields, empty when unknown),

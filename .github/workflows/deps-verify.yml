@@ -566,12 +566,14 @@ jobs:
           # packages in a group. run-agent's `why` names the cap when it is
           # reached.
           stage:   deps-verify
+          pr:      ${{ needs.gate.outputs.number }}
           signals: ${{ needs.gate.outputs.update }} ${{ steps.result.outputs.verdict != 'green' && 'red' || '' }}
           model-pin: ${{ vars.AGENT_MODEL_PIN }}
           org-plugins:             ${{ vars.AGENT_PLUGINS }}
           org-plugin-marketplaces: ${{ vars.AGENT_PLUGIN_MARKETPLACES }}
           agent-env:               ${{ vars.AGENT_ENV }}
           agent-env-secret:        ${{ secrets.AGENT_ENV_SECRET }}
+          agent-hooks:             ${{ vars.AGENT_HOOKS }}
           allowed-bots: ${{ needs.gate.outputs.dependency-bots }}${{ steps.actor.outputs.fix-pusher }}
           # claude-code-action sets its own git identity on the checkout, over
           # the `git config` of the facts step, so without these the agent

@@ -1407,8 +1407,28 @@ round 2 after a lint fix that did not turn CI green. A full review stays on
 Opus even at Risk Low, because on the merge tier it is the last check before
 an unattended merge.
 
-Each run writes one `Agent run` notice with the stage, model, rule, turns and
-cost, so the models can be compared from the annotations. To move every run
+Each run writes one `Agent run` notice with the stage, model, rule, turns, cost
+and wall-clock seconds, so the models can be compared from the annotations:
+
+```
+stage=review model=<id> turns=11 cost=1.0793 priced=table wall=412 pr=57 (review: full review, ...)
+```
+
+`pr=` or `issue=` names what the run worked on, when the event says: a pull
+request, a `workflow_run` for one, a comment on one, or an issue.
+
+The cost is the tokens the run used times `actions/pick-model/prices.tsv`
+(`priced=table`), so every run is priced from one list. A model with no row
+there falls back to the cost Claude Code reported (`priced=reported`) and warns.
+A run that cannot be priced either way, or that failed before it left a result,
+still writes the notice, with `cost=?` and `priced=none`: it is counted as
+unpriced, never as free. Prices are API list prices, so on a subscription login
+they are what the run would have cost, not what was billed. A model bump in
+`pick.sh` adds its row to `prices.tsv`; `run-agent/test.sh` fails otherwise.
+
+The agent session runs with every hook off (see run-agent's header), so a
+time-capture tool wired through a repository's own hooks records nothing in
+these runs. The notice is the record. To move every run
 off a model at once, set the org variable `AGENT_MODEL_PIN` to a model id.
 Every shared workflow forwards it to run-agent, and it wins over the policy
 and over a caller's `model` input. A workflow that calls run-agent directly
@@ -1417,7 +1437,7 @@ the policy.
 
 ### Org additions to agent runs
 
-Four org settings reach every agent run that a shared workflow starts, so a
+Five org settings reach every agent run that a shared workflow starts, so a
 tool the org uses in its agents is switched on once, not per repo.
 
 | Setting | Kind | What it does |
@@ -1426,6 +1446,7 @@ tool the org uses in its agents is switched on once, not per repo.
 | `AGENT_PLUGIN_MARKETPLACES` | variable | Marketplaces for those plugins |
 | `AGENT_ENV` | variable | `KEY=VALUE` lines set for the agent |
 | `AGENT_ENV_SECRET` | secret | The same, with the values masked. Its line wins when both name a key |
+| `AGENT_HOOKS` | variable | Claude Code hooks for every run, as the JSON object a settings file's `hooks` holds |
 
 The env reaches the agent and its hooks through claude-code-action's settings,
 and never `GITHUB_ENV`, so the steps that publish after the agent do not see
@@ -1433,9 +1454,21 @@ it. run-agent refuses a key that would change the runner, the action or the
 agent's credentials (`GITHUB_*`, `RUNNER_*`, `ANTHROPIC_*`, `CLAUDE_CODE_*`,
 `PATH`, `HOME`, `GH_TOKEN`, `GIT_*`, `LD_*` and similar) and fails the step,
 because a wrong key would be ignored without anyone noticing. The settings file
-is deleted after the run. A workflow that calls run-agent directly forwards the
-four itself, as `org-plugins`, `org-plugin-marketplaces`, `agent-env` and
-`agent-env-secret`.
+is deleted after the run.
+
+Every run turns the repo's own hooks off (`disableAllHooks`), because the base
+branch's hooks can name a script the PR head does not have. run-agent installs
+`AGENT_HOOKS` as a managed settings drop-in instead, which that flag cannot turn
+off, so a hook the org relies on in every repo (capture, audit) still runs. The
+variable can carry hooks only: run-agent writes nothing but the `hooks` key and
+fails the step on anything that is not an object of event lists. A hook command
+should still exit 0 when the repo lacks the script it calls. Installing the
+drop-in needs Linux and passwordless sudo; elsewhere the run warns and goes on
+without the hooks. The drop-in is removed after the run.
+
+A workflow that calls run-agent directly forwards the five itself, as
+`org-plugins`, `org-plugin-marketplaces`, `agent-env`, `agent-env-secret` and
+`agent-hooks`.
 
 ## Versioning
 

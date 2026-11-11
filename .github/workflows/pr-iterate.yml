@@ -418,6 +418,7 @@ jobs:
           # alone more so. Review findings and a second attempt get the
           # stronger model.
           stage:    ${{ needs.gate.outputs.action }}
+          pr:       ${{ needs.gate.outputs.number }}
           round:    ${{ steps.facts.outputs.round }}
           effort:   ${{ needs.gate.outputs.effort }}
           priority: ${{ needs.gate.outputs.priority }}
@@ -429,6 +430,7 @@ jobs:
           org-plugin-marketplaces: ${{ vars.AGENT_PLUGIN_MARKETPLACES }}
           agent-env:               ${{ vars.AGENT_ENV }}
           agent-env-secret:        ${{ secrets.AGENT_ENV_SECRET }}
+          agent-hooks:             ${{ vars.AGENT_HOOKS }}
           allowed-bots: ${{ endsWith(github.actor, '[bot]') && github.actor || '' }}
           allowed-tools: 'Bash "Bash(gh:*)" Read Write Edit Grep Glob'
           prompt: |

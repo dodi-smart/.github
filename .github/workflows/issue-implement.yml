@@ -257,6 +257,7 @@ jobs:
           org-plugin-marketplaces: ${{ vars.AGENT_PLUGIN_MARKETPLACES }}
           agent-env:               ${{ vars.AGENT_ENV }}
           agent-env-secret:        ${{ secrets.AGENT_ENV_SECRET }}
+          agent-hooks:             ${{ vars.AGENT_HOOKS }}
           allowed-tools: 'Bash "Bash(gh:*)" Read Write Edit Grep Glob'
           # run-agent guarantees this file on every path, with `why` when the
           # agent left none, so the steps below read one file.

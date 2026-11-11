@@ -257,13 +257,14 @@ jobs:
                   org = {'org-plugins': expr('vars.AGENT_PLUGINS'),
                          'org-plugin-marketplaces': expr('vars.AGENT_PLUGIN_MARKETPLACES'),
                          'agent-env': expr('vars.AGENT_ENV'),
-                         'agent-env-secret': expr('secrets.AGENT_ENV_SECRET')}
+                         'agent-env-secret': expr('secrets.AGENT_ENV_SECRET'),
+                         'agent-hooks': expr('vars.AGENT_HOOKS')}
                   for k, v in org.items():
                       if w.get(k) != v:
                           bad.append('%s: a run-agent step does not forward %s as %s' % (f, k, v))
           if bad:
               print('\n'.join(bad)); raise SystemExit(1)
-          print('every run-agent call passes a stage, the pin and the org plugins and env, and no file names a model id')
+          print('every run-agent call passes a stage, the pin and the org plugins, env and hooks, and no file names a model id')
           PY
 
       # A pull request that can change the config it is linted by, or make CI

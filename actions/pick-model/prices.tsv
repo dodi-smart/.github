@@ -1,0 +1,23 @@
+# What run-agent prices a run with: USD per million tokens, first-party API
+# list prices. Tab-separated: model, input, output, cache read, cache write.
+#
+# Cache writes are priced at the 5-minute rate (1.25x input). Claude Code does
+# not report which TTL it wrote, so a run that wrote 1-hour entries is priced
+# low by the difference. Haiku 5.5 is priced at its rate for prompts up to 100K
+# tokens.
+#
+# Every model pick.sh can choose has a row; test.sh fails otherwise. Older ids
+# stay, so a pinned or caller-chosen model is still priced. A model with no row
+# falls back to the cost claude-code-action reported, and run-agent warns.
+claude-fable-5-2	8	40	0.20	10
+claude-opus-5-5	4	20	0.20	5
+claude-opus-5	5	25	0.50	6.25
+claude-opus-4-8	5	25	0.50	6.25
+claude-opus-4-7	5	25	0.50	6.25
+claude-opus-4-6	5	25	0.50	6.25
+claude-sonnet-5-5	2	10	0.10	2.50
+claude-sonnet-5	2	10	0.20	2.50
+claude-sonnet-4-6	3	15	0.30	3.75
+claude-sonnet-4-5	3	15	0.30	3.75
+claude-haiku-5-5	0.10	0.50	0.01	0.125
+claude-haiku-4-5	1	5	0.10	1.25

@@ -404,6 +404,7 @@ jobs:
           org-plugin-marketplaces: ${{ vars.AGENT_PLUGIN_MARKETPLACES }}
           agent-env:               ${{ vars.AGENT_ENV }}
           agent-env-secret:        ${{ secrets.AGENT_ENV_SECRET }}
+          agent-hooks:             ${{ vars.AGENT_HOOKS }}
           prompt: ${{ needs.gate.outputs.mode == 'scoped' && env.SCOPED_PROMPT || env.FULL_PROMPT }}
           # A bot's PR is labelled by the org App, and claude-code-action
           # refuses a bot actor it is not told about. The gate has already

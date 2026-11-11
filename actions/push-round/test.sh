@@ -277,5 +277,67 @@ round
 expect "a normal round with a merge commit in it is refused" test "$(refused)" = 'a round may not contain a merge commit; only the update job merges'
 expect "and nothing is rewritten" test "$(git -C "$WORK/r" rev-parse HEAD)" = "$before"
 
+# The test-weakening guard. Each case under __fixtures__/guard is a tree before
+# and after the agent's round, and `expect`: the finding guard.sh must print,
+# or `pass`. A tree is committed whole, so a file missing from after/ is a
+# deletion. No case may pass that the guard should refuse, and no ordinary
+# change (a new test, a changed expected value, an updated snapshot, a test
+# moved between test directories) may be refused.
+GUARD="$HERE/guard.sh"
+FIX="$HERE/__fixtures__/guard"
+tree_repo() {  # tree_repo CASE: before/ as the base, after/ as the agent's commit
+  local r="$WORK/g"
+  rm -rf "$r"; git init -q "$r"
+  cp -R "$1/before/." "$r/"
+  git -C "$r" add -A; git -C "$r" -c user.name=t -c user.email=t@example.com commit -q -m before
+  GBASE="$(git -C "$r" rev-parse HEAD)"
+  git -C "$r" rm -rq .; cp -R "$1/after/." "$r/"
+  git -C "$r" add -A; git -C "$r" -c user.name=a -c "user.email=$CLAUDE_EMAIL" commit -q -m after
+}
+cases=0
+for c in "$FIX"/*/; do
+  c="${c%/}"; name="$(basename "$c")"; want="$(cat "$c/expect")"; cases=$((cases + 1))
+  tree_repo "$c"
+  got="$(cd "$WORK/g" && "$GUARD" "$GBASE" HEAD)"; rc=$?
+  if [ "$want" = pass ]; then
+    expect "guard: $name passes"                      test "$rc:$got" = 0:
+  else
+    expect "guard: $name is refused: $want"           bash -c '[ "$1" = 1 ] && grep -qxF -- "$2" <<<"$3"' _ "$rc" "$want" "$got"
+  fi
+done
+expect "guard: every fixture ran (at least 20)"     test "$cases" -ge 20
+expect "guard: an unreadable range is not a pass"  bash -c 'cd "$1" && "$2" deadbeef HEAD; [ $? = 2 ]' _ "$WORK/g" "$GUARD"
+tree_repo "$FIX/workflow-edited"
+expect "guard: --allow exempts a gate file" \
+  bash -c 'cd "$1" && "$2" --allow "^\.github/workflows/" "$3" HEAD' _ "$WORK/g" "$GUARD" "$GBASE"
+expect "guard: and only that path" \
+  bash -c 'cd "$1" && "$2" --allow "^src/" "$3" HEAD >/dev/null; [ $? = 1 ]' _ "$WORK/g" "$GUARD" "$GBASE"
+tree_repo "$FIX/test-script-edited"
+expect "guard: and from no other rule" \
+  bash -c 'cd "$1" && "$2" --allow "^package\.json$" "$3" HEAD >/dev/null; [ $? = 1 ]' _ "$WORK/g" "$GUARD" "$GBASE"
+expect "guard: --paths judges gate files alone" \
+  test "$(printf 'src/a.ts\n.github/workflows/ci.yml\n' | "$GUARD" --paths)" = '.github/workflows/ci.yml: touches a gate file'
+
+# Through push-round: a refused case refuses the round, with every finding.
+repo; commit renovate@example.com src/sum.test.ts "$(cat "$FIX/assertion-loosened/before/src/sum.test.ts")"
+BASE="$(git -C "$WORK/r" rev-parse HEAD)"
+commit "$CLAUDE_EMAIL" src/sum.test.ts "$(cat "$FIX/assertion-loosened/after/src/sum.test.ts")"
+before="$(git -C "$WORK/r" rev-parse HEAD)"
+KEEPR='' round
+expect "a round that loosens an assertion is refused" \
+  test "$(refused)" = 'a round may not weaken a test or touch a gate file: src/sum.test.ts: loosens an exact assertion'
+expect "and nothing is rewritten"                    test "$(git -C "$WORK/r" rev-parse HEAD)" = "$before"
+repo; commit "$CLAUDE_EMAIL" .github/workflows/ci.yml; commit "$CLAUDE_EMAIL" eslint.config.mjs
+round
+expect "every gate file a round touched is named" \
+  test "$(refused)" = 'a round may not weaken a test or touch a gate file: .github/workflows/ci.yml: touches a gate file; eslint.config.mjs: touches a gate file'
+conflicted_repo .github/workflows/ci.yml; resolve .github/workflows/ci.yml
+merge_round
+expect "merge: a resolution that edits a workflow is refused" \
+  test "$(refused)" = 'a round may not weaken a test or touch a gate file: .github/workflows/ci.yml: touches a gate file'
+repo; commit "$CLAUDE_EMAIL" src/a.ts; advance 'person@example.com' .github/workflows/ci.yml; merge_in
+merge_round
+expect "merge: a base that changed a workflow is not the round's" test "$(refused)" = "$NO_TOKEN"
+
 printf '\n%s passed, %s failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

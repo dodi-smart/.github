@@ -1,0 +1,5 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`renders a card 1`] = `"<div class=\"card card--flat\">a</div>"`;
+
+exports[`renders an empty card 1`] = `"<div class=\"card card--flat\"></div>"`;

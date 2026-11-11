@@ -107,7 +107,9 @@ lint_only() {
 #      AGENT_EMAILS (newline-separated authors the agent may commit as)
 #
 # Refused, never forced, when: no App token, a commit carries another author,
-# or the branch already exists.
+# push-round's guard.sh finds a weakened test or a touched gate file (the
+# issue's own holdout list excepted, which round 0 must write), or the branch
+# already exists.
 # ---------------------------------------------------------------------------
 push_round() {
   local new others subject first url
@@ -119,6 +121,11 @@ push_round() {
 
   others=$(git log --format='%ae' "$BASE_SHA..HEAD" | grep -vxF -f <(printf '%s\n%s\n' "$FACTORY_EMAIL" "${AGENT_EMAILS:-}" | sed '/^$/d') || true)
   [ -n "$others" ] && refuse "a commit carries another author: $(printf '%s' "$others" | paste -sd ' ' -)"
+
+  # The same guard as every fix round; push-round owns the rule and its wording.
+  local why allow=()
+  [ -z "${ISSUE:-}" ] || allow=(--allow "^$(printf '%s' "$HOLDOUT_DIR/$ISSUE" | ere_quote)\$")
+  why=$("$HERE/../push-round/round.sh" guard "${allow[@]}" "$BASE_SHA" HEAD) || refuse "$why"
 
   first=$(git log --reverse --format='%s' "$BASE_SHA..HEAD" | sed -n 1p)
   subject="${SUBJECT:-}"
@@ -151,6 +158,7 @@ $kept"
 # has none, so it gets the lines its round-0 commit added to the old shared
 # list, and that file; drop this once no such PR is open. No ISSUE: the old file.
 # ---------------------------------------------------------------------------
+ere_quote() { sed 's/[][\.^$*+?(){}|]/\\&/g'; }
 holdout_paths() {
   local issue="${ISSUE:-}" list="$HOLDOUT" body='' c
   if [ -n "$issue" ] && body=$(git show "$BASE_SHA:$HOLDOUT_DIR/$issue" 2>/dev/null); then
@@ -162,7 +170,7 @@ holdout_paths() {
                           | awk '/^@@/ { h = 1; next } h && /^\+/ { print substr($0, 2) }' || true)
   fi
   printf '^(%s)$' "$(printf '%s\n' "$body" "$list" \
-    | sed -e 's/#.*//' -e 's/[[:space:]]*$//' -e '/^$/d' -e 's/[][\.^$*+?(){}|]/\\&/g' | paste -sd '|' -)"
+    | sed -e 's/#.*//' -e 's/[[:space:]]*$//' -e '/^$/d' | ere_quote | paste -sd '|' -)"
 }
 
 # ---------------------------------------------------------------------------

@@ -336,9 +336,17 @@ jobs:
           hold = [s for s in yaml.safe_load(open('.github/workflows/pr-iterate.yml'))['jobs']['fix']['steps'] if s.get('id') == 'holdout']
           if not hold or 'needs.gate.outputs.issue' not in str((hold[0].get('with') or {}).get('issue', '')):
               bad.append('pr-iterate fix: the holdout step must pass the PR issue')
+          # Round 0 and every push-round round pass the test-weakening guard, and
+          # no caller can switch it off: a guard an input disables is advice.
+          for f, needle in (('actions/push-round/round.sh', '"$HERE/guard.sh"'),
+                            ('actions/factory/factory.sh', '/push-round/round.sh" guard')):
+              if needle not in open(f).read():
+                  bad.append(f + ' no longer runs the test-weakening guard')
+          if any('guard' in k for k in (yaml.safe_load(open('actions/push-round/action.yml')).get('inputs') or {})):
+              bad.append('push-round takes an input that could turn the test-weakening guard off')
           if bad:
               sys.exit('::error::' + '; '.join(bad))
-          print('the agent jobs cannot push, and pr-iterate lands through merge-gate')
+          print('the agent jobs cannot push, every round passes the test guard, and pr-iterate lands through merge-gate')
           PY
 
       # A conflicted agent PR is brought up to date by a merge round and nothing
@@ -350,7 +358,7 @@ jobs:
         run: |
           set -euo pipefail
           python3 - <<'PY'
-          import glob, re, sys, yaml
+          import glob, os, re, sys, yaml
           from lib import checkout_ok
           bad = []
           wf = yaml.safe_load(open('.github/workflows/pr-iterate.yml'))
@@ -381,8 +389,9 @@ jobs:
               bad.append('pr-iterate gate has no sweep step')
           # No rebase or force-push in the files the update job runs (tests aside).
           pats = [r'\bgit\s+rebase\b', r'\bpush\b[^\n]*\s(-[a-zA-Z]*f[a-zA-Z]*|--force\S*)(\s|$)', r'\+HEAD:']
+          # Files only: push-round keeps its guard's fixtures in a directory.
           files = ['.github/workflows/pr-iterate.yml'] + [f for f in glob.glob('actions/push-round/*') + glob.glob('actions/factory/*')
-                                                          if not f.endswith('test.sh')]
+                                                          if os.path.isfile(f) and not f.endswith('test.sh')]
           for f in files:
               text = open(f).read()
               for pat in pats:

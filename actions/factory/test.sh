@@ -76,6 +76,23 @@ expect "authored as the factory identity"     test "$(git -C "$WORK/r" log -1 --
 expect "round 0 may write the holdout"        bash -c '! grep -q "holdout" "$1"' _ "$WORK/out"
 expect "with no App token it stops before any push" test "$(val refused)" = 'GH_APP_CLIENT_ID is not set, and a GITHUB_TOKEN push starts no checks'
 
+# Round 0 passes push-round's test-weakening guard too. Its own issue's list
+# is the one gate file it may write; another issue's list, or a deleted test,
+# refuses the round before anything is squashed or pushed.
+repo; commit "$AGENT" src/a.ts; commit "$AGENT" .factory/holdout.d/2
+push 0 'feat: x'
+expect "round 0 may not write another issue's holdout list" \
+  test "$(val refused)" = 'a round may not weaken a test or touch a gate file: .factory/holdout.d/2: touches a gate file'
+expect "and is not squashed"                  test "$(git -C "$WORK/r" rev-list --count "$BASE..HEAD")" = 2
+repo; commit t@example.com test/a.test.ts 'a test a person wrote'
+BASE="$(git -C "$WORK/r" rev-parse HEAD)"
+git -C "$WORK/r" rm -q test/a.test.ts; git -C "$WORK/r" -c user.name=a -c "user.email=$AGENT" commit -q -m 'drop it'
+push 0 'feat: x'
+expect "round 0 may not delete a test"        test "$(val refused)" = 'a round may not weaken a test or touch a gate file: test/a.test.ts: deletes a test file'
+repo; commit "$AGENT" .github/workflows/ci.yml
+push 0 'ci: x'
+expect "round 0 may not touch a workflow"     test "$(val refused)" = 'a round may not weaken a test or touch a gate file: .github/workflows/ci.yml: touches a gate file'
+
 # The agent's own trailers survive the squash, after the round's; the ones the
 # loop counts do not.
 trailers() { git -C "$WORK/r" log -1 --format='%(trailers:only,unfold)' | sed '/^$/d'; }
@@ -151,8 +168,11 @@ git -C "$WORK/r" add -A; git -C "$WORK/r" -c user.name=a -c "user.email=$AGENT" 
 BASE="$(git -C "$WORK/r" rev-parse HEAD)"
 commit "$AGENT" test/c.test.ts 'fix: another issue test'
 expect "another issue's holdout test is not guarded"       test -z "$(round)"
+# Every list is a gate file to a fix round, though: push-round's guard
+# refuses any change under .factory/, whoever's list it is.
 commit "$AGENT" .factory/holdout.d/2 'fix: another issue list'
-expect "nor is another issue's list"                       test -z "$(round)"
+expect "another issue's list is not a holdout path, but the guard refuses it" \
+  test "$(round)" = 'a round may not weaken a test or touch a gate file: .factory/holdout.d/2: touches a gate file'
 expect "but it is that issue's own"                        grep -q 'test/c.test.ts' <<<"$(round 2)"
 
 # A PR opened before the lists moved has no holdout.d/<issue>. Its round 0 added

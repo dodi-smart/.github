@@ -1,3 +1,9 @@
+## [1.46.0](https://github.com/dodi-smart/.github/compare/v1.45.0...v1.46.0) (2026-11-11)
+
+### ✨ Features
+
+* **push-round,factory:** refuse a round that weakens a test or touches a gate file ([6e43ba3](https://github.com/dodi-smart/.github/commit/6e43ba3e91780d23cca34a8a18cd41457e8e6671))
+
 ## [1.45.0](https://github.com/dodi-smart/.github/compare/v1.44.9...v1.45.0) (2026-11-11)
 
 ### ✨ Features

@@ -1,3 +1,9 @@
+## [1.47.2](https://github.com/dodi-smart/.github/compare/v1.47.1...v1.47.2) (2026-11-12)
+
+### 🐛 Bug Fixes
+
+* **merge-gate,factory,request-review:** count each trusted status only from the identity that posts it ([3b18cb2](https://github.com/dodi-smart/.github/commit/3b18cb2b82b7ab465dab0540ff2756477a9a2724))
+
 ## [1.47.1](https://github.com/dodi-smart/.github/compare/v1.47.0...v1.47.1) (2026-11-12)
 
 ### 🐛 Bug Fixes

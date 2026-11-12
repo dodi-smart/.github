@@ -70,11 +70,11 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: dodi-smart/.github/actions/runner-report@v1
+      - uses: dodi-smart/.github/actions/runner-report@pinned/v1.48.0
         with:
           selector: light
 
-      - uses: dodi-smart/.github/actions/judge-verdict@v1
+      - uses: dodi-smart/.github/actions/judge-verdict@pinned/v1.48.0
         with:
           mode: ${{ github.event_name == 'schedule' && 'timeout' || (github.event_name == 'pull_request_review' && 'verdict' || 'pending') }}
           number: ${{ github.event.pull_request.number }}

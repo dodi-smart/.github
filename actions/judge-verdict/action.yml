@@ -23,7 +23,9 @@ runs:
       with:
         client-id:   ${{ inputs.client-id }}
         private-key: ${{ inputs.private-key }}
-        permissions: statuses:write issues:write pull-requests:read
+        # With pull-requests read, the first live run could not remove the label
+        # from a pull request. request-review labels PRs with both at write.
+        permissions: statuses:write issues:write pull-requests:write
 
     - shell: bash
       env:

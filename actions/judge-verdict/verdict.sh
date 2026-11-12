@@ -109,7 +109,13 @@ post() { # sha state description [target]
   [ -n "${4:-}" ] && args+=(-f "target_url=$4")
   gh api "/repos/$REPO/statuses/$1" "${args[@]}" >/dev/null
 }
-unlabel() { gh api -X DELETE "/repos/$REPO/issues/$1/labels/$LABEL" >/dev/null 2>&1 || true; }
+# A failed removal leaves the request open, so the next review or sweep tries
+# again. Say so instead of hiding it.
+unlabel() {
+  local err
+  err=$(gh api -X DELETE "/repos/$REPO/issues/$1/labels/$LABEL" 2>&1 >/dev/null) ||
+    echo "::warning title=agent:judge not removed::#$1 keeps $LABEL: ${err:-no reason given}"
+}
 
 run() {
   if [ -z "${GH_TOKEN:-}" ]; then

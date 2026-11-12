@@ -1,3 +1,9 @@
+## [1.48.0](https://github.com/dodi-smart/.github/compare/v1.47.2...v1.48.0) (2026-11-12)
+
+### ✨ Features
+
+* **dispatch:** pick the next Plan ready, Autonomous issue and apply agent:implement under a WIP cap ([#232](https://github.com/dodi-smart/.github/issues/232)) ([663e6f9](https://github.com/dodi-smart/.github/commit/663e6f926e5af4dcb6ccc151dcae2af0be04a14d))
+
 ## [1.47.2](https://github.com/dodi-smart/.github/compare/v1.47.1...v1.47.2) (2026-11-12)
 
 ### 🐛 Bug Fixes

@@ -1,3 +1,9 @@
+## [1.49.0](https://github.com/dodi-smart/.github/compare/v1.48.0...v1.49.0) (2026-11-12)
+
+### ✨ Features
+
+* **issue-implement,factory:** move Triage state off Plan ready when implement starts, and to Blocked when it opens no PR ([#233](https://github.com/dodi-smart/.github/issues/233)) ([bd55f69](https://github.com/dodi-smart/.github/commit/bd55f69e3a0f275857259e1e808e9bbcef2565b1))
+
 ## [1.48.0](https://github.com/dodi-smart/.github/compare/v1.47.2...v1.48.0) (2026-11-12)
 
 ### ✨ Features

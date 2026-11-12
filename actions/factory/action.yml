@@ -1,15 +1,15 @@
 # The deterministic steps of the agent factory, as one script.
 #
-# `issue-implement` and `pr-iterate` both call it, so the autonomy ladder, the
+# `issue-implement`, `pr-iterate` and `dispatch` call it, so the autonomy ladder, the
 # branch name, the holdout guard and the next-step decision each live in one
 # place. See factory.sh for what each command reads and writes. Agents never
 # call this: they write files and local commits, and these steps act on them.
 name: Factory step
-description: Compute the autonomy tier or branch name, push a guarded round, decide the fix loop's next step, or list the agent PRs that conflict with their base.
+description: Compute the autonomy tier or branch name, push a guarded round, decide the fix loop's next step, list the agent PRs that conflict with their base, or pick the issue the dispatcher starts.
 
 inputs:
   command:
-    description: 'tier | branch | fields | push | holdout | decide | sweep'
+    description: 'tier | branch | fields | push | holdout | decide | sweep | next'
     required: true
   args:
     description: 'Positional arguments for tier (mode risk effort) and branch (type number title), newline-separated'
@@ -42,8 +42,20 @@ inputs:
     description: 'Org App token. Without it nothing is pushed (push)'
     default: ''
   app-bot:
-    description: "The org App's login, `<app-slug>[bot]` (decide). Only its `review / verdict` counts; empty counts none"
+    description: "The org App's login, `<app-slug>[bot]` (decide, next). Only its `review / verdict` counts, and it opens every agent PR; empty counts none"
     default: ''
+  dispatch:
+    description: 'The FACTORY_DISPATCH variable. Anything but "true" holds (next)'
+    default: ''
+  wip-cap:
+    description: 'Open agent PRs plus issues being implemented at which the dispatcher holds (next)'
+    default: '2'
+  review-wait-ceiling:
+    description: 'Median hours the waiting agent PRs have waited for a first human review at which the dispatcher holds (next)'
+    default: '24'
+  required-state:
+    description: 'The Triage state an issue needs to be dispatched; issue-implement requires the same (next)'
+    default: 'Plan ready'
   token:
     description: 'Token for reads'
     default: ${{ github.token }}
@@ -63,15 +75,17 @@ outputs:
   sha:       { description: 'The round commit', value: '${{ steps.run.outputs.sha }}' }
   refuse-paths: { description: 'ERE of the holdout files of the given issue and their list, for push-round (holdout)', value: '${{ steps.run.outputs.refuse-paths }}' }
   merge-refuse-paths: { description: 'refuse-paths plus the lockfiles, for the push-round of a merge round (holdout)', value: '${{ steps.run.outputs.merge-refuse-paths }}' }
-  action:    { description: 'stop | update | fix-ci | fix-review | ready | review | land | handoff | give-up (update: the PR conflicts with its base; decide)', value: '${{ steps.run.outputs.action }}' }
+  action:    { description: 'stop | update | fix-ci | fix-review | ready | review | land | handoff | give-up (update: the PR conflicts with its base; decide); dispatch | hold (next)', value: '${{ steps.run.outputs.action }}' }
   reason:    { description: 'Why', value: '${{ steps.run.outputs.reason }}' }
   number:    { description: 'Pull request number', value: '${{ steps.run.outputs.number }}' }
-  issue:     { description: 'The issue the PR closes', value: '${{ steps.run.outputs.issue }}' }
+  issue:     { description: 'The issue the PR closes (decide); the issue to dispatch (next)', value: '${{ steps.run.outputs.issue }}' }
   head-sha:  { description: 'PR head commit', value: '${{ steps.run.outputs.head-sha }}' }
   head-ref:  { description: 'PR head branch', value: '${{ steps.run.outputs.head-ref }}' }
   base-ref:  { description: 'PR base branch', value: '${{ steps.run.outputs.base-ref }}' }
   rounds:    { description: 'Fix rounds already on the PR', value: '${{ steps.run.outputs.rounds }}' }
   run-id:    { description: 'The PR Checks run on the head', value: '${{ steps.run.outputs.run-id }}' }
+  wip:       { description: 'Open agent PRs plus issues being implemented (next)', value: '${{ steps.run.outputs.wip }}' }
+  review-wait-h: { description: 'Median hours the waiting agent PRs have waited for review; empty when none waits (next)', value: '${{ steps.run.outputs.review-wait-h }}' }
   dirty:     { description: 'Space-separated numbers of the open agent PRs that conflict with their base (sweep)', value: '${{ steps.run.outputs.dirty }}' }
 
 runs:
@@ -93,6 +107,10 @@ runs:
         AGENT_EMAILS:   ${{ inputs.agent-emails }}
         APP_TOKEN:      ${{ inputs.app-token }}
         APP_BOT:        ${{ inputs.app-bot }}
+        DISPATCH:       ${{ inputs.dispatch }}
+        WIP_CAP:        ${{ inputs.wip-cap }}
+        WAIT_CEILING_H: ${{ inputs.review-wait-ceiling }}
+        REQUIRED_STATE: ${{ inputs.required-state }}
         GH_TOKEN:       ${{ inputs.token }}
         ACTION_PATH:    ${{ github.action_path }}
       run: |

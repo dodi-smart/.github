@@ -224,7 +224,11 @@ while [ $# -gt 0 ]; do
   case "$1" in
     api) ;;
     --jq) jqx="$2"; shift ;;
-    -f|-F) [ "${2%%=*}" = n ] && path="graphql-issue"; shift ;;
+    -f|-F) [ "${2%%=*}" = n ] && path="graphql-issue"
+           case "$2" in
+             query=*'issues(states'*)       path="graphql-issues" ;;
+             query=*'pullRequests(states'*) path="graphql-prs" ;;
+           esac; shift ;;
     --paginate) ;;
     graphql) path=graphql ;;
     *) [ -z "$path" ] && path="$1" ;;
@@ -483,6 +487,128 @@ jq '.mergeable_state = "dirty"' "$WORK/api/_repos_o_r_pulls_18" > "$WORK/api/_re
 jq '.mergeable_state = "clean"' "$WORK/api/_repos_o_r_pulls_20" > "$WORK/api/_repos_o_r_pulls_20.2"
 expect "a PR GitHub had not judged yet is read again" test "$(sweep)" = '11 17 18'
 expect "and all of them are waited for once" test "$(wc -l < "$WORK/sleeps" | tr -d ' ')" = 1
+
+# 7. The dispatcher. `pick` decides from facts alone; `next` reads them.
+pickf() {  # pickf FACTS -> the decision's lines in $WORK/out
+  : > "$WORK/out"; GITHUB_OUTPUT="$WORK/out" bash "$F" pick <<<"$1" > "$WORK/log" 2>&1
+}
+iss() {  # iss NUM PRIORITY [JQ-PATCH]: a Plan ready, Autonomous issue, then the patch
+  jq -nc --argjson n "$1" --arg p "$2" '{number: $n, priority: (if $p == "" then null else $p end),
+    created: "2026-01-01T00:00:00Z", labels: [], state: "Plan ready", mode: "Autonomous", tried: false} | '"${3:-.}"
+}
+facts() {  # facts CAP PRS-JSON ISSUE...
+  local cap="$1" prs="$2"; shift 2
+  printf '%s\n' "$@" | jq -sc --argjson cap "$cap" --argjson prs "$prs" \
+    '{required: "Plan ready", cap: $cap, ceiling_h: 24, now: 1000000, prs: $prs, issues: .}'
+}
+pr() { jq -nc --argjson n "$1" --argjson c "$2" --argjson w "${3:-null}" '{number: $n, closes: $c, waiting_since: ($w | if . == null then null else todate end)}'; }
+two_issues=("$(iss 1 Low)" "$(iss 2 High)")
+
+pickf "$(facts 2 '[]' "${two_issues[@]}")"
+expect "the dispatcher picks the highest Priority"                     test "$(val action) $(val issue)" = 'dispatch 2'
+pickf "$(facts 2 '[]' "$(iss 1 Low)" "$(iss 2 Medium)" "$(iss 3 Urgent)" "$(iss 4 High)" "$(iss 5 '')")"
+expect "Urgent before High before Medium before Low"                   test "$(val issue)" = 3
+pickf "$(facts 2 '[]' "$(iss 1 Low)" "$(iss 5 '')")"
+expect "an unset Priority comes after Low"                             test "$(val issue)" = 1
+pickf "$(facts 2 '[]' "$(iss 7 High '.created = "2026-03-01T00:00:00Z"')" "$(iss 8 High '.created = "2026-02-01T00:00:00Z"')")"
+expect "at one Priority the oldest issue goes first"                   test "$(val issue)" = 8
+pickf "$(facts 2 '[]' "$(iss 9 High)" "$(iss 8 High)")"
+expect "and at one age the lowest number"                              test "$(val issue)" = 8
+
+pickf "$(facts 2 '[]' "$(iss 2 Urgent '.labels = ["agent:no-touch"]')" "$(iss 1 Low)")"
+expect "agent:no-touch is skipped"                                     test "$(val issue)" = 1
+pickf "$(facts 2 '[]' "$(iss 2 Urgent '.labels = ["agent:no-touch"]')")"
+expect "and with nothing else, it holds"                               test "$(val action)" = hold
+pickf "$(facts 2 '[]' "$(iss 2 Urgent '.state = "Needs info"')" "$(iss 3 Urgent '.mode = "Supervised"')" \
+                       "$(iss 4 Urgent '.mode = "Human only"')" "$(iss 5 Urgent '.mode = null')" "$(iss 1 Low)")"
+expect "only Plan ready and Autonomous issues are picked"              test "$(val issue)" = 1
+pickf "$(facts 2 '[]' "$(iss 2 Urgent '.tried = true')" "$(iss 1 Low)")"
+expect "an issue the App dispatched before is a person's to retry"     test "$(val issue)" = 1
+pickf "$(facts 2 "[$(pr 20 2)]" "${two_issues[@]}")"
+expect "an issue an open agent PR closes is not picked again"          test "$(val issue)" = 1
+
+pickf "$(facts 2 "[$(pr 20 5)]" "${two_issues[@]}")"
+expect "under the WIP cap it dispatches"                               test "$(val action) $(val wip)" = 'dispatch 1'
+pickf "$(facts 2 "[$(pr 20 5),$(pr 21 6)]" "${two_issues[@]}")"
+expect "two open agent PRs reach the default cap of 2"                 test "$(val action) $(val wip)" = 'hold 2'
+pickf "$(facts 2 "[$(pr 20 5)]" "$(iss 6 Low '.labels = ["agent:implement"]')" "${two_issues[@]}")"
+expect "an issue being implemented counts toward the cap"              test "$(val action) $(val wip)" = 'hold 2'
+pickf "$(facts 2 "[$(pr 20 6)]" "$(iss 6 Low '.labels = ["agent:implement"]')" "${two_issues[@]}")"
+expect "but not twice once its PR is open"                             test "$(val action) $(val wip)" = 'dispatch 1'
+pickf "$(facts 3 "[$(pr 20 5),$(pr 21 6)]" "${two_issues[@]}")"
+expect "a higher cap lets the third through"                           test "$(val action)" = dispatch
+pickf "$(facts 0 '[]' "${two_issues[@]}")"
+expect "a cap of 0 dispatches nothing"                                 test "$(val action)" = hold
+
+h=3600; now=1000000
+pickf "$(facts 9 "[$(pr 20 5 $((now - 30 * h))),$(pr 21 6 $((now - 2 * h)))]" "${two_issues[@]}")"
+expect "a median review wait under the ceiling dispatches (30h and 2h: 16h)" test "$(val action) $(val review-wait-h)" = 'dispatch 16'
+pickf "$(facts 9 "[$(pr 20 5 $((now - 30 * h))),$(pr 21 6 $((now - 25 * h))),$(pr 22 7 $((now - 1 * h)))]" "${two_issues[@]}")"
+expect "a median at or over the ceiling holds (30h, 25h, 1h: 25h)"     test "$(val action) $(val review-wait-h)" = 'hold 25'
+pickf "$(facts 9 "[$(pr 20 5 $((now - 24 * h)))]" "${two_issues[@]}")"
+expect "exactly the ceiling holds"                                     test "$(val action)" = hold
+pickf "$(facts 9 "[$(pr 20 5 $((now - 99 * h))),$(pr 21 6),$(pr 22 7)]" "${two_issues[@]}")"
+expect "only PRs still waiting count: a draft or a reviewed PR has no wait" test "$(val action) $(val review-wait-h)" = 'hold 99'
+pickf "$(facts 9 "[$(pr 20 5),$(pr 21 6)]" "${two_issues[@]}")"
+expect "no PR waiting is no review wait"                               test "$(val action) $(val review-wait-h)" = 'dispatch '
+pickf "$(facts 2 "[$(pr 20 5 $((now - 99 * h))),$(pr 21 6 $((now - 99 * h)))]" "${two_issues[@]}")"
+expect "the cap is judged before the wait"                             grep -q 'WIP cap' "$WORK/out"
+
+# next reads the facts in two GraphQL reads: the App's PRs, then the issues with their label history.
+rm -rf "$WORK/api"; mkdir -p "$WORK/api"
+gp() {  # gp NUM AUTHOR DRAFT BODY [REVIEWS-JSON] [READY-AT]
+  jq -nc --argjson n "$1" --arg a "$2" --argjson d "$3" --arg b "$4" --argjson r "${5:-[]}" --arg ready "${6:-}" \
+    '{number: $n, isDraft: $d, createdAt: "2026-11-10T00:00:00Z", body: $b,
+      author: {__typename: (if ($a | test("^app$")) then "Bot" else "User" end), login: $a},
+      reviews: {nodes: $r}, timelineItems: {nodes: (if $ready == "" then [] else [{createdAt: $ready}] end)}}'
+}
+bot_review='[{"author":{"__typename":"Bot","login":"pr-review"}}]'
+api graphql-prs "{\"data\":{\"repository\":{\"pullRequests\":{\"nodes\":[
+  $(gp 20 app false 'x
+
+Closes #5' "$bot_review" 2026-11-11T00:00:00Z), $(gp 21 app true 'Closes #6'), $(gp 22 app false 'sync'), $(gp 23 someone false 'Closes #7')]}}}}"
+gi() {  # gi NUM PRIORITY CREATED [LABELED-BY]: a Plan ready, Autonomous issue
+  jq -nc --argjson n "$1" --arg p "$2" --arg c "$3" --arg by "${4:-}" '{number: $n, createdAt: $c, labels: {nodes: []},
+    issueFieldValues: {nodes: [
+      {name: "Plan ready", field: {name: "Triage state"}}, {name: "Autonomous", field: {name: "Agent mode"}},
+      {name: $p, field: {name: "Priority"}}, {}]},
+    timelineItems: {nodes: (if $by == "" then [] else [{label: {name: "agent:implement"}, actor: {login: $by}}] end)}}'
+}
+api graphql-issues "{\"data\":{\"repository\":{\"issues\":{\"nodes\":[
+  $(gi 5 Urgent 2026-01-01T00:00:00Z), $(gi 8 High 2026-01-01T00:00:00Z app), $(gi 9 High 2026-01-02T00:00:00Z person),
+  $(gi 10 Medium 2026-01-01T00:00:00Z)]}}}}"
+nextf() {
+  : > "$WORK/out"
+  env -i PATH="$WORK/bin:$PATH" HOME="$WORK" STUB_API="$WORK/api" REPO=o/r DISPATCH="${DISPATCH-true}" APP_BOT='app[bot]' \
+    WIP_CAP="${CAP:-2}" WAIT_CEILING_H="${CEIL:-24}" NOW="$(jq -n '"2026-11-12T12:00:00Z" | fromdateiso8601')" \
+    GITHUB_OUTPUT="$WORK/out" bash "$F" next > "$WORK/log" 2>&1
+}
+CAP=3 CEIL=48 nextf
+expect "next counts the App's PRs that close an issue, skips the closed issue and one the App dispatched; a person's label does not count" \
+  test "$(val action) $(val issue) $(val wip)" = 'dispatch 9 2'
+expect "and the wait runs from the last ready_for_review, past a bot's review" test "$(val review-wait-h)" = 36
+CAP=3 CEIL=36 nextf
+expect "next holds at the ceiling"                                     test "$(val action)" = hold
+rm "$WORK/api/graphql-issues"
+nextf
+expect "the PRs alone at the cap hold before the issues are read"      test "$(val action) $(val wip): $(val reason)" = 'hold 2: 2 agent PRs open: the WIP cap is 2'
+CAP=3 nextf
+expect "an unreadable issue list holds"                                test "$(val action): $(val reason)" = 'hold: could not read the open issues'
+api graphql-prs "{\"data\":{\"repository\":{\"pullRequests\":{\"nodes\":[
+  $(gp 20 app false 'Closes #5' '[{"author":{"__typename":"User","login":"person"}}]' 2026-11-11T00:00:00Z)]}}}}"
+CAP=3 CEIL=1 nextf
+expect "a PR a person reviewed waits no more"                          test "$(val review-wait-h)" = ''
+rm -rf "$WORK/api"
+for v in false '' TRUE yes; do
+  DISPATCH="$v" nextf
+  expect "FACTORY_DISPATCH='$v' holds before any read (the stub has no answers)" \
+    test "$(val action): $(val reason)" = "hold: FACTORY_DISPATCH is \"$v\", not \"true\""
+done
+mkdir -p "$WORK/api"
+for bad in 'x' '-1'; do
+  CAP="$bad" nextf
+  expect "a wip-cap of '$bad' holds"                                   test "$(val action)" = hold
+done
 
 printf '\n%s passed, %s failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

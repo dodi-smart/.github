@@ -12,6 +12,9 @@
 #                                                  merge-refuse-paths for a merge round
 #   factory.sh decide   (env, see decide())     -> action and the facts behind it
 #   factory.sh sweep    (REPO)                  -> dirty=<numbers of agent PRs that conflict>
+#   factory.sh next     (env, see next())       -> action=dispatch|hold, issue, reason
+#   factory.sh pick     < FACTS                 -> next's decision from facts already read
+#   factory.sh closes   < BODY                  -> the issue number a PR body closes, or nothing
 #
 # Outputs go to $GITHUB_OUTPUT as key=value lines, and are echoed for the log.
 set -euo pipefail
@@ -65,23 +68,25 @@ branch_of() {
 
 # ---------------------------------------------------------------------------
 # fields: read the issue's single-select fields, repo-scoped (the App has no
-# org permission). A read that fails leaves every field unset.
+# org permission). A read that fails leaves every field unset. `next` reads the
+# same fields for every open issue, through the same fragment and mapping.
 # ---------------------------------------------------------------------------
+FIELDS_GQL='issueFieldValues(first:50){ nodes{
+  ... on IssueFieldSingleSelectValue { name field { ... on IssueFieldSingleSelect { name } } } } }'
+# fields: the node's field values as {"Triage state": "Plan ready", ...}
+FIELDS_JQ='def fields: [.issueFieldValues.nodes[] | select(.field.name? != null) | {key: .field.name, value: .name}] | from_entries;'
 read_fields() {
   local owner="${REPO%%/*}" name="${REPO##*/}" values
   # shellcheck disable=SC2016  # $o/$r/$n are GraphQL variables, not shell
   if values=$(gh api graphql -f query='query($o:String!,$r:String!,$n:Int!){
-    repository(owner:$o,name:$r){ issue(number:$n){
-      issueFieldValues(first:50){ nodes{
-        ... on IssueFieldSingleSelectValue {
-          name field { ... on IssueFieldSingleSelect { name } } } } } } } }' \
+    repository(owner:$o,name:$r){ issue(number:$n){ '"$FIELDS_GQL"' } } }' \
     -f o="$owner" -f r="$name" -F n="$ISSUE" \
-    --jq '[.data.repository.issue.issueFieldValues.nodes[] | select(.field.name != null)]' 2>/dev/null); then
+    --jq "$FIELDS_JQ .data.repository.issue | fields | tojson" 2>/dev/null); then
     F_READ=true
   else
-    values='[]'; F_READ=false
+    values='{}'; F_READ=false
   fi
-  get() { jq -r --arg f "$1" '.[]|select(.field.name==$f)|.name' <<<"$values" | sed -n 1p; }
+  get() { jq -r --arg f "$1" '.[$f] // empty' <<<"$values"; }
   F_STATE=$(get "Triage state"); F_MODE=$(get "Agent mode"); F_RISK=$(get "Risk"); F_EFFORT=$(get "Effort")
   F_PRIORITY=$(get "Priority")
 }
@@ -193,6 +198,10 @@ mergeable_of() {
   printf '%s' "${s:-unknown}"
 }
 
+# closes_of < BODY -> the issue a PR body closes, from the first `Closes #n`
+# (or Fixes, Resolves). Implement writes it, so this reads our own output.
+closes_of() { grep -oiE '(closes|fixes|resolves) #[0-9]+' | sed -n 1p | grep -oE '[0-9]+' || true; }
+
 # The PRs the fix loop never touches, for `decide` and `sweep` alike: a fork, an
 # agent:no-touch label, a dependency bot's PR (deps-verify and deps-automerge own
 # those; the loop would push agent commits onto a branch Renovate rebases, and
@@ -255,7 +264,7 @@ decide() {
 
   # The issue the PR closes. Implement writes `Closes #n` itself, so this is a
   # read of our own output, not a guess at a person's wording.
-  issue=$(printf '%s' "$body" | grep -oiE '(closes|fixes|resolves) #[0-9]+' | sed -n 1p | grep -oE '[0-9]+' || true)
+  issue=$(printf '%s' "$body" | closes_of)
   out issue "${issue:-}"
   F_STATE=''; F_MODE=''; F_RISK=''; F_EFFORT=''; F_PRIORITY=''
   if [ -n "$issue" ]; then
@@ -366,6 +375,120 @@ sweep() {
   out dirty "$dirty"
 }
 
+# ---------------------------------------------------------------------------
+# pick: the dispatcher's decision, a pure function of facts. `next` reads the
+# facts and test.sh feeds it JSON. The rules, in order, are the README's
+# Dispatch section; the kill switch is checked before any fact is read.
+#
+# facts: {required, cap, ceiling_h, now,
+#         prs:    [{number, closes, waiting_since}]   waiting_since: ISO 8601, or null
+#         issues: [{number, created, priority, state, mode, labels, tried}]}
+# `tried`: the org App labelled the issue agent:implement before.
+# ---------------------------------------------------------------------------
+# shellcheck disable=SC2016  # $f, $n and the rest are jq variables, not shell
+PICK_JQ='
+def rank: {"Urgent": 0, "High": 1, "Medium": 2, "Low": 3}[. // ""] // 4;
+def median: sort | length as $n
+  | if $n == 0 then null elif $n % 2 == 1 then .[($n - 1) / 2] else (.[$n / 2 - 1] + .[$n / 2]) / 2 end;
+def hold($r): {action: "hold", reason: $r};
+. as $f
+| [$f.prs[].closes] as $covered
+| def has_pr: .number as $n | $covered | index($n) != null;
+  def labelled($l): .labels | index($l) != null;
+  [$f.issues[] | select(labelled("agent:implement") and (has_pr | not))] as $inflight
+| (($f.prs | length) + ($inflight | length)) as $wip
+| ([$f.prs[] | select(.waiting_since != null) | ($f.now - (.waiting_since | fromdateiso8601)) / 3600] | median) as $wait
+| {wip: $wip, wait: (if $wait == null then "" else ($wait * 10 | floor) / 10 end)} as $m
+| $m + if $wip >= $f.cap then hold("\($f.prs | length) agent PRs open and \($inflight | length) issues being implemented: the WIP cap is \($f.cap)")
+  elif $wait != null and $wait >= $f.ceiling_h then hold("the median review wait is \($m.wait)h: the ceiling is \($f.ceiling_h)h")
+  else
+    [$f.issues[]
+      | select(.state == $f.required and .mode == "Autonomous" and (.tried | not)
+               and (labelled("agent:no-touch") | not) and (labelled("agent:implement") | not) and (has_pr | not))]
+    | sort_by([(.priority | rank), .created, .number]) | first
+    | if . == null then hold("no open issue is \($f.required), Autonomous and untouched")
+      else {action: "dispatch", issue: .number,
+            reason: "#\(.number) is \($f.required) and Autonomous, Priority \(.priority // "unset"); WIP \($wip) of \($f.cap)"} end
+  end'
+# emit DECISION -> the decision's fields as outputs
+emit() {
+  local k v
+  while IFS='=' read -r k v; do out "$k" "$v"; done < <(jq -r '"action=\(.action)", "issue=\(.issue // "")",
+    "reason=\(.reason)", "wip=\(.wip)", "review-wait-h=\(.wait)"' <<<"$1")
+}
+pick() { emit "$(jq -c "$PICK_JQ")"; }
+
+# ---------------------------------------------------------------------------
+# next: read the facts `pick` decides from, in two GraphQL reads. It only reads;
+# the caller applies agent:implement with the App token.
+#
+# env: REPO, DISPATCH (the FACTORY_DISPATCH variable), WIP_CAP (default 2),
+#      WAIT_CEILING_H (default 24), REQUIRED_STATE (default Plan ready, as in
+#      issue-implement), APP_BOT (the App's login, `<slug>[bot]`),
+#      NOW (epoch seconds; the clock by default)
+#
+# An agent PR is an open PR the App opened whose body says `Closes #n`, which
+# implement always writes. One waits for review while it is not a draft and no
+# person has reviewed it, since it was last marked ready (or opened). The PRs
+# alone at the cap hold before the issues are read. A read that fails holds: a
+# dispatcher that cannot see the queue adds nothing.
+# ---------------------------------------------------------------------------
+next() {
+  local dispatch="${DISPATCH:-}" cap="${WIP_CAP:-2}" ceil="${WAIT_CEILING_H:-24}" now="${NOW:-}"
+  local required="${REQUIRED_STATE:-Plan ready}"
+  finish() { out action hold; out reason "$1"; exit 0; }
+  # The kill switch, before any read.
+  [ "$dispatch" = true ] || finish "FACTORY_DISPATCH is \"$dispatch\", not \"true\""
+  [[ "$cap" =~ ^[0-9]+$ ]] || finish "wip-cap \"$cap\" is not a whole number"
+  [[ "$ceil" =~ ^[0-9]+([.][0-9]+)?$ ]] || finish "review-wait-ceiling \"$ceil\" is not a number of hours"
+  [ -n "${APP_BOT:-}" ] || finish "no agent login: the org App is not configured"
+  [ -n "$now" ] || now=$(date +%s)
+  # GraphQL names an App by its slug, with no [bot]. Slugs are [a-z0-9-], so it
+  # is safe inside the jq programs below.
+  local agent="${APP_BOT%\[bot\]}" owner="${REPO%%/*}" name="${REPO##*/}" n prs issues
+  # One object per agent PR. The `Closes #n` match is closes_of's, in jq.
+  # shellcheck disable=SC2016  # $c is a jq variable, not shell
+  local pr_jq='.data.repository.pullRequests.nodes[]
+    | select(.author.__typename == "Bot" and .author.login == "@AGENT@")
+    | ([(.body // "") | match("(closes|fixes|resolves) #([0-9]+)"; "i")] | first | .captures[1].string) as $c
+    | select($c != null)
+    | {number, closes: ($c | tonumber),
+       waiting_since: (if .isDraft or any(.reviews.nodes[]; .author.__typename != "Bot" and .author.login != "@AGENT@") then null
+                       else (.timelineItems.nodes[0].createdAt // .createdAt) end)}
+    | tojson'
+
+  # shellcheck disable=SC2016  # $o/$r/$endCursor are GraphQL variables, not shell
+  prs=$(gh api graphql --paginate -f query='query($o:String!,$r:String!,$endCursor:String){
+    repository(owner:$o,name:$r){ pullRequests(states:OPEN, first:50, after:$endCursor){
+      pageInfo{ hasNextPage endCursor }
+      nodes{ number isDraft createdAt body author{ __typename login }
+        reviews(first:100){ nodes{ author{ __typename login } } }
+        timelineItems(itemTypes:[READY_FOR_REVIEW_EVENT], last:1){ nodes{ ... on ReadyForReviewEvent { createdAt } } } } } } }' \
+    -f o="$owner" -f r="$name" --jq "${pr_jq//@AGENT@/$agent}" 2>/dev/null) \
+    || finish "could not read the open pull requests"
+  prs=$(jq -sc . <<<"$prs")
+  n=$(jq length <<<"$prs")
+  if [ "$n" -ge "$cap" ]; then out wip "$n"; finish "$n agent PRs open: the WIP cap is $cap"; fi
+
+  # shellcheck disable=SC2016  # $o/$r/$endCursor are GraphQL variables, not shell
+  issues=$(gh api graphql --paginate -f query='query($o:String!,$r:String!,$endCursor:String){
+    repository(owner:$o,name:$r){ issues(states:OPEN, first:100, after:$endCursor){
+      pageInfo{ hasNextPage endCursor }
+      nodes{ number createdAt labels(first:50){ nodes{ name } } '"$FIELDS_GQL"'
+        timelineItems(itemTypes:[LABELED_EVENT], last:100){ nodes{ ... on LabeledEvent { label{ name } actor{ login } } } } } } } }' \
+    -f o="$owner" -f r="$name" \
+    --jq "$FIELDS_JQ .data.repository.issues.nodes[] | fields as \$v
+          | {number, created: .createdAt, labels: [.labels.nodes[].name],
+             state: \$v[\"Triage state\"], mode: \$v[\"Agent mode\"], priority: \$v[\"Priority\"],
+             tried: any(.timelineItems.nodes[]; .label.name == \"agent:implement\" and .actor.login == \"$agent\")}
+          | tojson" 2>/dev/null) \
+    || finish "could not read the open issues"
+
+  jq -nc --arg q "$required" --argjson cap "$cap" --argjson c "$ceil" --argjson now "$now" \
+     --argjson prs "$prs" --argjson issues "$(jq -sc . <<<"$issues")" \
+     '{required: $q, cap: $cap, ceiling_h: $c, now: $now, prs: $prs, issues: $issues}' | pick
+}
+
 cmd="${1:-}"; shift || true
 case "$cmd" in
   tier)   out tier "$(tier_of "${1:-}" "${2:-}" "${3:-}")" ;;
@@ -384,5 +507,8 @@ case "$cmd" in
     out merge-refuse-paths "($hp)|($(cat "$HERE/../setup-stack/lockfiles.re"))" ;;
   decide) decide ;;
   sweep)  sweep ;;
-  *) echo "usage: factory.sh tier|branch|fields|push|holdout|decide|sweep" >&2; exit 2 ;;
+  next)   next ;;
+  closes) closes_of ;;
+  pick)   pick ;;
+  *) echo "usage: factory.sh tier|branch|fields|push|holdout|decide|sweep|next|pick|closes" >&2; exit 2 ;;
 esac

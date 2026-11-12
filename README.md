@@ -70,6 +70,7 @@ caller keeps working.
 | `issue-implement.yml` | `agent:implement`, `@claude implement` | Holdout tests from the plan's acceptance criteria, then code. A step pushes one commit to `feat\|fix\|chore/<n>-<slug>` and opens a draft PR. Requires a plan. |
 | `pr-iterate.yml` | `agent:iterate`, PR Checks completed, the review verdict status | The agent fix loop: up to 3 fix rounds on red checks or a `changes` verdict, then ready for review, then a squash merge (the repo must allow squash merges) when the issue is `Autonomous` with Risk and Effort `Low`. A PR that conflicts with its base gets the base merged in, or goes to a person with the conflicted files; the caller should add a `schedule:` trigger for the sweep that finds them. Every push, ready and merge is a step, not the agent. A Renovate or Dependabot PR stops, label or not: deps-verify owns it |
 | `judge.yml` | `agent:judge`, a review by `dodi-judge[bot]`, a schedule | The independent judge (another model family, Grok Bot acting as the review-only `dodi-judge` App): marks `judge / verdict` pending, posts the judge's verdict on the head with the org App, and times out unanswered requests. Advisory: no gate reads it yet. See [Judge verdict](#judge-verdict) |
+| `dispatch.yml` | PR closed, review submitted, issue unlabeled or edited, a schedule | The deterministic dispatcher: applies `agent:implement`, as the org App, to the highest-Priority issue that is `Plan ready` and `Autonomous`, while open agent PRs are under a WIP cap and their review wait is under a ceiling. No agent runs. Off unless `FACTORY_DISPATCH` is `true`. See [Dispatch](#dispatch) |
 | `claude-assist.yml` | `@claude <anything else>` | The general assistant |
 | `release.yml` | push to a release branch | semantic-release, single or multi-module |
 | `release-canary.yml` | dispatched by this repo's `Publish release` | Runs `pr-checks.yml` end to end against a release's pinned commit and posts the `release-canary` commit status that `Promote` reads. Not for callers |
@@ -403,7 +404,7 @@ Renovate marker, and a bump releases as `chore(deps)`.
 | `actions/merge-gate` | The one unattended merge: resolves the PR, runs `agent-gate`, decides by policy (`deps`, `factory`, `backmerge`, `hotfix` or `standards-sync`) from labels, the required check, `review / verdict` (only the org App's counts), Renovate's release-age status, mergeability, the base branch, commit authors, for a back-merge the head commit's parents, for a security patch `target-guard`'s verdict, and for a standards sync `standards / verify` and `standards / render`, and merges with the App token (a dependency PR by rebase, an agent PR, a security patch and a standards sync by squash, a back-merge by merge commit). A conflicted Renovate PR gets its rebase box ticked instead; a conflicted agent PR waits for the fix loop. For `hotfix` it takes target-guard's verdict from `guard.sh verdict`, which prints it without failing. When the policy needs a review the head does not have, it applies `agent:review` through `request-review` |
 | `actions/push-round` | Checks an agent's commits on a PR branch, regenerates lockfiles, and pushes them as one trailered commit with the App token, or refuses with a reason; its merge mode pushes the update job's merge of the base. Every round, round 0 included, passes `guard.sh`, which refuses a deleted, skipped or loosened test, a deleted snapshot, and any edit to a workflow, the merge gate or lint, test or CI config |
 | `actions/app-token` | Mints the org App token for this repo, optionally narrowed; empty when no App is configured. Also outputs the App's `app-slug` and its `login` (`<slug>[bot]`), the creator of the statuses it posts |
-| `actions/factory` | The deterministic half of `issue-implement.yml` and `pr-iterate.yml`: the autonomy tier from `Agent mode`, `Risk` and `Effort`, the branch name, round 0's push, the holdout pattern fix rounds give `push-round` (one list per issue, `.factory/holdout.d/<issue>`), and the fix loop's next step |
+| `actions/factory` | The deterministic half of `issue-implement.yml` and `pr-iterate.yml`: the autonomy tier from `Agent mode`, `Risk` and `Effort`, the branch name, round 0's push, the holdout pattern fix rounds give `push-round` (one list per issue, `.factory/holdout.d/<issue>`), the fix loop's next step, and the dispatcher's pick (`next`) |
 | `actions/setup-stack` | Installs a toolchain, resolves cache isolation, supplies conventional commands |
 | `actions/setup-stack/resolve` | Resolves a caller's commands against the stack's with no checkout and no toolchain, by running `defaults.sh`. What `pr-checks.yml`'s `pick` asks whether `test` and `build` have a command |
 | `actions/sticky-comment` | One keyed comment per pull request, rewritten in place on every later run |
@@ -1759,6 +1760,60 @@ contract it writes to.
 The judge App has no statuses permission, so it can never post its own verdict.
 No gate reads `judge / verdict` yet; that takes a new decision. Kill switch:
 the variable `FACTORY_JUDGE` set to `false`.
+
+## Dispatch
+
+`dispatch.yml` starts implementation without a person applying
+`agent:implement`. `factory.sh next` reads the facts and `pick` decides, with no
+agent anywhere in the picker. The caller runs it on the events that can free a
+slot or make an issue ready, with a schedule as the backstop. Adding a label
+never makes an issue eligible, so only `unlabeled` is listed, and a bot's
+review is skipped before a runner is booked:
+
+```yaml
+on:
+  pull_request:        { types: [closed] }
+  pull_request_review: { types: [submitted] }
+  issues:              { types: [unlabeled, edited] }
+  schedule:            [{ cron: '23 */3 * * *' }]
+  workflow_dispatch:
+jobs:
+  dispatch:
+    uses: dodi-smart/.github/.github/workflows/dispatch.yml@v1
+    secrets: inherit
+```
+
+Each run dispatches at most one issue, and the first rule that holds wins:
+
+1. **Kill switch.** The org or repo variable `FACTORY_DISPATCH` is anything but
+   `true`, unset included: the job is skipped, and `next` checks it again
+   before any read.
+2. **WIP cap.** Open agent PRs plus issues carrying `agent:implement` reach
+   `wip-cap` (default 2): hold. An agent PR is one the org App opened whose body
+   says `Closes #n`, which implement always writes. The PRs alone at the cap
+   hold before the issues are read.
+3. **Review-wait ceiling.** The median hours the waiting agent PRs have waited
+   reach `review-wait-ceiling` (default 24): hold. A PR waits while it is not a
+   draft and no person has reviewed it, counted from when it was last marked
+   ready, so the dispatcher never feeds a queue nobody drains.
+4. **Pick.** The open issue whose `Triage state` is `required-state` (default
+   `Plan ready`, as in issue-implement) and whose `Agent mode` is `Autonomous`,
+   highest Priority first (Urgent, High, Medium, Low, then unset), then the
+   oldest, then the lowest number. Skipped: `agent:no-touch`, an issue carrying
+   `agent:implement` or closed by an open agent PR, and one the org App labelled
+   before, so a run it started that failed is a person's to retry. A person's own
+   earlier label does not count.
+
+The org App applies the label, because a `GITHUB_TOKEN` label starts no
+workflow. A held run mints only a read-only token, for the App's login; the
+write token is minted only to label. With no App configured nothing is
+dispatched. A read that fails holds. Runs never overlap in one repo, so two
+cannot both see room under the cap. The job summary gives the decision, the
+WIP and the median wait.
+
+issue-implement accepts the request from the org App alone (`allowed-bots`), and
+clears `agent:implement` whenever its gate stops a request, a bot's issue
+included, so a stopped request never holds a WIP slot.
 
 ## Renovate
 

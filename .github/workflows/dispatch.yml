@@ -1,0 +1,104 @@
+# Reusable: the deterministic dispatcher (factory move 3). Applies
+# `agent:implement` with the org App to the next issue the factory may take on
+# its own, under a WIP cap and a review-wait ceiling. No agent runs here. The
+# rules and the caller wrapper are the README's Dispatch section; `factory.sh
+# next` applies them and test.sh covers them. Kill switch: FACTORY_DISPATCH,
+# off unless `true`.
+name: Dispatch
+
+on:
+  workflow_call:
+    inputs:
+      # Open agent PRs plus issues carrying agent:implement at which it holds.
+      wip-cap:
+        type: number
+        default: 2
+      # Median hours the waiting agent PRs have waited for a first human review
+      # at which it holds. A PR waits while it is not a draft and no person has
+      # reviewed it, since it was last marked ready.
+      review-wait-ceiling:
+        type: number
+        default: 24
+      # The Triage state an issue needs. Keep it equal to issue-implement's.
+      required-state:
+        type: string
+        default: "Plan ready"
+    secrets:
+      GH_APP_CLIENT_ID:   { required: false }
+      GH_APP_PRIVATE_KEY: { required: false }
+
+# One run at a time per repo, so two runs never both see room under the cap.
+concurrency:
+  group: dispatch-${{ github.repository }}
+  cancel-in-progress: false
+
+# Every job grants its own, so one added later starts with nothing.
+permissions: {}
+
+jobs:
+  dispatch:
+    # The kill switch, first; factory.sh checks it again before any read. A
+    # bot's review cannot change the wait, so it books no runner.
+    if: vars.FACTORY_DISPATCH == 'true' && github.event.review.user.type != 'Bot'
+    runs-on: ${{ fromJSON((github.event.repository.private && !github.event.pull_request.head.repo.fork) && '["self-hosted","Linux","light"]' || '"ubuntu-latest"') }}
+    timeout-minutes: 5
+    permissions:
+      issues: read             # the issues and their fields, the label history
+      pull-requests: read      # the open agent PRs and their reviews
+    steps:
+      - uses: dodi-smart/.github/actions/runner-report@v1
+        with:
+          selector: light
+
+      # A read-only token, for the App's login that names the agent PRs.
+      - id: app
+        uses: dodi-smart/.github/actions/app-token@v1
+        with:
+          client-id:   ${{ secrets.GH_APP_CLIENT_ID }}
+          private-key: ${{ secrets.GH_APP_PRIVATE_KEY }}
+          permissions: 'issues:read'
+
+      - id: next
+        uses: dodi-smart/.github/actions/factory@v1
+        with:
+          command:             next
+          dispatch:            ${{ vars.FACTORY_DISPATCH }}
+          wip-cap:             ${{ inputs.wip-cap }}
+          review-wait-ceiling: ${{ inputs.review-wait-ceiling }}
+          required-state:      ${{ inputs.required-state }}
+          app-bot:             ${{ steps.app.outputs.login }}
+
+      # The write token only on the path that labels. The label is in the
+      # universal set, so it exists.
+      - id: app-write
+        if: steps.next.outputs.action == 'dispatch'
+        uses: dodi-smart/.github/actions/app-token@v1
+        with:
+          client-id:   ${{ secrets.GH_APP_CLIENT_ID }}
+          private-key: ${{ secrets.GH_APP_PRIVATE_KEY }}
+          permissions: 'issues:write'
+
+      - if: steps.next.outputs.action == 'dispatch'
+        env:
+          GH_TOKEN: ${{ steps.app-write.outputs.token }}
+          REPO:     ${{ github.repository }}
+          NUM:      ${{ steps.next.outputs.issue }}
+          REASON:   ${{ steps.next.outputs.reason }}
+        run: |
+          set -euo pipefail
+          gh issue edit "$NUM" --repo "$REPO" --add-label agent:implement >/dev/null
+          echo "::notice title=Dispatched #$NUM::$REASON"
+
+      - if: always()
+        env:
+          ACTION: ${{ steps.next.outputs.action }}
+          REASON: ${{ steps.next.outputs.reason }}
+          WIP:    ${{ steps.next.outputs.wip }}
+          WAIT:   ${{ steps.next.outputs.review-wait-h }}
+        run: |
+          set -euo pipefail
+          {
+            echo "**${ACTION:-not decided}**: ${REASON:-see the log}"
+            echo
+            echo "WIP ${WIP:-?}, median review wait ${WAIT:-none}${WAIT:+h}"
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -69,7 +69,8 @@ jobs:
     if: >-
       (github.event.action != 'labeled' || github.event.label.name == 'agent:implement')
       && (github.event_name != 'issue_comment' || contains(github.event.comment.body, '@claude'))
-      && !(endsWith(github.event.issue.user.login, '[bot]') || startsWith(github.event.issue.user.login, 'app/'))
+      && (!(endsWith(github.event.issue.user.login, '[bot]') || startsWith(github.event.issue.user.login, 'app/'))
+        || (github.event.action == 'labeled' && github.event.label.name == 'agent:implement'))
     runs-on: ${{ fromJSON((github.event.repository.private && !github.event.pull_request.head.repo.fork) && '["self-hosted","Linux","light"]' || '"ubuntu-latest"') }}
     timeout-minutes: 10
     permissions:
@@ -83,6 +84,7 @@ jobs:
       effort:   ${{ steps.fields.outputs.effort }}
       priority: ${{ steps.fields.outputs.priority }}
       branch:  ${{ steps.branch.outputs.branch }}
+      app-bot: ${{ steps.app.outputs.login }}
     steps:
       - uses: dodi-smart/.github/actions/runner-report@v1
         with:
@@ -124,10 +126,17 @@ jobs:
           NUM:      ${{ github.event.issue.number }}
           ACTOR:    ${{ github.actor }}
           REQUIRED: ${{ inputs.required-state }}
+          EVENT_ACTION: ${{ github.event.action }}
+          LABEL:    ${{ github.event.label.name }}
         run: |
           set -euo pipefail
+          # Request labels self-clear on every stop, so a stopped request never
+          # looks like work in flight (or holds the dispatcher's WIP slot).
+          clear_request() { gh issue edit "$NUM" --repo "$REPO" --remove-label 'agent:implement' 2>/dev/null || true; }
           if [ "$PROCEED" != "true" ]; then
-            echo "proceed=false" >> "$GITHUB_OUTPUT"; exit 0
+            echo "proceed=false" >> "$GITHUB_OUTPUT"
+            if [ "$EVENT_ACTION" = labeled ] && [ "$LABEL" = agent:implement ]; then clear_request; fi
+            exit 0
           fi
           # A failed read is not an unplanned issue. Fail rather than refuse.
           if [ "$READ" != "true" ]; then
@@ -139,9 +148,7 @@ jobs:
           refuse() {
             echo "proceed=false" >> "$GITHUB_OUTPUT"
             gh issue comment "$NUM" --repo "$REPO" --body "$1" || true
-            # Clear the request label so the issue does not look like work in
-            # flight. Request labels are self-clearing on every path.
-            gh issue edit "$NUM" --repo "$REPO" --remove-label 'agent:implement' 2>/dev/null || true
+            clear_request
             echo "REFUSED: $1"
             exit 0
           }
@@ -172,6 +179,16 @@ jobs:
           esac
 
           echo "proceed=true" >> "$GITHUB_OUTPUT"
+
+      # The org App's login, for run-agent's allowed-bots when the App asked
+      # (the dispatcher). Read-only; any other bot actor stays refused.
+      - id: app
+        if: steps.check.outputs.proceed == 'true' && github.event.sender.type == 'Bot'
+        uses: dodi-smart/.github/actions/app-token@v1
+        with:
+          client-id:   ${{ secrets.GH_APP_CLIENT_ID }}
+          private-key: ${{ secrets.GH_APP_PRIVATE_KEY }}
+          permissions: 'issues:read'
 
       # The branch name, from the issue type and title.
       - id: branch
@@ -258,6 +275,9 @@ jobs:
           agent-env:               ${{ vars.AGENT_ENV }}
           agent-env-secret:        ${{ secrets.AGENT_ENV_SECRET }}
           agent-hooks:             ${{ vars.AGENT_HOOKS }}
+          # The dispatcher applies agent:implement as the org App, the one bot
+          # allowed to start this.
+          allowed-bots: ${{ needs.gate.outputs.app-bot }}
           allowed-tools: 'Bash "Bash(gh:*)" Read Write Edit Grep Glob'
           # run-agent guarantees this file on every path, with `why` when the
           # agent left none, so the steps below read one file.

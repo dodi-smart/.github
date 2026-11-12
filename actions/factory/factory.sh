@@ -25,6 +25,8 @@ HOLDOUT_DIR='.factory/holdout.d'   # one list per issue
 HOLDOUT='.factory/holdout'         # the old shared list, read only
 # The commit status pr-review writes its verdict to: success approve, failure changes.
 REVIEW_CONTEXT='review / verdict'
+# Which status counts is merge-gate's rule, shared: see statuses.sh.
+STATUSES_SH="$HERE/../merge-gate/statuses.sh"
 
 out() { printf '%s=%s\n' "$1" "$2" >> "${GITHUB_OUTPUT:-/dev/null}"; printf '%s=%s\n' "$1" "$2"; }
 
@@ -212,7 +214,11 @@ skip_reason() {
 # re-run decides from the state now, never from the event that started it.
 #
 # env: REPO, PR (may be empty), EVENT_SHA (the commit the event was about; may be
-#      empty), MAX_ROUNDS
+#      empty), MAX_ROUNDS, APP_BOT (the org App's login, `<app-slug>[bot]`)
+#
+# The verdict is the newest `review / verdict` the org App posted on the head,
+# read through merge-gate's statuses.sh. The same context from anyone else is
+# no verdict, so it cannot steer the loop; with no APP_BOT none counts.
 #
 # MERGEABLE_WAIT: seconds to wait before the one re-read of a mergeable state
 #      GitHub has not computed yet (default 5)
@@ -289,8 +295,7 @@ decide() {
                    | "\(.status) \(.conclusion // "none") \(.details_url // "")"' 2>/dev/null || true)
   run_id=$(printf '%s' "$checks" | grep -oE '/actions/runs/[0-9]+' | grep -oE '[0-9]+' || true)
   out run-id "${run_id:-}"
-  verdict=$(gh api "/repos/$REPO/commits/$head/statuses?per_page=100" \
-              --jq "[.[] | select(.context == \"$REVIEW_CONTEXT\")][0].state // empty" 2>/dev/null || true)
+  verdict=$("$STATUSES_SH" read "$REPO" "$head" | "$STATUSES_SH" app "$REVIEW_CONTEXT" "${APP_BOT:-}" 2>/dev/null || true)
 
   # A draft on the ready or merge tier is marked ready unless PR Checks is
   # red. Most callers skip PR Checks on drafts, so waiting for green there

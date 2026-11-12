@@ -13,9 +13,22 @@ pass=0; fail=0
 ok()  { printf '  ok   %s\n' "$1"; pass=$((pass + 1)); }
 bad() { printf '  FAIL %s\n' "$1"; fail=$((fail + 1)); }
 
-# gd [VAR=value ...]: gate.sh decide on a green check into the default branch, nothing else set.
-gd() { env -i PATH="$PATH" LABELS='[]' TITLE='fix: x' CHECK=success REVIEW='' FOREIGN='' KILL='' \
-         BASE_REF=develop DEFAULT_BRANCH=develop "$@" "$HERE/gate.sh" decide; }
+# st CONTEXT STATE CREATOR ID is one status as the API lists it; sts STATUS...
+# is the list of them, which decide picks from itself.
+st() { jq -cn --arg c "$1" --arg s "$2" --arg by "$3" --argjson id "$4" '{context: $c, state: $s, creator: $by, id: $id}'; }
+sts() { jq -cs . <<<"$(printf '%s\n' "$@")"; }
+
+# gd [VAR=value ...]: gate.sh decide on a green check into the default branch,
+# nothing else set. REVIEW, VERIFY and RENDER become statuses the org App
+# (app[bot]) posted, and AGE one Renovate posted; STATUSES replaces them all.
+gd() { local a r='' v='' n='' g=''
+  for a in "$@"; do  # the last assignment wins, as env would have it
+    case "$a" in REVIEW=*) r=${a#*=} ;; VERIFY=*) v=${a#*=} ;; RENDER=*) n=${a#*=} ;; AGE=*) g=${a#*=} ;; esac
+  done
+  env -i PATH="$PATH" LABELS='[]' TITLE='fix: x' CHECK=success FOREIGN='' KILL='' APP_BOT='app[bot]' \
+    BASE_REF=develop DEFAULT_BRANCH=develop STATUSES="$(sts ${r:+"$(st 'review / verdict' "$r" 'app[bot]' 1)"} \
+      ${v:+"$(st 'standards / verify' "$v" 'app[bot]' 2)"} ${n:+"$(st 'standards / render' "$n" 'app[bot]' 3)"} \
+      ${g:+"$(st renovate/stability-days "$g" 'renovate[bot]' 4)"})" "$@" "$HERE/gate.sh" decide; }
 
 # $1 name, $2 want merge (true, false, or rebase), then env assignments. The default is a mergeable
 # verified minor into the default branch with a green check and only allowed authors.
@@ -148,7 +161,7 @@ decide "fixed patch, approved, green"                             true  'LABELS=
 decide "a Dependabot minor by title, verified, green"             true  'LABELS=["deps:verified"]' TITLE='Bump react from 19.0.0 to 19.1.0'
 
 # A conflicted agent PR is held with the loop's own reason, and no rebase box.
-got="$(env -i PATH="$PATH" POLICY=factory 'LABELS=["agent:iterate"]' TIER=merge REVIEW=success CHECK=success MERGEABLE=dirty "$HERE/gate.sh" decide)"
+got="$(gd POLICY=factory 'LABELS=["agent:iterate"]' TIER=merge REVIEW=success MERGEABLE=dirty)"
 check() { local name="$1"; shift; if "$@"; then ok "$name"; else bad "$name"; fi; }
 check "factory dirty: the reason says the loop brings it up to date" \
   grep -qx 'reason=the branch conflicts with its base; the fix loop brings it up to date' <<<"$got"
@@ -206,6 +219,35 @@ check "squash-body keeps each round trailer, in order" \
   test "$body" = $'Factory-Round: 0\nFactory-Issue: 4\nDecision: D-1\nFactory-Round: 1\nCo-Authored-By: A <a@example.com>\nFactory-Round: 2'
 check "squash-body of nothing is empty" test -z "$(: | "$HERE/gate.sh" squash-body)"
 
+# A status counts only from the identity that posts it.
+APPV=$(st 'review / verdict' success 'app[bot]' 5)
+FORGED=$(st 'review / verdict' success 'mallory' 6)
+FX=(POLICY=factory 'LABELS=["agent:iterate"]' TIER=merge APP_BOT='app[bot]')
+decide "status: the App's approval merges"                         true  "${FX[@]}" "STATUSES=$(sts "$APPV")"
+decide "status: an approval from anyone else counts as missing"    false "${FX[@]}" "STATUSES=$(sts "$FORGED")"
+says "a forged approval is named in the reason" \
+  "waits for review / verdict to approve (it is missing) (not counted: review / verdict by mallory; only app[bot] posts these)" \
+  "${FX[@]}" "STATUSES=$(sts "$FORGED")"
+decide "status: a newer forged approval over the App's changes"    false "${FX[@]}" "STATUSES=$(sts "$(st 'review / verdict' failure 'app[bot]' 5)" "$FORGED")"
+decide "status: the App's newest wins over its older changes"      true  "${FX[@]}" "STATUSES=$(sts "$(st 'review / verdict' failure 'app[bot]' 4)" "$APPV")"
+decide "status: the App's newest changes beat its older approval"  false "${FX[@]}" "STATUSES=$(sts "$(st 'review / verdict' failure 'app[bot]' 7)" "$APPV")"
+decide "status: listed newest first, still the highest id wins"    true  "${FX[@]}" "STATUSES=$(sts "$APPV" "$(st 'review / verdict' failure 'app[bot]' 2)")"
+decide "status: with no App login no approval counts"              false "${FX[@]}" APP_BOT= "STATUSES=$(sts "$APPV")"
+says "and the reason says the login is missing" \
+  "waits for review / verdict to approve (it is missing) (not counted: review / verdict by app[bot]; the org App's login could not be read)" \
+  "${FX[@]}" APP_BOT= "STATUSES=$(sts "$APPV")"
+wants "a forged approval still has merge-gate ask for a review" true "${HF[@]}" LANE=lane APP_BOT='app[bot]' "STATUSES=$(sts "$FORGED")"
+SYS=(POLICY=standards-sync 'LABELS=[]' HEAD_REF=chore/standards-sync APP_BOT='app[bot]' AUTHOR='app[bot]')
+decide "status: a sync with the App's verify, render and review"   true  "${SYS[@]}" "STATUSES=$(sts "$APPV" "$(st 'standards / verify' success 'app[bot]' 1)" "$(st 'standards / render' success 'app[bot]' 2)")"
+decide "status: a sync whose verify someone else posted"           false "${SYS[@]}" "STATUSES=$(sts "$APPV" "$(st 'standards / verify' success 'mallory' 1)" "$(st 'standards / render' success 'app[bot]' 2)")"
+decide "status: a sync whose render someone else posted"           false "${SYS[@]}" "STATUSES=$(sts "$APPV" "$(st 'standards / verify' success 'app[bot]' 1)" "$(st 'standards / render' success 'mallory' 2)")"
+# renovate/stability-days: any poster may hold, none may lift another's hold.
+AGEP=$(st renovate/stability-days pending 'renovate[bot]' 3)
+decide "status: Renovate's pending release age holds"              false "STATUSES=$(sts "$AGEP")"
+decide "status: a newer success from someone else does not lift it" false "STATUSES=$(sts "$AGEP" "$(st renovate/stability-days success mallory 9)")"
+decide "status: Renovate's own newer success lifts it"             true  "STATUSES=$(sts "$AGEP" "$(st renovate/stability-days success 'renovate[bot]' 9)")"
+decide "status: a pending from anyone holds"                       false "STATUSES=$(sts "$(st renovate/stability-days success 'renovate[bot]' 3)" "$(st renovate/stability-days pending mallory 4)")"
+
 # `run` reads the check, the authors and the review only when a verdict label
 # makes them matter. `gh` is a stub that records its calls.
 mkdir -p "$WORK/bin"
@@ -218,21 +260,21 @@ printf '%s\n' '#!/usr/bin/env bash' 'echo "$*" >> "$STUB_CALLS"' 'case "$*" in' 
   '  */commits/abc\ --jq*) printf "%s\n" $STUB_PARENTS ;;' \
   '  "api /repos/o/r --jq"*) echo "$STUB_DEFAULT" ;;' \
   '  *"/commits?"*) printf "%s\n" $STUB_AUTHORS ;;' \
-  '  */status*) echo "$STUB_STATUSES" ;;' 'esac' > "$WORK/bin/gh"
+  '  */statuses*) jq -c ".[]" <<<"$STUB_STATUSES" ;;' 'esac' > "$WORK/bin/gh"
 chmod +x "$WORK/bin/gh"
 # run LABELS AUTHORS CHECK REVIEW AGE [VAR=value ...]. The defaults are a
 # mergeable deps PR into develop (the default branch), whose head has parents p1
 # and p2 that sit in place; trailing assignments override them, as in decide.
+# REVIEW is posted by the org App (app[bot]), AGE by Renovate.
 run() {
   : > "$WORK/calls"; : > "$WORK/out"
-  local labels="$1" authors="$2" check="$3" st; st=$(jq -cn --arg r "$4" --arg a "$5" \
-    '[if $r != "" then {context: "review / verdict", state: $r} else empty end,
-      if $a != "" then {context: "renovate/stability-days", state: $a} else empty end]')
+  local labels="$1" authors="$2" check="$3"
+  local statuses; statuses=$(sts ${4:+"$(st 'review / verdict' "$4" 'app[bot]' 1)"} ${5:+"$(st renovate/stability-days "$5" 'renovate[bot]' 2)"})
   shift 5
-  env -i PATH="$WORK/bin:$PATH" STUB_CALLS="$WORK/calls" STUB_CHECK="$check" STUB_STATUSES="$st" STUB_AUTHORS="$authors" \
+  env -i PATH="$WORK/bin:$PATH" STUB_CALLS="$WORK/calls" STUB_CHECK="$check" STUB_STATUSES="$statuses" STUB_AUTHORS="$authors" \
     STUB_DEFAULT=develop STUB_PARENTS='p1 p2' STUB_P1=ahead STUB_P2=ahead \
     MERGEABLE=clean BASE_REF=develop DEFAULT_BRANCH=develop \
-    POLICY=deps REPO=o/r PR=7 SHA=abc LABELS="$labels" TITLE='chore(deps): update x' KILL='' \
+    POLICY=deps REPO=o/r PR=7 SHA=abc LABELS="$labels" TITLE='chore(deps): update x' KILL='' APP_BOT='app[bot]' \
     REQUIRED_CHECK='checks / PR Checks' ALLOWED_AUTHORS='renovate[bot],dependabot[bot],github-actions[bot]' \
     GITHUB_OUTPUT="$WORK/out" "$@" "$HERE/gate.sh" run > /dev/null 2>&1
 }
@@ -252,6 +294,9 @@ run '["deps:verified","deps:patch"]' 'renovate[bot]' success '' success MERGEABL
 check "run: a conflicted PR asks for a rebase"                   grep -qx 'rebase=true' "$WORK/out"
 run '["deps:fixed","deps:patch"]' 'renovate[bot]' success success success
 check "run: the review is read from the same status read"        grep -qx 'merge=true' "$WORK/out"
+check "run: from the statuses list, which names each creator"    grep -q '/commits/abc/statuses' "$WORK/calls"
+run '["deps:fixed","deps:patch"]' 'renovate[bot]' success success '' APP_BOT='other[bot]'
+check "run: an approval the App did not post is held"            grep -q '^reason=deps:fixed waits for review / verdict to approve (it is missing) (not counted: review / verdict by app\[bot\]; only other\[bot\] posts these)$' "$WORK/out"
 
 # The default branch arrives from pr-facts, and is read only when it is empty.
 # backmerge reads the head's parents and compares each, and no commit authors.
@@ -289,7 +334,7 @@ check "run: and is held too"                                     grep -qx 'merge
 
 # hf [VAR=value ...]: a security patch from fix/security-x into main, on a repo
 # with the lane enabled, a fix commit and an approving review.
-APPROVED='[{"context":"review / verdict","state":"success"}]'
+APPROVED=$(sts "$(st 'review / verdict' success 'app[bot]' 1)")
 hf() { run '[]' 'someone' success '' '' POLICY=hotfix BASE_REF=main HEAD_REF=fix/security-x TITLE='fix: patch x' \
          STUB_HOTFIX=enabled STUB_MESSAGES='["fix: patch x"]' STUB_STATUSES="$APPROVED" "$@"; }
 hf
@@ -314,14 +359,14 @@ check "run: a patch into develop reads no lane property"         bash -c '! grep
 check "run: and is held"                                         grep -qx 'merge=false' "$WORK/out"
 
 # sy [VAR=value ...]: the App's pure, approved sync into develop.
-PURE='[{"context":"review / verdict","state":"success"},{"context":"standards / verify","state":"success"},{"context":"standards / render","state":"success"}]'
+PURE=$(sts "$(st 'review / verdict' success 'app[bot]' 1)" "$(st 'standards / verify' success 'app[bot]' 2)" "$(st 'standards / render' success 'app[bot]' 3)")
 sy() { run '[]' 'app[bot]' success '' '' POLICY=standards-sync HEAD_REF=chore/standards-sync AUTHOR='app[bot]' APP_BOT='app[bot]' \
          STUB_STATUSES="$PURE" "$@"; }
 sy
 check "run: a pure, approved sync merges"                        grep -qx 'merge=true' "$WORK/out"
 sy STUB_AUTHORS='app[bot] github-actions[bot]'
 check "run: a sync allows the App alone as a commit author"      grep -qxF 'reason=a commit is by an author this policy does not merge: github-actions[bot]' "$WORK/out"
-sy STUB_STATUSES='[{"context":"standards / verify","state":"success"},{"context":"standards / render","state":"failure"}]'
+sy STUB_STATUSES="$(sts "$(st 'standards / verify' success 'app[bot]' 1)" "$(st 'standards / render' failure 'app[bot]' 2)")"
 check "run: an agent-touched sync is held, and asks for a review" bash -c 'grep -qx merge=false "$1" && grep -qx review-wanted=true "$1"' _ "$WORK/out"
 
 run '["backmerge:regenerated"]' '' success success '' POLICY=backmerge HEAD_REF=chore/backmerge-v1.2.3
@@ -339,6 +384,29 @@ tick ' - [x] <!-- rebase-check -->' > /dev/null; rc=$?
 check "tick: a ticked box is left, exit 3"                       test "$rc" = 3
 tick 'a Dependabot body' > /dev/null; rc=$?
 check "tick: no box, exit 4"                                     test "$rc" = 4
+
+# statuses.sh: the one reader merge-gate, the fix loop and request-review share.
+S="$HERE/statuses.sh"
+app() { "$S" app "$1" "$2" <<<"$3"; }
+check "statuses: the newest the App posted wins, whatever the list order" \
+  test "$(app 'review / verdict' 'app[bot]' "$(sts "$(st 'review / verdict' success 'app[bot]' 5)" "$(st 'review / verdict' failure 'app[bot]' 2)")")" = success
+check "statuses: anyone else's is not read, newer or not" \
+  test "$(app 'review / verdict' 'app[bot]' "$(sts "$(st 'review / verdict' success mallory 9)" "$(st 'review / verdict' failure 'app[bot]' 2)")")" = failure
+check "statuses: only anyone else's is nothing" \
+  test -z "$(app 'review / verdict' 'app[bot]' "$(sts "$(st 'review / verdict' success mallory 9)")")"
+check "statuses: with no login nothing counts" \
+  test -z "$(app 'review / verdict' '' "$(sts "$(st 'review / verdict' success 'app[bot]' 1)")")"
+check "statuses: another context is not read" \
+  test -z "$(app 'review / verdict' 'app[bot]' "$(sts "$(st 'judge / verdict' success 'app[bot]' 1)")")"
+# read: a stub that answers the raw API page through gh's --jq, or fails.
+mkdir -p "$WORK/rbin"
+printf '%s\n' '#!/usr/bin/env bash' '[ -n "${RAW:-}" ] || exit 1' \
+  'while [ $# -gt 0 ]; do [ "$1" = --jq ] && { jq -c "$2" <<<"$RAW"; exit; }; shift; done' > "$WORK/rbin/gh"
+chmod +x "$WORK/rbin/gh"
+check "statuses: read lists context, state, creator login and id" \
+  test "$(PATH="$WORK/rbin:$PATH" RAW='[{"context":"c","state":"success","creator":{"login":"app[bot]"},"id":3,"url":"u"}]' "$S" read o/r abc)" \
+       = '[{"context":"c","state":"success","creator":"app[bot]","id":3}]'
+check "statuses: a failed read is no statuses" test "$(PATH="$WORK/rbin:$PATH" RAW='' "$S" read o/r abc)" = '[]'
 
 printf '\n%s passed, %s failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

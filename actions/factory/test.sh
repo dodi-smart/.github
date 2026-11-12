@@ -273,7 +273,7 @@ scenario() {
     api /repos/o/r/commits/abc/check-runs '{"check_runs":[]}'
   fi
   if [ -n "$verdict" ]; then
-    api /repos/o/r/commits/abc/statuses "[{\"context\":\"review / verdict\",\"state\":\"$verdict\"}]"
+    api /repos/o/r/commits/abc/statuses "[{\"context\":\"review / verdict\",\"state\":\"$verdict\",\"creator\":{\"login\":\"app[bot]\"},\"id\":1}]"
   else
     api /repos/o/r/commits/abc/statuses '[]'
   fi
@@ -281,7 +281,7 @@ scenario() {
 decide() {  # decide [EVENT_SHA] -> action
   : > "$WORK/out"
   env -i PATH="$WORK/bin:$PATH" HOME="$WORK" STUB_API="$WORK/api" REPO=o/r PR=5 EVENT_SHA="${1:-}" \
-    MAX_ROUNDS=3 MERGEABLE_WAIT=0 GITHUB_OUTPUT="$WORK/out" bash "$F" decide > "$WORK/log" 2>&1
+    APP_BOT="${APP_BOT-app[bot]}" MAX_ROUNDS=3 MERGEABLE_WAIT=0 GITHUB_OUTPUT="$WORK/out" bash "$F" decide > "$WORK/log" 2>&1
   val action
 }
 
@@ -345,6 +345,22 @@ scenario 'Autonomous Medium Medium' 'completed success' 'success'
 expect "green and approved at ready is done"  test "$(decide)" = handoff
 scenario 'Supervised Low Low' 'completed success' 'success'
 expect "green and approved at draft tier is done, never land" test "$(decide)" = handoff
+# Only the org App's verdict counts, and of its verdicts the newest.
+verdicts() { api /repos/o/r/commits/abc/statuses "$(jq -c '[.[] | {context: "review / verdict", state: .[0], creator: {login: .[1]}, id: .[2]}]' <<<"$1")"; }
+scenario 'Autonomous Low Low' 'completed success' ''
+verdicts '[["success","mallory",9]]'
+expect "an approval from anyone but the App is no verdict: review is asked for" test "$(decide)" = review
+scenario 'Autonomous Low Low' 'completed success' ''
+verdicts '[["failure","mallory",9]]'
+expect "and a forged changes verdict starts no fix round" test "$(decide)" = review
+scenario 'Autonomous Low Low' 'completed success' ''
+verdicts '[["pending","mallory",9],["failure","app[bot]",2]]'
+expect "a newer forged status does not hide the App's verdict" test "$(decide)" = fix-review
+scenario 'Autonomous Low Low' 'completed success' ''
+verdicts '[["failure","app[bot]",2],["success","app[bot]",5]]'
+expect "the App's newest verdict wins, whatever the list order" test "$(decide)" = land
+scenario 'Autonomous Low Low' 'completed success' 'success'
+expect "with no App login no verdict counts, so nothing lands" test "$(APP_BOT='' decide)" = review
 scenario 'Autonomous Low Low' 'completed success' 'success' false '["agent:iterate","agent:no-touch"]'
 expect "agent:no-touch on the PR stops everything" test "$(decide)" = stop
 scenario 'Autonomous Low Low' 'completed success' 'success'

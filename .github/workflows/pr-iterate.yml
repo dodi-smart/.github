@@ -127,12 +127,23 @@ jobs:
           skip-draft:    'false'     # a draft is exactly what the loop works on
           events:        'pull_request workflow_run status schedule workflow_dispatch'
 
+      # Only for the App's login: decide counts a review / verdict only when
+      # the App posted it. Read-only, and empty when no App is configured.
+      - id: app
+        if: steps.gate.outputs.proceed == 'true' && !contains(fromJSON('["schedule","workflow_dispatch"]'), github.event_name)
+        uses: dodi-smart/.github/actions/app-token@v1
+        with:
+          client-id:   ${{ secrets.GH_APP_CLIENT_ID }}
+          private-key: ${{ secrets.GH_APP_PRIVATE_KEY }}
+          permissions: statuses:read
+
       # A sweep decides nothing about one PR: it lists the conflicted ones below.
       - id: decide
         if: steps.gate.outputs.proceed == 'true' && !contains(fromJSON('["schedule","workflow_dispatch"]'), github.event_name)
         uses: dodi-smart/.github/actions/factory@v1
         with:
           command:    decide
+          app-bot:    ${{ steps.app.outputs.login }}
           pr:         ${{ github.event.pull_request.number || github.event.workflow_run.pull_requests[0].number }}
           event-sha:  ${{ github.event.workflow_run.head_sha || github.event.sha }}
           max-rounds: ${{ inputs.max-rounds }}

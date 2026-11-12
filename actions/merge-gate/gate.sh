@@ -54,11 +54,21 @@
 #      even when an earlier rule holds the merge: an agent-touched sync is
 #      reviewed, then waits for a person.
 #
+# A status counts only from the identity that posts it. `review / verdict`,
+# `standards / verify` and `standards / render` are the org App's: the newest
+# one the App posted on the head decides, and the same context from anyone else
+# is treated as missing, which the reason names. `renovate/stability-days` is
+# a hold anyone may place and nobody may lift for another poster: it is pending
+# while any poster's newest status for it is pending.
+#
 # `tick` is the rebase request's text edit, kept here so test.sh covers it.
 # `squash-body` reads the PR's commit messages, one base64 per line, and prints
 # their trailers, each once, in the order first seen: the body of a factory squash.
 # `run` reads the inputs from the API (nothing with the kill switch off) and
 # writes merge/rebase/review-wanted/reason/kind to $GITHUB_OUTPUT; `decide` is the part test.sh runs on fixed inputs.
+# decide takes STATUSES (every status on the head: context, state, creator, id)
+# and derives REVIEW, AGE, VERIFY and RENDER from it itself (`pick`), so no
+# caller can hand it a status the creator rule did not see.
 # LABELS, the input, and labels, its lines, are two names on purpose.
 # shellcheck disable=SC2153
 set -euo pipefail
@@ -73,6 +83,8 @@ AGE_CONTEXT='renovate/stability-days'
 # the render is pure (the agent pass edited nothing).
 VERIFY_CONTEXT='standards / verify'
 RENDER_CONTEXT='standards / render'
+# The contexts that count only when the org App posted them.
+APP_CONTEXTS=("$REVIEW_CONTEXT" "$VERIFY_CONTEXT" "$RENDER_CONTEXT")
 SYNC_BRANCH='chore/standards-sync'
 REGENERATED='backmerge:regenerated'
 
@@ -170,9 +182,31 @@ rules() {
   merge=true reason="$ok"
 }
 
+# pick: from STATUSES and APP_BOT, sets REVIEW, VERIFY and RENDER to the state
+# of the newest status the org App posted for each (statuses.sh app, the rule
+# the fix loop and request-review share), AGE to pending when any poster's newest stability-days status is
+# pending and otherwise to the newest one's state, and DISCOUNTED to the App
+# contexts' statuses that anyone else posted. With no App login nothing counts.
+# The jq programs are single-quoted on purpose.
+# shellcheck disable=SC2016
+pick() {
+  app_state() { "$HERE/statuses.sh" app "$1" "${APP_BOT:-}" <<<"$STATUSES"; }
+  REVIEW=$(app_state "$REVIEW_CONTEXT") VERIFY=$(app_state "$VERIFY_CONTEXT") RENDER=$(app_state "$RENDER_CONTEXT")
+  AGE=$(jq -r --arg c "$AGE_CONTEXT" '[.[] | select(.context == $c)] | (group_by(.creator) | map(max_by(.id).state)) as $newest
+               | if any($newest[]; . == "pending") then "pending" else (max_by(.id).state // empty) end' <<<"$STATUSES")
+  DISCOUNTED=$(jq -r --arg by "${APP_BOT:-}" --args '[.[] | select((.context | IN($ARGS.positional[])) and ($by == "" or .creator != $by))
+                 | "\(.context) by \(.creator // "an unknown poster")"] | unique | join(", ")' "${APP_CONTEXTS[@]}" <<<"$STATUSES")
+}
+
 # When the rules need a review and the head has none, merge-gate requests one. `agent:review` still on the PR is a request in flight: pr-review clears it.
 decide() {
+  pick
   rules
+  # A refusal names the statuses it did not count, so nobody wonders why one is ignored.
+  if [ "$merge" != true ] && [ -n "$DISCOUNTED" ]; then
+    local who="only $APP_BOT posts these"; [ -n "${APP_BOT:-}" ] || who="the org App's login could not be read"
+    reason="$reason (not counted: $DISCOUNTED; $who)"
+  fi
   review_wanted=false
   if [ -n "$needs_review" ] && [ -z "$REVIEW" ] && ! has agent:review; then review_wanted=true; fi
 }
@@ -207,15 +241,15 @@ squash_body() {
 case "${1:-run}" in
   tick) tick; exit $? ;;
   squash-body) squash_body; exit 0 ;;
-  decide) : "${LABELS:?}" "${POLICY:?}"; CHECK="${CHECK:-}" REVIEW="${REVIEW:-}" FOREIGN="${FOREIGN:-}" TIER="${TIER:-}"
+  decide) : "${LABELS:?}" "${POLICY:?}"; CHECK="${CHECK:-}" STATUSES="${STATUSES:-[]}" FOREIGN="${FOREIGN:-}" TIER="${TIER:-}"
           decide; printf 'merge=%s\nrebase=%s\nreview-wanted=%s\nkind=%s\nreason=%s\n' "$merge" "$rebase" "$review_wanted" "$kind" "$reason"; exit 0 ;;
 esac
 
 : "${REPO:?}" "${PR:?}" "${SHA:?}" "${POLICY:?}" "${REQUIRED_CHECK:?}"
 labels=$(jq -r '.[]' <<<"$LABELS")
-CHECK='' REVIEW='' FOREIGN='' TIER='' ISSUE_NO_TOUCH='' AGE='' MERGEABLE="${MERGEABLE:-}"
+CHECK='' FOREIGN='' TIER='' ISSUE_NO_TOUCH='' MERGEABLE="${MERGEABLE:-}"
 HEAD_REF="${HEAD_REF:-}" BASE_REF="${BASE_REF:-}" DEFAULT_BRANCH="${DEFAULT_BRANCH:-}"
-PARENTS='' P1_REL='' P2_REL='' LANE='' LANE_REASON='' VERIFY='' RENDER=''
+PARENTS='' P1_REL='' P2_REL='' LANE='' LANE_REASON='' STATUSES='[]'
 AUTHOR="${AUTHOR:-}" APP_BOT="${APP_BOT:-}"
 # A standards sync allows the org App alone as a commit author.
 [ "$POLICY" != standards-sync ] || ALLOWED_AUTHORS="$APP_BOT"
@@ -280,13 +314,9 @@ read_inputs() {
     ! reads_authors || FOREIGN=$(gh api "/repos/$REPO/pulls/$PR/commits?per_page=100" --paginate --jq '.[] | (.author.login // "unknown")' \
                 | sort -u | grep -vxF -f <(tr ',' '\n' <<<"$ALLOWED_AUTHORS") | tr '\n' ' ' || true)
     FOREIGN="${FOREIGN% }"
-    # One read of the head's statuses; decide uses what its policy needs.
-    STATUSES=$(gh api "/repos/$REPO/commits/$SHA/status" --jq '[.statuses[] | {context, state}]' 2>/dev/null || echo '[]')
-    state_of() { jq -r --arg c "$1" '[.[] | select(.context == $c)][0].state // empty' <<<"$STATUSES" 2>/dev/null || true; }
-    REVIEW=$(state_of "$REVIEW_CONTEXT")
-    AGE=$(state_of "$AGE_CONTEXT")
-    VERIFY=$(state_of "$VERIFY_CONTEXT")
-    RENDER=$(state_of "$RENDER_CONTEXT")
+    # Every status on the head with who posted it; decide's pick keeps what
+    # counts. A failed read counts as none.
+    STATUSES=$("$HERE/statuses.sh" read "$REPO" "$SHA")
   fi
 }
 [ "${KILL:-}" = false ] || read_inputs
@@ -298,5 +328,5 @@ decide
   echo "kind=$kind"
   echo "reason=$reason"
 } >> "$GITHUB_OUTPUT"
-echo "#$PR at $SHA: kind=$kind base=${BASE_REF:-unknown}/${DEFAULT_BRANCH:-unknown} parents=${PARENTS:-none}/${P1_REL:-none}/${P2_REL:-none} check=${CHECK:-missing} review=${REVIEW:-missing} age=${AGE:-none} mergeable=${MERGEABLE:-unknown} foreign=${FOREIGN:-none} tier=${TIER:-none} lane=${LANE:-none} verify=${VERIFY:-none} render=${RENDER:-none} author=${AUTHOR:-unknown}"
+echo "#$PR at $SHA: kind=$kind base=${BASE_REF:-unknown}/${DEFAULT_BRANCH:-unknown} parents=${PARENTS:-none}/${P1_REL:-none}/${P2_REL:-none} check=${CHECK:-missing} review=${REVIEW:-missing} age=${AGE:-none} mergeable=${MERGEABLE:-unknown} foreign=${FOREIGN:-none} tier=${TIER:-none} lane=${LANE:-none} verify=${VERIFY:-none} render=${RENDER:-none} discounted=${DISCOUNTED:-none} author=${AUTHOR:-unknown}"
 echo "merge=$merge: $reason"

@@ -64,10 +64,12 @@ runs:
         draft:      ${{ steps.pr.outputs.draft }}
         bots:       ${{ inputs.policy == 'deps' && 'only' || 'allow' }}
 
-    # standards-sync merges only the org App's own PR, so the gate needs the
-    # App's login before it decides. A read-only token is enough to learn it.
+    # The gate needs the App's login before it decides: `review / verdict`,
+    # `standards / verify` and `standards / render` count only when the App
+    # posted them, and standards-sync merges only the App's own PR. A read-only
+    # token is enough to learn it.
     - id: app
-      if: steps.gate.outputs.proceed == 'true' && inputs.policy == 'standards-sync' && inputs.kill-switch != 'false'
+      if: steps.gate.outputs.proceed == 'true' && inputs.kill-switch != 'false'
       uses: dodi-smart/.github/actions/app-token@v1
       with:
         client-id:   ${{ inputs.client-id }}
@@ -85,7 +87,7 @@ runs:
         LABELS:          ${{ steps.pr.outputs.labels }}
         TITLE:           ${{ steps.pr.outputs.title }}
         AUTHOR:          ${{ steps.pr.outputs.author }}
-        APP_BOT:         ${{ steps.app.outputs.app-slug && format('{0}[bot]', steps.app.outputs.app-slug) || '' }}
+        APP_BOT:         ${{ steps.app.outputs.login }}
         MERGEABLE:       ${{ steps.pr.outputs.mergeable-state }}
         HEAD_REF:        ${{ steps.pr.outputs.head-ref }}
         BASE_REF:        ${{ steps.pr.outputs.base-ref }}

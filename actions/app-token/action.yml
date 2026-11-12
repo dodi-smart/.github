@@ -31,6 +31,9 @@ outputs:
   app-slug:
     description: "The App's slug, so its login is `<slug>[bot]`. Empty when no App is configured."
     value: ${{ steps.mint.outputs.app-slug }}
+  login:
+    description: "The App's login, `<slug>[bot]`: the creator of the statuses it posts. Empty when no App is configured."
+    value: ${{ steps.mint.outputs.app-slug && format('{0}[bot]', steps.mint.outputs.app-slug) || '' }}
 
 runs:
   using: composite

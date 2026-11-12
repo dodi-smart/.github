@@ -41,6 +41,9 @@ inputs:
   app-token:
     description: 'Org App token. Without it nothing is pushed (push)'
     default: ''
+  app-bot:
+    description: "The org App's login, `<app-slug>[bot]` (decide). Only its `review / verdict` counts; empty counts none"
+    default: ''
   token:
     description: 'Token for reads'
     default: ${{ github.token }}
@@ -89,6 +92,7 @@ runs:
         SUBJECT:        ${{ inputs.subject }}
         AGENT_EMAILS:   ${{ inputs.agent-emails }}
         APP_TOKEN:      ${{ inputs.app-token }}
+        APP_BOT:        ${{ inputs.app-bot }}
         GH_TOKEN:       ${{ inputs.token }}
         ACTION_PATH:    ${{ github.action_path }}
       run: |

@@ -399,10 +399,10 @@ Renovate marker, and a bump releases as `chore(deps)`.
 | `actions/run-agent` | Invokes the agent with the org's tool allowlist and reporting defaults, on the model `actions/pick-model` chooses for its `stage`. Does not start it when the running workflow file differs from the default branch, says why a run stopped (`why`), and with `report-file` guarantees a valid report file on every path |
 | `actions/pr-facts` | Resolves the PR from a number or a pull_request, workflow_run or status event, and checks it is open, not a fork, and at the expected head |
 | `actions/judge-verdict` | Marks an `agent:judge` request pending, turns a review by the exact judge login on the current head into `judge / verdict` with the org App token, or ends unanswered requests in `error`. Fails closed on anything it cannot trust; `verdict.sh` holds the rules |
-| `actions/request-review` | Applies `agent:review` with the App token when the head commit has no `review / verdict` yet |
-| `actions/merge-gate` | The one unattended merge: resolves the PR, runs `agent-gate`, decides by policy (`deps`, `factory`, `backmerge`, `hotfix` or `standards-sync`) from labels, the required check, `review / verdict`, Renovate's release-age status, mergeability, the base branch, commit authors, for a back-merge the head commit's parents, for a security patch `target-guard`'s verdict, and for a standards sync `standards / verify` and `standards / render`, and merges with the App token (a dependency PR by rebase, an agent PR, a security patch and a standards sync by squash, a back-merge by merge commit). A conflicted Renovate PR gets its rebase box ticked instead; a conflicted agent PR waits for the fix loop. For `hotfix` it takes target-guard's verdict from `guard.sh verdict`, which prints it without failing. When the policy needs a review the head does not have, it applies `agent:review` through `request-review` |
+| `actions/request-review` | Applies `agent:review` with the App token when the head commit has no `review / verdict` from the org App yet |
+| `actions/merge-gate` | The one unattended merge: resolves the PR, runs `agent-gate`, decides by policy (`deps`, `factory`, `backmerge`, `hotfix` or `standards-sync`) from labels, the required check, `review / verdict` (only the org App's counts), Renovate's release-age status, mergeability, the base branch, commit authors, for a back-merge the head commit's parents, for a security patch `target-guard`'s verdict, and for a standards sync `standards / verify` and `standards / render`, and merges with the App token (a dependency PR by rebase, an agent PR, a security patch and a standards sync by squash, a back-merge by merge commit). A conflicted Renovate PR gets its rebase box ticked instead; a conflicted agent PR waits for the fix loop. For `hotfix` it takes target-guard's verdict from `guard.sh verdict`, which prints it without failing. When the policy needs a review the head does not have, it applies `agent:review` through `request-review` |
 | `actions/push-round` | Checks an agent's commits on a PR branch, regenerates lockfiles, and pushes them as one trailered commit with the App token, or refuses with a reason; its merge mode pushes the update job's merge of the base. Every round, round 0 included, passes `guard.sh`, which refuses a deleted, skipped or loosened test, a deleted snapshot, and any edit to a workflow, the merge gate or lint, test or CI config |
-| `actions/app-token` | Mints the org App token for this repo, optionally narrowed; empty when no App is configured. Also outputs the App's `app-slug` (its login is `<slug>[bot]`) |
+| `actions/app-token` | Mints the org App token for this repo, optionally narrowed; empty when no App is configured. Also outputs the App's `app-slug` and its `login` (`<slug>[bot]`), the creator of the statuses it posts |
 | `actions/factory` | The deterministic half of `issue-implement.yml` and `pr-iterate.yml`: the autonomy tier from `Agent mode`, `Risk` and `Effort`, the branch name, round 0's push, the holdout pattern fix rounds give `push-round` (one list per issue, `.factory/holdout.d/<issue>`), and the fix loop's next step |
 | `actions/setup-stack` | Installs a toolchain, resolves cache isolation, supplies conventional commands |
 | `actions/setup-stack/resolve` | Resolves a caller's commands against the stack's with no checkout and no toolchain, by running `defaults.sh`. What `pr-checks.yml`'s `pick` asks whether `test` and `build` have a command |
@@ -1700,6 +1700,16 @@ for `statuses: write` in the workflow would break every caller that does not
 grant it. The App needs the Commit statuses permission (read and write). Without
 it the run warns and posts no status.
 
+Who posted the status is part of the contract. `actions/merge-gate` counts
+`review / verdict` only when its creator is the org App (`<app-slug>[bot]`, read
+from `actions/app-token`, never written down), and of those the newest on the
+head decides. The same context from anyone else, a person or another token with
+statuses write, counts as no review, and the gate's reason names who posted it.
+`actions/factory`'s `decide` (the fix loop) and `actions/request-review` read it
+through the same reader, `actions/merge-gate/statuses.sh`: a verdict from anyone
+else neither steers a fix round nor stops a review request. The App's login is
+`actions/app-token`'s `login` output.
+
 A bot's pull request is reviewed only when a bot applied `agent:review`, which
 is what `actions/request-review` does with the org App token when the head has
 no verdict yet. When the PR's commits carry a `scope-trailers` trailer
@@ -1961,9 +1971,12 @@ merges. The merge uses the org App's token, `--rebase`, pinned to
 the head it read. Minor and patch updates also wait three days after release,
 from the preset's `minimumReleaseAge`: the gate holds a PR while Renovate's
 `renovate/stability-days` status is pending, because no branch rule requires
-that status and GitHub would merge past it. A PR that conflicts with its base
-does not merge either; the gate ticks Renovate's rebase box with the App token,
-and the rebased head goes through deps-verify again.
+that status and GitHub would merge past it. Any poster's pending
+`renovate/stability-days` holds the PR, and only that poster's own newer status
+lifts it, so a status from someone else can hold a merge but never release one.
+A PR that conflicts with its base does not merge either; the gate ticks
+Renovate's rebase box with the App token, and the rebased head goes through
+deps-verify again.
 
 The second job, `backmerge`, merges the PR a hotfix release opens to bring the
 release branch back into the default branch (`chore/backmerge-<tag>`) under
@@ -1994,6 +2007,12 @@ none and no `agent:review` request is in flight, merge-gate applies `agent:revie
 through `actions/request-review`. A lane PR and a standards sync are always reviewed;
 an agent-touched sync (`standards / render` not `success`) is reviewed and then
 waits for a person. A request is a label, never a merge.
+
+The gate reads every status on the head from the commit's statuses list, which
+names each one's creator. `review / verdict`, `standards / verify` and
+`standards / render` count only when the org App posted them, and the newest of
+the App's decides; one from anyone else is treated as missing, and the reason
+says so. `judge / verdict` is not a gate input.
 
 The caller listens for every event that can complete the evidence:
 

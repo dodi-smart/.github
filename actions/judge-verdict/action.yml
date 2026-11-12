@@ -1,0 +1,44 @@
+# Turn the independent judge's review into the `judge / verdict` status, mark a
+# request pending, or time out requests nobody answered. The rules are in
+# verdict.sh; test.sh covers them. The status and the label removal use the org
+# App token: the judge (`dodi-judge`, dev-standards DODI-00065) has no statuses
+# permission, so it can never post its own verdict.
+name: Judge verdict
+description: Mark an agent:judge request pending, post the judge's verdict on the head, or time out unanswered requests.
+
+inputs:
+  mode:            { description: 'pending | verdict | timeout', required: true }
+  number:          { description: 'PR number (pending, verdict)', default: '' }
+  sha:             { description: 'The PR head commit (pending, verdict)', default: '' }
+  judge-login:     { description: "The judge App's exact login", default: 'dodi-judge[bot]' }
+  timeout-minutes: { description: 'How long a request may wait before it ends in error', default: '240' }
+  client-id:       { description: 'secrets.GH_APP_CLIENT_ID', default: '' }
+  private-key:     { description: 'secrets.GH_APP_PRIVATE_KEY', default: '' }
+
+runs:
+  using: composite
+  steps:
+    - id: token
+      uses: dodi-smart/.github/actions/app-token@v1
+      with:
+        client-id:   ${{ inputs.client-id }}
+        private-key: ${{ inputs.private-key }}
+        permissions: statuses:write issues:write pull-requests:read
+
+    - shell: bash
+      env:
+        GH_TOKEN:        ${{ steps.token.outputs.token }}
+        REPO:            ${{ github.repository }}
+        MODE:            ${{ inputs.mode }}
+        PR:              ${{ inputs.number }}
+        HEAD_SHA:        ${{ inputs.sha }}
+        JUDGE_LOGIN:     ${{ inputs.judge-login }}
+        TIMEOUT_MINUTES: ${{ inputs.timeout-minutes }}
+        ACTION_PATH:     ${{ github.action_path }}
+      run: |
+        set -euo pipefail
+        # The review object is read from the event file, never through an
+        # expression, so its body never lands in this script's text.
+        export REVIEW_FILE="$RUNNER_TEMP/judge-review.json"
+        jq '.review // {}' "$GITHUB_EVENT_PATH" > "$REVIEW_FILE"
+        "$ACTION_PATH/verdict.sh" run

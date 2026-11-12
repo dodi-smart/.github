@@ -1,3 +1,9 @@
+## [1.47.0](https://github.com/dodi-smart/.github/compare/v1.46.0...v1.47.0) (2026-11-12)
+
+### ✨ Features
+
+* **judge,judge-verdict:** post the independent judge's review as the judge / verdict status ([3ce659f](https://github.com/dodi-smart/.github/commit/3ce659f57ebae4d722296488e88434951cfb4977))
+
 ## [1.46.0](https://github.com/dodi-smart/.github/compare/v1.45.0...v1.46.0) (2026-11-11)
 
 ### ✨ Features

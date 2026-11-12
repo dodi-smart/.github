@@ -1,3 +1,9 @@
+## [1.47.1](https://github.com/dodi-smart/.github/compare/v1.47.0...v1.47.1) (2026-11-12)
+
+### 🐛 Bug Fixes
+
+* **judge-verdict:** remove agent:judge after a verdict, and warn when it cannot ([e0066c5](https://github.com/dodi-smart/.github/commit/e0066c52bb67813ac9a81e487d9904bd577883a4)), references [dirahq-cloud#314](https://github.com/dirahq-cloud/issues/314)
+
 ## [1.47.0](https://github.com/dodi-smart/.github/compare/v1.46.0...v1.47.0) (2026-11-12)
 
 ### ✨ Features

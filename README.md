@@ -69,6 +69,7 @@ caller keeps working.
 | `issue-triage.yml` | issue opened or reopened, `agent:triage`, `@claude triage`, manual dispatch with `issue-number` | Classifies, sets fields, then plans or asks blocking questions |
 | `issue-implement.yml` | `agent:implement`, `@claude implement` | Holdout tests from the plan's acceptance criteria, then code. A step pushes one commit to `feat\|fix\|chore/<n>-<slug>` and opens a draft PR. Requires a plan. |
 | `pr-iterate.yml` | `agent:iterate`, PR Checks completed, the review verdict status | The agent fix loop: up to 3 fix rounds on red checks or a `changes` verdict, then ready for review, then a squash merge (the repo must allow squash merges) when the issue is `Autonomous` with Risk and Effort `Low`. A PR that conflicts with its base gets the base merged in, or goes to a person with the conflicted files; the caller should add a `schedule:` trigger for the sweep that finds them. Every push, ready and merge is a step, not the agent. A Renovate or Dependabot PR stops, label or not: deps-verify owns it |
+| `judge.yml` | `agent:judge`, a review by `dodi-judge[bot]`, a schedule | The independent judge (another model family, Grok Bot acting as the review-only `dodi-judge` App): marks `judge / verdict` pending, posts the judge's verdict on the head with the org App, and times out unanswered requests. Advisory: no gate reads it yet. See [Judge verdict](#judge-verdict) |
 | `claude-assist.yml` | `@claude <anything else>` | The general assistant |
 | `release.yml` | push to a release branch | semantic-release, single or multi-module |
 | `release-canary.yml` | dispatched by this repo's `Publish release` | Runs `pr-checks.yml` end to end against a release's pinned commit and posts the `release-canary` commit status that `Promote` reads. Not for callers |
@@ -397,6 +398,7 @@ Renovate marker, and a bump releases as `chore(deps)`.
 | `actions/agent-gate` | Decides whether an agent may run. Evaluates `agent:no-touch` first, always. |
 | `actions/run-agent` | Invokes the agent with the org's tool allowlist and reporting defaults, on the model `actions/pick-model` chooses for its `stage`. Does not start it when the running workflow file differs from the default branch, says why a run stopped (`why`), and with `report-file` guarantees a valid report file on every path |
 | `actions/pr-facts` | Resolves the PR from a number or a pull_request, workflow_run or status event, and checks it is open, not a fork, and at the expected head |
+| `actions/judge-verdict` | Marks an `agent:judge` request pending, turns a review by the exact judge login on the current head into `judge / verdict` with the org App token, or ends unanswered requests in `error`. Fails closed on anything it cannot trust; `verdict.sh` holds the rules |
 | `actions/request-review` | Applies `agent:review` with the App token when the head commit has no `review / verdict` yet |
 | `actions/merge-gate` | The one unattended merge: resolves the PR, runs `agent-gate`, decides by policy (`deps`, `factory`, `backmerge`, `hotfix` or `standards-sync`) from labels, the required check, `review / verdict`, Renovate's release-age status, mergeability, the base branch, commit authors, for a back-merge the head commit's parents, for a security patch `target-guard`'s verdict, and for a standards sync `standards / verify` and `standards / render`, and merges with the App token (a dependency PR by rebase, an agent PR, a security patch and a standards sync by squash, a back-merge by merge commit). A conflicted Renovate PR gets its rebase box ticked instead; a conflicted agent PR waits for the fix loop. For `hotfix` it takes target-guard's verdict from `guard.sh verdict`, which prints it without failing. When the policy needs a review the head does not have, it applies `agent:review` through `request-review` |
 | `actions/push-round` | Checks an agent's commits on a PR branch, regenerates lockfiles, and pushes them as one trailered commit with the App token, or refuses with a reason; its merge mode pushes the update job's merge of the base. Every round, round 0 included, passes `guard.sh`, which refuses a deleted, skipped or loosened test, a deleted snapshot, and any edit to a workflow, the merge gate or lint, test or CI config |
@@ -1705,6 +1707,48 @@ no verdict yet. When the PR's commits carry a `scope-trailers` trailer
 from their diff: the automation's own changes on top of another bot's work.
 deps-verify requests one for every `deps:fixed` PR. No caller change is needed:
 the caller's `labeled` trigger already covers it.
+
+## Judge verdict
+
+`judge.yml` gives a pull request a second judge from another model family than
+the agents that wrote it: Grok, run as Grok Bot, acting as the GitHub App
+`dodi-judge` (dev-standards DODI-00065). Grok Bot finds work on its own, through
+its GitHub connector, and never runs on DODI's runners. This section is the
+contract it writes to.
+
+- **Request.** `agent:judge` on an open PR, from a person or the org App. The
+  workflow sets the commit status `judge / verdict` to `pending` on the head,
+  and again on every new head while the label stays. A PR with
+  `agent:no-touch` is never requested.
+- **Finding work.** Open PRs labelled `agent:judge` whose head has
+  `judge / verdict` pending.
+- **The verdict.** One PR review on the head commit, posted as
+  `dodi-judge[bot]`, whose body holds exactly one fenced block:
+
+  ````markdown
+  ```dodi-judge-verdict
+  {"verdict": "approve", "sha": "<head sha>", "scenarios": {"passed": 4, "total": 4}, "blocking": []}
+  ```
+  ````
+
+  `verdict` is `approve` or `changes`. `sha` is the head the judge read.
+  `scenarios` is optional, two whole numbers, for the hidden scenarios it ran.
+  `blocking` lists `{"path", "line", "summary"}` findings it would not merge
+  with. Prose and inline comments around the block are for people.
+- **What is trusted.** Only a review whose author is exactly the judge login,
+  of type `Bot`, whose commit and `sha` are both the current head. A review of
+  an older commit is ignored and the request stays pending. Everything else
+  fails closed to `failure`: no block or two blocks, a block that is not JSON,
+  an unknown verdict, a malformed `blocking` or `scenarios`, `approve` with a
+  blocking finding, or `approve` with fewer scenarios passed than run.
+- **The status.** The org App posts `judge / verdict`: `success` for an
+  approval, `failure` otherwise, with the counts in the description, and links
+  the review. A request with no verdict after `timeout-minutes` (240 by default)
+  ends in `error`. Every ending removes `agent:judge`.
+
+The judge App has no statuses permission, so it can never post its own verdict.
+No gate reads `judge / verdict` yet; that takes a new decision. Kill switch:
+the variable `FACTORY_JUDGE` set to `false`.
 
 ## Renovate
 

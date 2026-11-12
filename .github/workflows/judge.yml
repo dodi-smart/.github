@@ -1,0 +1,85 @@
+# Reusable: the independent judge's request and verdict (dev-standards DODI-00065).
+#
+# The judge is another model family than the agents that write the code: Grok,
+# run as Grok Bot, acting as the review-only App `dodi-judge`. Grok Bot runs
+# outside DODI's runners and finds work itself, through its GitHub connector, by
+# a scheduled task or by listening to events. This workflow only does the parts
+# that must be code over facts:
+#
+#   pull_request labeled agent:judge   `judge / verdict` pending on the head
+#   pull_request synchronize           pending again on the new head, while asked
+#   pull_request_review submitted      the judge's review, trusted only from the
+#                                      exact judge login on the current head, is
+#                                      posted as `judge / verdict` by the org App
+#   schedule                           an unanswered request ends in `error`
+#
+# The judge has no statuses permission, so it can never post its own verdict.
+# The verdict is advisory: no gate reads it until a new decision says so. The
+# README's "Judge verdict" section is the contract Grok Bot writes to.
+#
+# Kill switch: the org or repo variable FACTORY_JUDGE set to 'false'.
+#
+# Called by a thin wrapper in each judged repo:
+#   on:
+#     pull_request:        { types: [labeled, synchronize] }
+#     pull_request_review: { types: [submitted] }
+#     schedule:            [{ cron: '17,47 * * * *' }]
+#   jobs:
+#     judge:
+#       uses: dodi-smart/.github/.github/workflows/judge.yml@v1
+#       secrets: inherit
+name: Judge
+
+on:
+  workflow_call:
+    inputs:
+      # The judge App's exact login. Only a review by this account, of type Bot,
+      # is read.
+      judge-login:
+        type: string
+        default: "dodi-judge[bot]"
+      timeout-minutes:
+        type: number
+        default: 240
+    secrets:
+      GH_APP_CLIENT_ID:   { required: false }
+      GH_APP_PRIVATE_KEY: { required: false }
+
+concurrency:
+  group: judge-${{ github.repository }}-${{ github.event.pull_request.number || 'sweep' }}
+  cancel-in-progress: false
+
+# Every job grants its own, so one added later starts with nothing.
+permissions: {}
+
+jobs:
+  judge:
+    # Payload-only filters, so an event that will not proceed books no runner.
+    # agent:no-touch stops the judge like every other agent: no request is made,
+    # and no verdict is posted. A draft is judged when asked; the request is
+    # explicit.
+    if: >-
+      vars.FACTORY_JUDGE != 'false'
+      && (github.event_name == 'schedule'
+        || (!contains(github.event.pull_request.labels.*.name, 'agent:no-touch')
+          && ((github.event_name == 'pull_request' && github.event.action == 'labeled' && github.event.label.name == 'agent:judge')
+            || (github.event_name == 'pull_request' && github.event.action == 'synchronize' && contains(github.event.pull_request.labels.*.name, 'agent:judge'))
+            || (github.event_name == 'pull_request_review' && github.event.review.user.login == inputs.judge-login && contains(github.event.pull_request.labels.*.name, 'agent:judge')))))
+    runs-on: ${{ fromJSON((github.event.repository.private && !github.event.pull_request.head.repo.fork) && '["self-hosted","Linux","light"]' || '"ubuntu-latest"') }}
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: dodi-smart/.github/actions/runner-report@v1
+        with:
+          selector: light
+
+      - uses: dodi-smart/.github/actions/judge-verdict@v1
+        with:
+          mode: ${{ github.event_name == 'schedule' && 'timeout' || (github.event_name == 'pull_request_review' && 'verdict' || 'pending') }}
+          number: ${{ github.event.pull_request.number }}
+          sha: ${{ github.event.pull_request.head.sha }}
+          judge-login: ${{ inputs.judge-login }}
+          timeout-minutes: ${{ inputs.timeout-minutes }}
+          client-id: ${{ secrets.GH_APP_CLIENT_ID }}
+          private-key: ${{ secrets.GH_APP_PRIVATE_KEY }}

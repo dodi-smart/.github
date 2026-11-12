@@ -9,13 +9,16 @@ description: Compute the autonomy tier or branch name, push a guarded round, dec
 
 inputs:
   command:
-    description: 'tier | branch | fields | push | holdout | decide | sweep | next'
+    description: 'tier | branch | fields | state | push | holdout | decide | sweep | next'
     required: true
   args:
     description: 'Positional arguments for tier (mode risk effort) and branch (type number title), newline-separated'
     default: ''
   issue:
-    description: 'Issue number (fields, push, holdout)'
+    description: 'Issue number (fields, state, push, holdout)'
+    default: ''
+  triage-state:
+    description: 'The Triage state option to set (state). Pass the org App token as token: the write needs it'
     default: ''
   pr:
     description: 'Pull request number (decide), when the event names one'
@@ -65,6 +68,7 @@ outputs:
   branch:    { description: 'Conventional branch name', value: '${{ steps.run.outputs.branch }}' }
   read:      { description: '"false" when the issue fields could not be read (fields)', value: '${{ steps.run.outputs.read }}' }
   state:     { description: 'Triage state', value: '${{ steps.run.outputs.state }}' }
+  written:   { description: '"true", or "false: <why>" (state)', value: '${{ steps.run.outputs.written }}' }
   mode:      { description: 'Agent mode', value: '${{ steps.run.outputs.mode }}' }
   risk:      { description: 'Risk', value: '${{ steps.run.outputs.risk }}' }
   effort:    { description: 'Effort', value: '${{ steps.run.outputs.effort }}' }
@@ -111,6 +115,7 @@ runs:
         WIP_CAP:        ${{ inputs.wip-cap }}
         WAIT_CEILING_H: ${{ inputs.review-wait-ceiling }}
         REQUIRED_STATE: ${{ inputs.required-state }}
+        STATE:          ${{ inputs.triage-state }}
         GH_TOKEN:       ${{ inputs.token }}
         ACTION_PATH:    ${{ github.action_path }}
       run: |

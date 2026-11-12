@@ -1800,9 +1800,10 @@ Each run dispatches at most one issue, and the first rule that holds wins:
    `Plan ready`, as in issue-implement) and whose `Agent mode` is `Autonomous`,
    highest Priority first (Urgent, High, Medium, Low, then unset), then the
    oldest, then the lowest number. Skipped: `agent:no-touch`, an issue carrying
-   `agent:implement` or closed by an open agent PR, and one the org App labelled
-   before, so a run it started that failed is a person's to retry. A person's own
-   earlier label does not count.
+   `agent:implement` or closed by an open agent PR. issue-implement moves
+   `Triage state` to `Ready for agent` before its agent runs, and to `Blocked`
+   when a run opens no PR, so an issue is never started twice until a person
+   sets it back to `Plan ready`.
 
 The org App applies the label, because a `GITHUB_TOKEN` label starts no
 workflow. A held run mints only a read-only token, for the App's login; the

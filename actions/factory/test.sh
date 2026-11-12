@@ -226,6 +226,8 @@ while [ $# -gt 0 ]; do
     --jq) jqx="$2"; shift ;;
     -f|-F) [ "${2%%=*}" = n ] && path="graphql-issue"
            case "$2" in
+             query=mutation*)               path="graphql-mutation"; printf '%s\n' "${2#query=}" >> "$STUB_API/mutations.log" ;;
+             query=*'issueFields('*)        path="graphql-fields" ;;
              query=*'issues(states'*)       path="graphql-issues" ;;
              query=*'pullRequests(states'*) path="graphql-prs" ;;
            esac; shift ;;
@@ -494,7 +496,7 @@ pickf() {  # pickf FACTS -> the decision's lines in $WORK/out
 }
 iss() {  # iss NUM PRIORITY [JQ-PATCH]: a Plan ready, Autonomous issue, then the patch
   jq -nc --argjson n "$1" --arg p "$2" '{number: $n, priority: (if $p == "" then null else $p end),
-    created: "2026-01-01T00:00:00Z", labels: [], state: "Plan ready", mode: "Autonomous", tried: false} | '"${3:-.}"
+    created: "2026-01-01T00:00:00Z", labels: [], state: "Plan ready", mode: "Autonomous"} | '"${3:-.}"
 }
 facts() {  # facts CAP PRS-JSON ISSUE...
   local cap="$1" prs="$2"; shift 2
@@ -522,8 +524,8 @@ expect "and with nothing else, it holds"                               test "$(v
 pickf "$(facts 2 '[]' "$(iss 2 Urgent '.state = "Needs info"')" "$(iss 3 Urgent '.mode = "Supervised"')" \
                        "$(iss 4 Urgent '.mode = "Human only"')" "$(iss 5 Urgent '.mode = null')" "$(iss 1 Low)")"
 expect "only Plan ready and Autonomous issues are picked"              test "$(val issue)" = 1
-pickf "$(facts 2 '[]' "$(iss 2 Urgent '.tried = true')" "$(iss 1 Low)")"
-expect "an issue the App dispatched before is a person's to retry"     test "$(val issue)" = 1
+pickf "$(facts 2 '[]' "$(iss 2 Urgent '.state = "Ready for agent"')" "$(iss 3 Urgent '.state = "Blocked"')" "$(iss 1 Low)")"
+expect "an issue implement started or gave up on is a person's to retry" test "$(val issue)" = 1
 pickf "$(facts 2 "[$(pr 20 2)]" "${two_issues[@]}")"
 expect "an issue an open agent PR closes is not picked again"          test "$(val issue)" = 1
 
@@ -567,15 +569,14 @@ api graphql-prs "{\"data\":{\"repository\":{\"pullRequests\":{\"nodes\":[
   $(gp 20 app false 'x
 
 Closes #5' "$bot_review" 2026-11-11T00:00:00Z), $(gp 21 app true 'Closes #6'), $(gp 22 app false 'sync'), $(gp 23 someone false 'Closes #7')]}}}}"
-gi() {  # gi NUM PRIORITY CREATED [LABELED-BY]: a Plan ready, Autonomous issue
-  jq -nc --argjson n "$1" --arg p "$2" --arg c "$3" --arg by "${4:-}" '{number: $n, createdAt: $c, labels: {nodes: []},
+gi() {  # gi NUM PRIORITY CREATED [STATE]: an Autonomous issue, Plan ready unless STATE
+  jq -nc --argjson n "$1" --arg p "$2" --arg c "$3" --arg s "${4:-Plan ready}" '{number: $n, createdAt: $c, labels: {nodes: []},
     issueFieldValues: {nodes: [
-      {name: "Plan ready", field: {name: "Triage state"}}, {name: "Autonomous", field: {name: "Agent mode"}},
-      {name: $p, field: {name: "Priority"}}, {}]},
-    timelineItems: {nodes: (if $by == "" then [] else [{label: {name: "agent:implement"}, actor: {login: $by}}] end)}}'
+      {name: $s, field: {name: "Triage state"}}, {name: "Autonomous", field: {name: "Agent mode"}},
+      {name: $p, field: {name: "Priority"}}, {}]}}'
 }
 api graphql-issues "{\"data\":{\"repository\":{\"issues\":{\"nodes\":[
-  $(gi 5 Urgent 2026-01-01T00:00:00Z), $(gi 8 High 2026-01-01T00:00:00Z app), $(gi 9 High 2026-01-02T00:00:00Z person),
+  $(gi 5 Urgent 2026-01-01T00:00:00Z), $(gi 8 High 2026-01-01T00:00:00Z 'Ready for agent'), $(gi 9 High 2026-01-02T00:00:00Z),
   $(gi 10 Medium 2026-01-01T00:00:00Z)]}}}}"
 nextf() {
   : > "$WORK/out"
@@ -584,7 +585,7 @@ nextf() {
     GITHUB_OUTPUT="$WORK/out" bash "$F" next > "$WORK/log" 2>&1
 }
 CAP=3 CEIL=48 nextf
-expect "next counts the App's PRs that close an issue, skips the closed issue and one the App dispatched; a person's label does not count" \
+expect "next counts the App's PRs that close an issue, and skips the closed issue and one implement started" \
   test "$(val action) $(val issue) $(val wip)" = 'dispatch 9 2'
 expect "and the wait runs from the last ready_for_review, past a bot's review" test "$(val review-wait-h)" = 36
 CAP=3 CEIL=36 nextf
@@ -609,6 +610,32 @@ for bad in 'x' '-1'; do
   CAP="$bad" nextf
   expect "a wip-cap of '$bad' holds"                                   test "$(val action)" = hold
 done
+
+# 8. state: implement moves Triage state off Plan ready, with the repository's own ids.
+rm -rf "$WORK/api"; mkdir -p "$WORK/api"
+api graphql-fields '{"data":{"repository":{"issue":{"id":"I_5"},"issueFields":{"nodes":[
+  {"id":"F_mode","name":"Agent mode","options":[{"id":"O_auto","name":"Autonomous"}]},
+  {"id":"F_ts","name":"Triage state","options":[{"id":"O_pr","name":"Plan ready"},{"id":"O_bl","name":"Blocked"}]}, {}]}}}}'
+api graphql-mutation '{"data":{}}'
+statef() {
+  : > "$WORK/out"
+  env -i PATH="$WORK/bin:$PATH" HOME="$WORK" STUB_API="$WORK/api" REPO=o/r ISSUE=5 STATE="$1" \
+    GITHUB_OUTPUT="$WORK/out" bash "$F" state > "$WORK/log" 2>&1
+}
+statef Blocked
+expect "state writes the Triage state option by the repository's ids" \
+  grep -q 'issueId:"I_5", issueFields:\[{fieldId:"F_ts", singleSelectOptionId:"O_bl"}\]' "$WORK/api/mutations.log"
+expect "and says it was written"                                      test "$(val written)" = true
+rm "$WORK/api/mutations.log"
+statef 'Ready for agent'
+expect "an option the repository lacks is not written"                test ! -f "$WORK/api/mutations.log"
+expect "and says why, without failing"                                grep -q 'no Triage state option "Ready for agent"' <<<"$(val written)"
+rm "$WORK/api/graphql-mutation"
+statef Blocked
+expect "a refused write says so, without failing"                     test "$(val written)" = 'false: the write was refused'
+rm "$WORK/api/graphql-fields"
+statef Blocked
+expect "unreadable fields say so, without failing"                    test "$(val written)" = 'false: the issue fields could not be read'
 
 printf '\n%s passed, %s failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

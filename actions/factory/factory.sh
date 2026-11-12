@@ -7,6 +7,7 @@
 #   factory.sh tier     MODE RISK EFFORT        -> tier=merge|ready|draft
 #   factory.sh branch   TYPE NUM TITLE          -> branch=<feat|fix|chore>/<n>-<slug>
 #   factory.sh fields   (REPO, ISSUE)           -> state, mode, risk, effort, priority, tier
+#   factory.sh state    (REPO, ISSUE, STATE)    -> written: Triage state set to STATE, or why not
 #   factory.sh push     (env, see push())       -> pushed, refused, sha (round 0)
 #   factory.sh holdout  (BASE_SHA, ISSUE)       -> refuse-paths for a fix round,
 #                                                  merge-refuse-paths for a merge round
@@ -202,6 +203,29 @@ mergeable_of() {
 # (or Fixes, Resolves). Implement writes it, so this reads our own output.
 closes_of() { grep -oiE '(closes|fixes|resolves) #[0-9]+' | sed -n 1p | grep -oE '[0-9]+' || true; }
 
+# set_state: set the issue's `Triage state` to $STATE. implement moves it off
+# `Plan ready` when it starts (`Ready for agent`) and to `Blocked` when a run
+# opens no PR, so the dispatcher, which picks only `Plan ready`, never starts an
+# issue twice without a person. The field and option ids come from the
+# repository (a repo-scoped App token gets 403 on /orgs/*). A failed write warns
+# and prints why; it never fails the run that is reporting.
+set_state() {
+  local want="${STATE:-}" resp ids node fid oid
+  warn() { echo "::warning::Could not set Triage state to \"$want\" on #$ISSUE: $1"; out written "false: $1"; }
+  # shellcheck disable=SC2016  # GraphQL variables, not shell ones
+  resp=$(gh api graphql -F n="$ISSUE" -f o="${REPO%%/*}" -f r="${REPO##*/}" \
+    -f query='query($o:String!,$r:String!,$n:Int!){ repository(owner:$o,name:$r){ issue(number:$n){ id }
+      issueFields(first:50){ nodes{ ... on IssueFieldSingleSelect { id name options{ id name } } } } } }' 2>/dev/null) \
+    || { warn "the issue fields could not be read"; return 0; }
+  ids=$(jq -r --arg w "$want" '.data.repository as $r | [$r.issueFields.nodes[]? | select(.name == "Triage state")
+          | . as $f | .options[]? | select(.name == $w) | "\($r.issue.id) \($f.id) \(.id)"] | first // empty' <<<"$resp" 2>/dev/null) || ids=''
+  [ -n "$ids" ] || { warn "the repository has no Triage state option \"$want\""; return 0; }
+  read -r node fid oid <<<"$ids"
+  gh api graphql -f query="mutation{ setIssueFieldValue(input:{issueId:\"$node\", issueFields:[{fieldId:\"$fid\", singleSelectOptionId:\"$oid\"}]}){ clientMutationId } }" >/dev/null 2>&1 \
+    || { warn "the write was refused"; return 0; }
+  out written true
+}
+
 # The PRs the fix loop never touches, for `decide` and `sweep` alike: a fork, an
 # agent:no-touch label, a dependency bot's PR (deps-verify and deps-automerge own
 # those; the loop would push agent commits onto a branch Renovate rebases, and
@@ -382,8 +406,9 @@ sweep() {
 #
 # facts: {required, cap, ceiling_h, now,
 #         prs:    [{number, closes, waiting_since}]   waiting_since: ISO 8601, or null
-#         issues: [{number, created, priority, state, mode, labels, tried}]}
-# `tried`: the org App labelled the issue agent:implement before.
+#         issues: [{number, created, priority, state, mode, labels}]}
+# An issue implement already started is no longer `Plan ready` (set_state), so
+# it is never picked twice without a person.
 # ---------------------------------------------------------------------------
 # shellcheck disable=SC2016  # $f, $n and the rest are jq variables, not shell
 PICK_JQ='
@@ -403,7 +428,7 @@ def hold($r): {action: "hold", reason: $r};
   elif $wait != null and $wait >= $f.ceiling_h then hold("the median review wait is \($m.wait)h: the ceiling is \($f.ceiling_h)h")
   else
     [$f.issues[]
-      | select(.state == $f.required and .mode == "Autonomous" and (.tried | not)
+      | select(.state == $f.required and .mode == "Autonomous"
                and (labelled("agent:no-touch") | not) and (labelled("agent:implement") | not) and (has_pr | not))]
     | sort_by([(.priority | rank), .created, .number]) | first
     | if . == null then hold("no open issue is \($f.required), Autonomous and untouched")
@@ -475,12 +500,11 @@ next() {
     repository(owner:$o,name:$r){ issues(states:OPEN, first:100, after:$endCursor){
       pageInfo{ hasNextPage endCursor }
       nodes{ number createdAt labels(first:50){ nodes{ name } } '"$FIELDS_GQL"'
-        timelineItems(itemTypes:[LABELED_EVENT], last:100){ nodes{ ... on LabeledEvent { label{ name } actor{ login } } } } } } } }' \
+        } } } }' \
     -f o="$owner" -f r="$name" \
     --jq "$FIELDS_JQ .data.repository.issues.nodes[] | fields as \$v
           | {number, created: .createdAt, labels: [.labels.nodes[].name],
-             state: \$v[\"Triage state\"], mode: \$v[\"Agent mode\"], priority: \$v[\"Priority\"],
-             tried: any(.timelineItems.nodes[]; .label.name == \"agent:implement\" and .actor.login == \"$agent\")}
+             state: \$v[\"Triage state\"], mode: \$v[\"Agent mode\"], priority: \$v[\"Priority\"]}
           | tojson" 2>/dev/null) \
     || finish "could not read the open issues"
 
@@ -509,6 +533,7 @@ case "$cmd" in
   sweep)  sweep ;;
   next)   next ;;
   closes) closes_of ;;
+  state)  set_state ;;
   pick)   pick ;;
-  *) echo "usage: factory.sh tier|branch|fields|push|holdout|decide|sweep|next|pick|closes" >&2; exit 2 ;;
+  *) echo "usage: factory.sh tier|branch|fields|state|push|holdout|decide|sweep|next|pick|closes" >&2; exit 2 ;;
 esac

@@ -84,7 +84,7 @@ jobs:
       effort:   ${{ steps.fields.outputs.effort }}
       priority: ${{ steps.fields.outputs.priority }}
       branch:  ${{ steps.branch.outputs.branch }}
-      app-bot: ${{ steps.app.outputs.login }}
+      app-bot: ${{ steps.check.outputs.proceed == 'true' && github.event.sender.type == 'Bot' && steps.app.outputs.login || '' }}
     steps:
       - uses: dodi-smart/.github/actions/runner-report@v1
         with:
@@ -180,15 +180,26 @@ jobs:
 
           echo "proceed=true" >> "$GITHUB_OUTPUT"
 
-      # The org App's login, for run-agent's allowed-bots when the App asked
-      # (the dispatcher). Read-only; any other bot actor stays refused.
+      # The org App token, narrowed to issues. Its login is run-agent's
+      # allowed-bots when the App asked (the dispatcher); any other bot actor
+      # stays refused.
       - id: app
-        if: steps.check.outputs.proceed == 'true' && github.event.sender.type == 'Bot'
+        if: steps.check.outputs.proceed == 'true'
         uses: dodi-smart/.github/actions/app-token@v1
         with:
           client-id:   ${{ secrets.GH_APP_CLIENT_ID }}
           private-key: ${{ secrets.GH_APP_PRIVATE_KEY }}
-          permissions: 'issues:read'
+          permissions: 'issues:write'
+
+      # Off `Plan ready` before any agent runs, so the dispatcher, which picks
+      # only `Plan ready`, never starts this issue again without a person.
+      - if: steps.check.outputs.proceed == 'true'
+        uses: dodi-smart/.github/actions/factory@v1
+        with:
+          command:      state
+          issue:        ${{ github.event.issue.number }}
+          triage-state: Ready for agent
+          token:        ${{ steps.app.outputs.token }}
 
       # The branch name, from the issue type and title.
       - id: branch
@@ -419,6 +430,16 @@ jobs:
                   --title "$title" --body-file "$OUT/pr.md" "${labels[@]}")
           echo "url=$url" >> "$GITHUB_OUTPUT"
           echo "::notice title=Draft PR opened::$url (tier $TIER)"
+
+      # A run that opened no PR goes back to a person: `Blocked`, which the
+      # dispatcher never picks. A cancelled run was a person's choice.
+      - if: ${{ !cancelled() && steps.open.outputs.url == '' && steps.app-token.outputs.token != '' }}
+        uses: dodi-smart/.github/actions/factory@v1
+        with:
+          command:      state
+          issue:        ${{ github.event.issue.number }}
+          triage-state: Blocked
+          token:        ${{ steps.app-token.outputs.token }}
 
       # Report on the issue, and clear the request label on every path.
       - if: ${{ always() }}

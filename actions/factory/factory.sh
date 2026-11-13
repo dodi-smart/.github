@@ -8,7 +8,7 @@
 #   factory.sh branch   TYPE NUM TITLE          -> branch=<feat|fix|chore>/<n>-<slug>
 #   factory.sh fields   (REPO, ISSUE)           -> state, mode, risk, effort, priority, tier
 #   factory.sh state    (REPO, ISSUE, STATE)    -> written: Triage state set to STATE, or why not
-#   factory.sh push     (env, see push())       -> pushed, refused, sha (round 0)
+#   factory.sh push     (env, see push())       -> pushed, refused, record, sha (round 0)
 #   factory.sh holdout  (BASE_SHA, ISSUE)       -> refuse-paths for a fix round,
 #                                                  merge-refuse-paths for a merge round
 #   factory.sh decide   (env, see decide())     -> action and the facts behind it
@@ -124,16 +124,27 @@ push_round() {
   git reset -q --hard HEAD   # uncommitted edits are not part of a round
   echo "pushed=false" >> "${GITHUB_OUTPUT:-/dev/null}"
   new=$(git rev-list --count "$BASE_SHA..HEAD")
+  # Every refusal also writes `record`, push-round's metadata-only marker, so
+  # a refused round 0 is counted the same way as a refused fix round.
+  local round_sh="$HERE/../push-round/round.sh"
+  refuse() { # KIND WHY [HITS]
+    out refused "$2"
+    out record "$("$round_sh" record "$1" 0 "${3:-}")"
+    echo "::warning title=Round not pushed::$2"; exit 0
+  }
+  # Committing nothing is no refusal, as in push-round: no record.
   if [ "$new" = 0 ]; then echo "no commits"; out refused "the agent committed nothing"; return 0; fi
-  refuse() { out refused "$1"; echo "::warning title=Round not pushed::$1"; exit 0; }
 
   others=$(git log --format='%ae' "$BASE_SHA..HEAD" | grep -vxF -f <(printf '%s\n%s\n' "$FACTORY_EMAIL" "${AGENT_EMAILS:-}" | sed '/^$/d') || true)
-  [ -n "$others" ] && refuse "a commit carries another author: $(printf '%s' "$others" | paste -sd ' ' -)"
+  [ -n "$others" ] && refuse author "a commit carries another author: $(printf '%s' "$others" | paste -sd ' ' -)"
 
   # The same guard as every fix round; push-round owns the rule and its wording.
-  local why allow=()
+  local why hits hits_file rc=0 allow=()
   [ -z "${ISSUE:-}" ] || allow=(--allow "^$(printf '%s' "$HOLDOUT_DIR/$ISSUE" | ere_quote)\$")
-  why=$("$HERE/../push-round/round.sh" guard "${allow[@]}" "$BASE_SHA" HEAD) || refuse "$why"
+  hits_file=$(mktemp "${TMPDIR:-/tmp}/guard-hits.XXXXXX")
+  why=$(GUARD_HITS="$hits_file" "$round_sh" guard "${allow[@]}" "$BASE_SHA" HEAD) || rc=$?
+  hits=$(cat "$hits_file"); rm -f "$hits_file"
+  case "$rc" in 0) ;; 1) refuse guard "$why" "$hits" ;; *) refuse guard-error "$why" ;; esac
 
   first=$(git log --reverse --format='%s' "$BASE_SHA..HEAD" | sed -n 1p)
   subject="${SUBJECT:-}"
@@ -144,7 +155,7 @@ push_round() {
 Factory-Issue: $ISSUE"
   # The agent's own trailers ride after the round's; push-round owns the rule.
   local kept
-  kept=$("$HERE/../push-round/round.sh" trailers)
+  kept=$("$round_sh" trailers)
   [ -z "$kept" ] || trailers="$trailers
 $kept"
   git reset -q --soft "$BASE_SHA"
@@ -152,9 +163,9 @@ $kept"
     git commit -q --author="$FACTORY_NAME <$FACTORY_EMAIL>" -m "$subject" -m "$trailers"
   out sha "$(git rev-parse HEAD)"
 
-  [ -z "${APP_TOKEN:-}" ] && refuse "GH_APP_CLIENT_ID is not set, and a GITHUB_TOKEN push starts no checks"
+  [ -z "${APP_TOKEN:-}" ] && refuse token "GH_APP_CLIENT_ID is not set, and a GITHUB_TOKEN push starts no checks"
   url="https://x-access-token:${APP_TOKEN}@github.com/${REPO}.git"
-  [ -n "$(git ls-remote "$url" "refs/heads/$HEAD_REF" | cut -f1)" ] && refuse "branch $HEAD_REF already exists"
+  [ -n "$(git ls-remote "$url" "refs/heads/$HEAD_REF" | cut -f1)" ] && refuse exists "branch $HEAD_REF already exists"
   git push -q "$url" "HEAD:refs/heads/$HEAD_REF"
   out pushed true
 }

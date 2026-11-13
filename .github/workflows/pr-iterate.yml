@@ -300,6 +300,7 @@ jobs:
       - id: merge
         env:
           BASE_REF: ${{ needs.gate.outputs.base-ref }}
+          ROUNDS:   ${{ needs.gate.outputs.rounds }}
         run: |
           set -euo pipefail
           git config user.name 'claude[bot]'
@@ -311,6 +312,10 @@ jobs:
           # shellcheck disable=SC2016  # the backticks are markdown, not a substitution
           files=$(git diff --name-only --diff-filter=U | sed -e 's/`//g' -e 's/.*/- `&`/')
           git merge --abort || true
+          # A conflict is a refused round too: the same metadata-only record
+          # push-round writes, kind `conflict`, so it is counted like the rest.
+          printf 'record=<!-- dodi-factory:refusal {"v":1,"kind":"conflict","round":%d,"rules":{},"findings":0} -->\n' \
+            "$(( ROUNDS + 1 ))" >> "$GITHUB_OUTPUT"
           {
             echo "refused<<END_REFUSED"
             echo "the branch conflicts with \`$BASE_REF\`, and the fix loop does not resolve conflicts"
@@ -348,18 +353,39 @@ jobs:
           client-id:    ${{ secrets.GH_APP_CLIENT_ID }}
           private-key:  ${{ secrets.GH_APP_PRIVATE_KEY }}
 
+      # The hand-off comment carries the refusal record, so the org App posts
+      # it: proba and the scorecard trust that one login. A GITHUB_TOKEN
+      # comment is github-actions[bot], which any workflow here can post as.
+      # With no App, the comment goes out without the record.
+      - id: handoff-token
+        if: ${{ always() && steps.push.outputs.pushed != 'true' }}
+        uses: dodi-smart/.github/actions/app-token@v1
+        with:
+          client-id:   ${{ secrets.GH_APP_CLIENT_ID }}
+          private-key: ${{ secrets.GH_APP_PRIVATE_KEY }}
+          permissions: pull-requests:write issues:write
+
       # The one hand-off, for a conflict and a refused push alike. A pushed merge
       # starts PR Checks on the new head, which starts the next decision.
       - if: ${{ always() && steps.push.outputs.pushed != 'true' }}
         env:
           REFUSED: ${{ steps.merge.outputs.refused || steps.push.outputs.refused }}
+          # The metadata-only refusal record, from the merge step (a conflict)
+          # or push-round, kept on the PR so proba (factory.no_test_weakening)
+          # and the scorecard can count refusals.
+          RECORD:  ${{ steps.merge.outputs.record || steps.push.outputs.record }}
+          APP_TOKEN: ${{ steps.handoff-token.outputs.token }}
           RUN:     ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           set -euo pipefail
           why="${REFUSED:-the merge produced no commit}"
+          # The reason quotes paths the branch chose: an HTML comment opener
+          # in it is escaped, so it cannot forge a record.
+          why=$(printf '%s' "$why" | sed 's/<!--/\&lt;!--/g')
           # shellcheck disable=SC2016  # the backticks are markdown, not a substitution
           printf '**Branch not updated:** %s\n\nA person brings it up to date; the loop has stopped (`agent:iterate` removed). [Run log](%s)\n' "$why" "$RUN" > "$RUNNER_TEMP/handoff.md"
-          gh pr comment "$PR" --repo "$REPO" --body-file "$RUNNER_TEMP/handoff.md" || true
+          [ -z "$APP_TOKEN" ] || [ -z "$RECORD" ] || printf '\n%s\n' "$RECORD" >> "$RUNNER_TEMP/handoff.md"
+          GH_TOKEN="${APP_TOKEN:-$GH_TOKEN}" gh pr comment "$PR" --repo "$REPO" --body-file "$RUNNER_TEMP/handoff.md" || true
           unlabel() { gh api -X DELETE "/repos/$REPO/issues/$1/labels/agent:iterate" >/dev/null 2>&1 || true; }
           unlabel "$PR"
 
@@ -505,11 +531,26 @@ jobs:
           client-id:    ${{ secrets.GH_APP_CLIENT_ID }}
           private-key:  ${{ secrets.GH_APP_PRIVATE_KEY }}
 
+      # The hand-off comment carries the refusal record, so the org App posts
+      # it: proba and the scorecard trust that one login. A GITHUB_TOKEN
+      # comment is github-actions[bot], which any workflow here can post as.
+      # With no App, the comment goes out without the record.
+      - id: handoff-token
+        if: ${{ always() && steps.push.outputs.pushed != 'true' }}
+        uses: dodi-smart/.github/actions/app-token@v1
+        with:
+          client-id:   ${{ secrets.GH_APP_CLIENT_ID }}
+          private-key: ${{ secrets.GH_APP_PRIVATE_KEY }}
+          permissions: pull-requests:write issues:write
+
       # A pushed round starts PR Checks on the new head, and its completion
       # starts the next decision. Anything else is said on the PR.
       - if: ${{ always() && steps.push.outputs.pushed != 'true' }}
         env:
           REFUSED: ${{ steps.push.outputs.refused }}
+          # push-round's metadata-only refusal marker; empty when nothing was refused.
+          RECORD:  ${{ steps.push.outputs.record }}
+          APP_TOKEN: ${{ steps.handoff-token.outputs.token }}
           # Why the agent did not start or stopped without a result, from
           # run-agent. Empty for a run that finished normally.
           AGENT_WHY: ${{ steps.agent.outputs.why }}
@@ -517,4 +558,9 @@ jobs:
         run: |
           set -euo pipefail
           why="${REFUSED:-${AGENT_WHY:-the agent committed nothing}}"
-          gh pr comment "$PR" --repo "$REPO" --body "**Fix round not pushed.** $why. [Run log]($RUN)." || true
+          # The reason quotes paths and authors the agent chose: an HTML
+          # comment opener in it is escaped, so it cannot forge a record.
+          why=$(printf '%s' "$why" | sed 's/<!--/\&lt;!--/g')
+          body="**Fix round not pushed.** $why. [Run log]($RUN)."
+          [ -z "$APP_TOKEN" ] || [ -z "$RECORD" ] || body="$body"$'\n\n'"$RECORD"
+          GH_TOKEN="${APP_TOKEN:-$GH_TOKEN}" gh pr comment "$PR" --repo "$REPO" --body "$body" || true

@@ -9,6 +9,9 @@
 #   guard.sh [--allow ERE] --paths     the gate-file rule only, on paths read
 #                                      from stdin (merge mode: what a merge
 #                                      resolution changed)
+#   guard.sh --rules                   prints TEST_RE, SNAP_RE and GATE_RE, one
+#                                      per line: the path rules dirahq-cloud's
+#                                      proba copies (factory.ts) and pins by hash
 #
 # Prints one `path: what` line per finding. Exit 0: nothing found. Exit 1:
 # findings. Anything else is a guard that could not run, and a caller refuses
@@ -44,6 +47,7 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --allow) ALLOW="$2"; shift 2 ;;
     --paths) MODE=paths; shift ;;
+    --rules) MODE=rules; shift ;;
     -h|--help) sed -n '2,/^set /p' "$0"; exit 0 ;;
     --) shift; break ;;
     -*) echo "guard.sh: unknown flag $1" >&2; exit 2 ;;
@@ -145,6 +149,11 @@ hit() { printf '%s: %s\n' "$1" "$2"; found=1; }
 # Bash's own ERE match: a path is judged without a subprocess.
 is() { [[ $2 =~ $1 ]]; }
 gate_check() { { [ -n "$ALLOW" ] && is "$ALLOW" "$1"; } || ! is "$GATE_RE" "$1" || hit "$1" "touches a gate file"; }
+
+if [ "$MODE" = rules ]; then
+  printf '%s\n' "$TEST_RE" "$SNAP_RE" "$GATE_RE"
+  exit 0
+fi
 
 if [ "$MODE" = paths ]; then
   while IFS= read -r p; do [ -n "$p" ] && gate_check "$p"; done

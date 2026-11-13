@@ -125,6 +125,22 @@ repo
 push 0 'feat: x'
 expect "no commits is no push"                test "$(val refused)" = 'the agent committed nothing'
 
+# Every round-0 refusal leaves push-round's metadata-only record too, with the
+# same kinds and rule ids, as round 0. issue-implement keeps it on the issue.
+rec0() { val record | sed -n 's/^<!-- dodi-factory:refusal \(.*\) -->$/\1/p'; }
+expect "record: no commits is no refusal and no record" test -z "$(val record)"
+repo; commit "$AGENT" .github/workflows/ci.yml; commit "$AGENT" .factory/holdout.d/2
+push 0 'ci: x'
+expect "record: a guard refusal names the rule, as round 0" \
+  test "$(rec0)" = '{"v":1,"kind":"guard","round":0,"rules":{"touches_gate_file":2},"findings":2}'
+expect "record: and no path"                       bash -c '! grep -qE "workflows|holdout" <<<"$1"' _ "$(val record)"
+repo; commit 'person@example.com' src/a.ts
+push 0 'feat: x'
+expect "record: an author refusal"                 test "$(rec0 | jq -r .kind)" = author
+repo; commit "$AGENT" src/a.ts
+push 0 'feat: x'
+expect "record: a missing token is recorded too"   test "$(rec0 | jq -r .kind)" = token
+
 # Fix rounds go through actions/push-round. `holdout` turns the issue's list as
 # round 0 wrote it into push-round's refuse-paths, and push-round's own check
 # refuses. ISSUE is the PR's issue; the list is .factory/holdout.d/<issue>.

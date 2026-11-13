@@ -76,6 +76,7 @@ outputs:
   signals:   { description: '`lint-only` when only `hk check --all` failed in PR Checks before any fix round (decide)', value: '${{ steps.run.outputs.signals }}' }
   pushed:    { description: '"true" when a round was pushed', value: '${{ steps.run.outputs.pushed }}' }
   refused:   { description: 'Why a round was not pushed', value: '${{ steps.run.outputs.refused }}' }
+  record:    { description: "The refusal as push-round's metadata-only marker, for the hand-off comment (push)", value: '${{ steps.run.outputs.record }}' }
   sha:       { description: 'The round commit', value: '${{ steps.run.outputs.sha }}' }
   refuse-paths: { description: 'ERE of the holdout files of the given issue and their list, for push-round (holdout)', value: '${{ steps.run.outputs.refuse-paths }}' }
   merge-refuse-paths: { description: 'refuse-paths plus the lockfiles, for the push-round of a merge round (holdout)', value: '${{ steps.run.outputs.merge-refuse-paths }}' }

@@ -315,6 +315,14 @@ expect "guard: and only that path" \
 tree_repo "$FIX/test-script-edited"
 expect "guard: and from no other rule" \
   bash -c 'cd "$1" && "$2" --allow "^package\.json$" "$3" HEAD >/dev/null; [ $? = 1 ]' _ "$WORK/g" "$GUARD" "$GBASE"
+# dodi-smart/dirahq-cloud's proba copies the three path rules
+# (cloud/src/lib/proba/factory.ts, D-0099) and pins them to this hash too. A
+# rule change here fails this line: update the cloud copy, its fixture
+# (guard.sh --rules > cloud/src/lib/proba/__fixtures__/guard-rules.txt) and
+# both hashes in the same change.
+GUARD_RULES_SHA256=01e038b7429b0842fd06092ed2b8b9462b5e1e71d136c45432470ee5cdc3473b
+expect "guard: --rules prints the three path rules proba pins by hash" \
+  test "$("$GUARD" --rules | { sha256sum 2>/dev/null || shasum -a 256; } | cut -d' ' -f1)" = "$GUARD_RULES_SHA256"
 expect "guard: --paths judges gate files alone" \
   test "$(printf 'src/a.ts\n.github/workflows/ci.yml\n' | "$GUARD" --paths)" = '.github/workflows/ci.yml: touches a gate file'
 
@@ -338,6 +346,41 @@ expect "merge: a resolution that edits a workflow is refused" \
 repo; commit "$CLAUDE_EMAIL" src/a.ts; advance 'person@example.com' .github/workflows/ci.yml; merge_in
 merge_round
 expect "merge: a base that changed a workflow is not the round's" test "$(refused)" = "$NO_TOKEN"
+
+# The durable record every refusal leaves: one marker, metadata only, that a
+# caller appends to its hand-off comment and proba and the scorecard count.
+rec()     { sed -n 's/^record=//p' "$WORK/out"; }
+recjson() { rec | sed -n 's/^<!-- dodi-factory:refusal \(.*\) -->$/\1/p'; }
+recq()    { recjson | jq -r "$1"; }
+repo; commit "$CLAUDE_EMAIL" src/sum.test.ts "$(cat "$FIX/assertion-loosened/before/src/sum.test.ts")"
+BASE="$(git -C "$WORK/r" rev-parse HEAD)"
+commit "$CLAUDE_EMAIL" src/sum.test.ts "$(cat "$FIX/assertion-loosened/after/src/sum.test.ts")"
+KEEPR='' round 1
+expect "record: a guard refusal is one marker line"       test "$(rec | wc -l | tr -d ' ')" = 1
+expect "record: it names the kind, the round and the rule" \
+  test "$(recjson)" = '{"v":1,"kind":"guard","round":2,"rules":{"loosens_assertion":1},"findings":1}'
+expect "record: it carries no path and no reason text"    bash -c '! grep -qE "sum\.test|exact assertion" <<<"$1"' _ "$(rec)"
+repo; commit "$CLAUDE_EMAIL" .github/workflows/ci.yml; commit "$CLAUDE_EMAIL" eslint.config.mjs
+round
+expect "record: findings are counted per rule"            test "$(recq '.rules.touches_gate_file,.findings' | paste -sd ' ' -)" = '2 2'
+repo; commit 'person@example.com' src/a.ts
+round
+expect "record: an author refusal has its kind and no rules" test "$(recq '.kind,(.rules|length)' | paste -sd ' ' -)" = 'author 0'
+repo; commit "$CLAUDE_EMAIL" src/a.ts
+round 2
+expect "record: the cap names the round it would have been" test "$(recq '.kind,.round' | paste -sd ' ' -)" = 'cap 3'
+repo; commit "$CLAUDE_EMAIL" yarn.lock
+round
+expect "record: a refused path is its own kind"           test "$(recq .kind)" = refuse-path
+repo; commit "$CLAUDE_EMAIL" src/a.ts
+round
+expect "record: a push-phase refusal is recorded too"     test "$(recq .kind)" = token
+repo; ( cd "$WORK/r" && git commit -q --allow-empty -m noop && git reset -q --hard "$BASE" ); : > "$WORK/out"; phase check
+expect "record: no commits is no refusal and no record"   test -z "$(rec)"
+mkdir -p "$WORK/gx"; printf '%s\n' 'a.test.ts: deletes a test file' 'b.snap: deletes a snapshot' 'c: something new' \
+  't.test.ts: renames a test file to t.ts, which is not a test path' 'd: renames a test file to e: touches a gate file' > "$WORK/gx/hits"
+expect "record: round.sh record maps every finding, unknown ones as other" \
+  test "$(bash "$HERE/round.sh" record guard 0 "$(cat "$WORK/gx/hits")" | sed 's/^<!-- dodi-factory:refusal \(.*\) -->$/\1/' | jq -c .rules)" = '{"deletes_snapshot":1,"deletes_test":1,"other":1,"renames_test_away":1,"touches_gate_file":1}'
 
 printf '\n%s passed, %s failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

@@ -32,6 +32,7 @@ inputs:
 outputs:
   pushed:  { description: '"true" when a round was pushed', value: '${{ steps.push.outputs.pushed }}' }
   refused: { description: 'Why the round was refused; empty otherwise', value: '${{ steps.check.outputs.refused || steps.push.outputs.refused }}' }
+  record:  { description: 'The refusal as a metadata-only marker (<!-- dodi-factory:refusal {...} -->) for the caller to append to its hand-off comment; empty when pushed', value: '${{ steps.check.outputs.record || steps.push.outputs.record }}' }
 
 runs:
   using: composite

@@ -446,12 +446,22 @@ jobs:
         env:
           URL:     ${{ steps.open.outputs.url }}
           REFUSED: ${{ steps.push.outputs.refused }}
+          # The refusal's metadata-only marker (push-round's record): a refused
+          # round 0 has no PR, so it is kept on the issue.
+          RECORD:  ${{ steps.push.outputs.record }}
+          # Posted by the org App, the one login proba trusts a record from.
+          APP_TOKEN: ${{ steps.app-token.outputs.token }}
           RUN:     ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           set -euo pipefail
           if [ -n "$URL" ]; then
             gh issue comment "$NUM" --repo "$REPO" --body "Opened $URL." || true
           elif [ -n "$REFUSED" ] && [ "$REFUSED" != "the agent committed nothing" ]; then
-            gh issue comment "$NUM" --repo "$REPO" --body "**Implementation was not pushed.** $REFUSED. [Run log]($RUN)." || true
+            # The reason quotes paths and authors the agent chose: an HTML
+            # comment opener in it is escaped, so it cannot forge a record.
+            why=$(printf '%s' "$REFUSED" | sed 's/<!--/\&lt;!--/g')
+            body="**Implementation was not pushed.** $why. [Run log]($RUN)."
+            [ -z "$APP_TOKEN" ] || [ -z "$RECORD" ] || body="$body"$'\n\n'"$RECORD"
+            GH_TOKEN="${APP_TOKEN:-$GH_TOKEN}" gh issue comment "$NUM" --repo "$REPO" --body "$body" || true
           fi
           gh issue edit "$NUM" --repo "$REPO" --remove-label 'agent:implement' >/dev/null 2>&1 || true

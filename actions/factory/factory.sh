@@ -142,7 +142,7 @@ push_round() {
   local why hits hits_file rc=0 allow=()
   [ -z "${ISSUE:-}" ] || allow=(--allow "^$(printf '%s' "$HOLDOUT_DIR/$ISSUE" | ere_quote)\$")
   hits_file=$(mktemp "${TMPDIR:-/tmp}/guard-hits.XXXXXX")
-  why=$(GUARD_HITS="$hits_file" "$round_sh" guard "${allow[@]}" "$BASE_SHA" HEAD) || rc=$?
+  why=$(GUARD_HITS="$hits_file" "$HERE/../push-round/round.sh" guard "${allow[@]}" "$BASE_SHA" HEAD) || rc=$?
   hits=$(cat "$hits_file"); rm -f "$hits_file"
   case "$rc" in 0) ;; 1) refuse guard "$why" "$hits" ;; *) refuse guard-error "$why" ;; esac
 

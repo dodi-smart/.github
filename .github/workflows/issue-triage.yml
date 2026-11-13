@@ -22,6 +22,18 @@
 # a dispatch (see `actions/run-agent`), which is fine because the prompt below
 # already carries the issue number, not the event payload.
 #
+# ANSWERS. When triage ends in `Needs info` it drafts the message for whoever
+# must answer, and a person sends it. The answer comes back as a plain comment
+# on the issue, pasted by that person or written by the one asked, and that
+# comment re-runs triage in mode `answer`. The gate lets a plain comment through
+# only while the issue carries a `needs:*` label, and a step then re-reads the
+# live `Triage state`: anything but `Needs info` stops before the agent. A
+# comment with @claude in it is addressed to the assistant, never an answer.
+#
+# EPICS. On an Epic or an Initiative, triage proposes child issues in a
+# ```children block. It never creates one. A person confirms by applying
+# `agent:decompose`, and issue-decompose.yml files them with a script.
+#
 # A reopened issue is triaged again rather than skipped. Reopening means the
 # issue is back in play and its earlier triage describes a state that no longer
 # holds, so leaving it alone leaves `Triage state` claiming a plan that was
@@ -71,12 +83,17 @@ jobs:
   # gate: every rule the gate keeps (`agent:no-touch` first, then the rest) still
   # runs for an event that passes it, and nothing the gate posts is skipped.
   gate:
+    # These clauses only save a runner. The gate below makes the decision
+    # (`bots: request`, `answer-prefix`), so a looser `if:` costs a run but
+    # never lets work through.
     if: >-
       contains(fromJSON('["issues","issue_comment","workflow_dispatch"]'), github.event_name)
       && github.event.sender.type != 'Bot'
-      && !(endsWith(github.event.issue.user.login, '[bot]') || startsWith(github.event.issue.user.login, 'app/'))
+      && (github.event_name != 'issues' || github.event.action == 'labeled'
+          || !(endsWith(github.event.issue.user.login, '[bot]') || startsWith(github.event.issue.user.login, 'app/')))
       && (github.event.action != 'labeled' || github.event.label.name == 'agent:triage')
-      && (github.event_name != 'issue_comment' || contains(github.event.comment.body, '@claude'))
+      && (github.event_name != 'issue_comment' || contains(github.event.comment.body, '@claude')
+          || contains(join(github.event.issue.labels.*.name, ' '), 'needs:'))
     runs-on: ${{ fromJSON((github.event.repository.private && !github.event.pull_request.head.repo.fork) && '["self-hosted","Linux","light"]' || '"ubuntu-latest"') }}
     timeout-minutes: 10
     permissions:
@@ -107,27 +124,42 @@ jobs:
           author:        ${{ github.event.issue.user.login }}
           comment:       ${{ github.event.comment.body }}
           commands:      'triage plan'
-          bots:          'allow'
+          # A plain comment on an issue waiting on answers is the answer.
+          answer-prefix: 'needs:'
+          # Bots open issues at machine volume, and none is work to plan on
+          # its own: the Dependency Dashboard is a standing status page. So a
+          # bot's issue is never triaged when it opens, but a person may ask,
+          # which is how the children an Epic's confirmation filed get planned.
+          bots:          'request'
           skip-draft:    'false'
           # A caller listens to more events than triage can act on, because its
           # assistant needs the review events. A person's PR review has no
           # issue to triage, so it stops here rather than reaching the agent.
           events:        'issues issue_comment workflow_dispatch'
 
-      # Bots open issues at machine volume, and none of them is work to plan.
-      # The Renovate Dependency Dashboard used to be triaged once on open, but
-      # it is a standing status page with nothing to implement, so an agent
-      # could only file it as Needs info. Every bot-authored issue stops here.
+      # An answer re-runs triage only while the issue is really waiting on one.
+      # The `needs:*` label let the comment through the gate; the field is the
+      # state, so it decides. Read through the shared reader, whose `read` is
+      # false on a failed read, and a failed read stops: re-running triage on
+      # every comment is the costlier mistake.
+      - id: fields
+        if: steps.gate.outputs.proceed == 'true' && steps.gate.outputs.mode == 'answer'
+        uses: dodi-smart/.github/actions/factory@v1
+        with:
+          command: fields
+          issue:   ${{ github.event.issue.number }}
+
       # This only narrows the gate above. It can never re-open a run the kill
       # switch stopped.
       - id: bots
         env:
           PROCEED:     ${{ steps.gate.outputs.proceed }}
           MODE:        ${{ steps.gate.outputs.mode }}
-          KIND:        ${{ steps.gate.outputs.author-kind }}
           EVENT_NAME:  ${{ github.event_name }}
           SENDER_TYPE: ${{ github.event.sender.type }}
           ISSUE_INPUT: ${{ inputs.issue-number }}
+          READ:        ${{ steps.fields.outputs.read }}
+          STATE:       ${{ steps.fields.outputs.state }}
         run: |
           set -euo pipefail
           proceed="$PROCEED"
@@ -141,9 +173,13 @@ jobs:
             proceed=false
             echo "bot-sent event ($EVENT_NAME), stopping before the agent"
           fi
-          if [ "$proceed" = "true" ] && [ "$KIND" != "human" ]; then
-            proceed=false
-            echo "bot-authored issue, stopping"
+          if [ "$proceed" = "true" ] && [ "$MODE" = "answer" ]; then
+            if [ "$READ" = "false" ] || [ "$STATE" != "Needs info" ]; then
+              proceed=false
+              echo "a plain comment, but Triage state is '${STATE:-unread}', not Needs info, so it is not an answer"
+            else
+              echo "an answer to an issue in Needs info, triaging again"
+            fi
           fi
           # A dispatch with nothing to triage is a clean no-op, not a failure.
           # `workflow_call` inputs and `workflow_dispatch` inputs are separate,
@@ -235,6 +271,22 @@ jobs:
                Bug only for a real regression or a violated spec, not for
                something that never worked and was never specified.
 
+            ## An answer (Mode: answer)
+
+            When the mode above is `answer`, this issue is in `Needs info` and
+            a person just commented. Read your earlier questions and every
+            comment since. Then triage the issue again, as it stands now:
+
+            - Answered enough to start: post the plan and set `Plan ready`.
+            - Still missing something: post only the questions still open and
+              a fresh draft message, and keep `Needs info`.
+            - The comment answers nothing (a note, a thank-you, "sent"): post
+              nothing, change nothing, and stop. `Triage state` stays set.
+
+            Leave the `needs:*` labels alone when the issue leaves `Needs
+            info`. A step after you clears them unless the state is `Needs
+            info` or `Blocked`.
+
             ## A reopened issue
 
             When the event above is `issues/reopened`, this issue has been
@@ -295,6 +347,19 @@ jobs:
             be empty, and never leave a heading with nothing under it. The
             customer group must be phrased so it can be pasted into an email
             verbatim: no internal jargon, no ticket numbers, no code paths.
+
+            Then draft the message that gets the answers, under
+              ### Draft message
+            addressed to whoever must answer: the customer when the customer
+            group has questions, otherwise the reporter or the team member
+            the questions are for. A short greeting, one sentence of context,
+            the numbered questions, and a closing line. Plain words, no
+            jargon, no ticket numbers, no code paths, nothing internal. Put it
+            in a quote block so it copies cleanly. A person sends it; you
+            never send, email or mention anyone yourself. End the comment
+            with one line: "Reply here with the answers, or paste them in,
+            and triage runs again."
+
             Then set:
               Triage state = Needs info
             and add the most specific `needs:*` label
@@ -302,6 +367,30 @@ jobs:
 
             Prefer questions over a guessed plan. A confident plan built on an
             assumption you never checked costs far more than one extra round-trip.
+
+            ## An Epic or an Initiative
+
+            When the issue type is Epic or Initiative, the plan is the split.
+            After the plan, propose the child issues under
+              #### Proposed children
+            as ONE fenced block whose info string is `children`, holding a
+            JSON array. Each entry has exactly these keys:
+
+              repo   the repository name the child belongs in; omit it for
+                     this repository
+              type   Feature, Improvement, Task, Chore, Spike or Bug
+                     (an Initiative's children are Epic)
+              title  specific and searchable, led by feat:, fix: or chore:
+              areas  area labels from the vocabulary above, for this repo
+              plan   one line: what the child delivers
+
+            Two to twenty children, each independently shippable. Then write:
+            "Apply `agent:decompose` to create these as sub-issues."
+
+            YOU NEVER CREATE AN ISSUE, and never apply `agent:decompose`
+            yourself. A person reads the list and confirms with the label, and
+            a script files exactly what the block says. A person may correct
+            the list by posting a new block; the newest one wins.
 
             ## Labels are requests; fields are state
 
@@ -405,6 +494,18 @@ jobs:
 
           if [ -n "$state" ]; then
             echo "Triage state = $state"
+            # Only Needs info and Blocked wait on someone, and `needs:decision`
+            # or `needs:design` is how a Blocked issue says on what. On any
+            # other state a `needs:*` would let every later comment through the
+            # gate as an answer, so the step clears it instead of trusting the
+            # agent to.
+            if [ "$state" != "Needs info" ] && [ "$state" != "Blocked" ]; then
+              gh api "/repos/$REPO/issues/$NUM/labels" --jq '.[].name | select(startswith("needs:"))' |
+                while IFS= read -r l; do
+                  gh api -X DELETE "/repos/$REPO/issues/$NUM/labels/$(jq -rn --arg l "$l" '$l|@uri')" >/dev/null
+                  echo "cleared $l"
+                done || echo "::warning title=needs labels::could not clear the needs:* labels on #$NUM; clear them by hand or later comments re-run triage"
+            fi
             exit 0
           fi
 

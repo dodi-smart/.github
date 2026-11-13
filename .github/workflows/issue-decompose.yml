@@ -1,0 +1,76 @@
+# Reusable: create the child issues an Epic's triage proposed, after a person
+# confirmed them.
+#
+# Called by a thin wrapper in each repo:
+#   jobs:
+#     decompose:
+#       if: >-
+#         github.event_name == 'issues' && github.event.action == 'labeled'
+#         && github.event.label.name == 'agent:decompose' && github.event.sender.type != 'Bot'
+#       uses: dodi-smart/.github/.github/workflows/issue-decompose.yml@v1
+#
+# THE AGENT NEVER CREATES AN ISSUE. Triage proposes children in a ```children
+# block on an Epic or an Initiative. A person reads it and confirms by applying
+# `agent:decompose`. This workflow then runs a script, not an agent: it checks
+# every entry before it writes anything and refuses the whole list on one bad
+# entry. An agent asked to file issues files what it decides; a script files
+# only what was on the page when a person said yes.
+#
+# The label is a request and is removed on every path. A bot applying it is
+# stopped: the confirmation is the point, and a bot cannot give one.
+name: Issue Decompose
+
+on:
+  workflow_call: {}
+
+# One run per parent. A second confirmation waits rather than racing, and the
+# script skips children that already exist, so it files no duplicate.
+concurrency:
+  group: decompose-${{ github.repository }}-${{ github.event.issue.number }}
+  cancel-in-progress: false
+
+permissions: {}
+
+jobs:
+  gate:
+    if: >-
+      github.event_name == 'issues'
+      && github.event.action == 'labeled'
+      && github.event.label.name == 'agent:decompose'
+      && github.event.sender.type != 'Bot'
+    runs-on: ${{ fromJSON((github.event.repository.private && !github.event.pull_request.head.repo.fork) && '["self-hosted","Linux","light"]' || '"ubuntu-latest"') }}
+    timeout-minutes: 10
+    permissions:
+      issues: write
+    steps:
+      - uses: dodi-smart/.github/actions/runner-report@v1
+        with:
+          selector: light
+
+      # agent:no-touch first, as in every workflow that writes to an issue.
+      - id: gate
+        uses: dodi-smart/.github/actions/agent-gate@v1
+        with:
+          labels:        ${{ toJson(github.event.issue.labels.*.name) }}
+          event-name:    ${{ github.event_name }}
+          event-action:  ${{ github.event.action }}
+          label:         ${{ github.event.label.name }}
+          request-label: 'agent:decompose'
+          author:        ${{ github.event.issue.user.login }}
+          bots:          'allow'
+          skip-draft:    'false'
+          events:        'issues'
+
+      - if: steps.gate.outputs.proceed == 'true'
+        uses: dodi-smart/.github/actions/decompose@v1
+        with:
+          number: ${{ github.event.issue.number }}
+
+      # A request, never a record: cleared on every path, the refusal included.
+      - name: Clear the request label
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO:     ${{ github.repository }}
+          NUM:      ${{ github.event.issue.number }}
+        run: gh api -X DELETE "/repos/$REPO/issues/$NUM/labels/agent:decompose" >/dev/null 2>&1 || true

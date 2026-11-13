@@ -42,6 +42,13 @@ inputs:
   commands:
     description: 'Space-separated comment verbs that request this workflow, e.g. "triage plan". Matched as `@claude <verb>`.'
     default: ''
+  answer-prefix:
+    description: >-
+      A label prefix, e.g. "needs:", that marks an issue as waiting on answers.
+      With it set, a comment with no command and no @claude on an issue that
+      carries such a label proceeds in mode `answer`. Empty (default) never
+      treats a comment as an answer.
+    default: ''
   mention:
     description: >-
       For the general assistant: the mention that requests it, e.g. "@claude".
@@ -55,7 +62,8 @@ inputs:
   bots:
     description: >-
       How to treat bot authors: reject (default, any non-human) | only
-      (dependency bots) | allow
+      (dependency bots) | allow | request (a bot's issue proceeds only on a
+      request: the request label, a command or an answer, never on its own)
     default: 'reject'
   events:
     description: >-
@@ -113,6 +121,7 @@ runs:
         COMMENT:  ${{ inputs.comment }}
         COMMANDS: ${{ inputs.commands }}
         MENTION:  ${{ inputs.mention }}
+        ANSWER_PREFIX: ${{ inputs.answer-prefix }}
         EXCLUDE:  ${{ inputs.exclude-commands }}
         BOTS:     ${{ inputs.bots }}
         EVENTS:   ${{ inputs.events }}

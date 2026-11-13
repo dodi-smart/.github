@@ -49,6 +49,27 @@ case_ true  "comment @claude plan"              '[]' issue_comment created '' ag
 case_ false "comment /triage (verb retired)"    '[]' issue_comment created '' agent:triage alice false '/triage' 'triage plan' allow false ''
 case_ false "comment @claude <anything else>"   '[]' issue_comment created '' agent:triage alice false '@claude what is this' 'triage plan' allow false ''
 
+echo "== triage: an answer to Needs info (answer-prefix) =="
+answer() { ANSWER_PREFIX='needs:' case_ "$1" "$2" "$3" issue_comment created '' agent:triage alice false "$4" 'triage plan' allow false ''; }
+answer true  "plain comment, needs:customer on it"  '["needs:customer"]' 'They want it weekly, not daily.'
+answer false "plain comment, no needs:* label"      '["area:web"]'       'They want it weekly, not daily.'
+answer false "no-touch beats an answer"             '["agent:no-touch","needs:info"]' 'Here is the answer.'
+answer false "@claude <other> is not an answer"     '["needs:info"]'     '@claude what does this mean?'
+answer true  "@claude triage still wins as triage"  '["needs:info"]'     '@claude triage'
+case_ false "answer-prefix unset: plain comment stops" '["needs:info"]' issue_comment created '' agent:triage alice false 'Here is the answer.' 'triage plan' allow false ''
+mode_of() { grep '^mode=' "$GITHUB_OUTPUT" | tail -1 | cut -d= -f2; }
+answer true  "answer mode is reported"              '["needs:repro"]'    'Steps: open, click, crash.'
+if [ "$(mode_of)" = answer ]; then echo "  ok   mode=answer"; pass=$((pass+1)); else echo "  FAIL mode=$(mode_of), wanted answer"; fail=$((fail+1)); fi
+
+echo "== bots: request (a bot's issue runs only when someone asks) =="
+case_ false "bot issue opened"                  '[]' issues opened '' agent:triage 'github-actions[bot]' false '' 'triage plan' request false ''
+case_ false "bot issue reopened"                '[]' issues reopened '' agent:triage 'renovate[bot]' false '' 'triage plan' request false ''
+case_ true  "bot issue, labeled agent:triage"   '["agent:triage"]' issues labeled agent:triage agent:triage 'github-actions[bot]' false '' 'triage plan' request false ''
+case_ true  "bot issue, @claude triage"         '[]' issue_comment created '' agent:triage 'github-actions[bot]' false '@claude triage' 'triage plan' request false ''
+ANSWER_PREFIX='needs:' case_ true "bot issue, an answer" '["needs:info"]' issue_comment created '' agent:triage 'github-actions[bot]' false 'here it is' 'triage plan' request false ''
+case_ true  "human issue opened"                '[]' issues opened '' agent:triage alice false '' 'triage plan' request false ''
+case_ false "no-touch beats a request"          '["agent:no-touch","agent:triage"]' issues labeled agent:triage agent:triage 'github-actions[bot]' false '' 'triage plan' request false ''
+
 echo "== pr review =="
 case_ false "draft PR"                          '[]' pull_request ready_for_review '' agent:review alice true '' '' reject true 'src/a.ts'
 case_ false "renovate PR (deps-verify owns it)" '[]' pull_request opened '' agent:review 'renovate[bot]' false '' '' reject true 'p.json'

@@ -110,7 +110,8 @@ case "$BOTS" in
   reject) [ "$kind" = "human" ] || stop "bot author: $AUTHOR" ;;
   only)   [ "$kind" = "dependency" ] || stop "not a dependency-bot PR (author: $AUTHOR)" ;;
   allow)  : ;;
-  *)      echo "::error::unknown bots value '$BOTS' (expected reject|only|allow)"; exit 1 ;;
+  request) : ;;  # judged at the end: a bot's issue runs only on a request
+  *)      echo "::error::unknown bots value '$BOTS' (expected reject|only|allow|request)"; exit 1 ;;
 esac
 
 # RULE 3, docs-only. Passed in rather than computed, because the
@@ -158,7 +159,26 @@ if [ "$EVENT" = "issue_comment" ] && [ -n "${COMMANDS:-}" ]; then
       go "requested by comment: @claude $verb" "$verb"
     fi
   done
+  # RULE 6b, an answer. A plain comment on an issue that is waiting on
+  # answers (it carries a label starting with `answer-prefix`) is the answer
+  # arriving, so the workflow runs again in mode `answer`. A comment that
+  # mentions @claude is addressed to the assistant, never an answer. The label
+  # is only the payload's hint: the caller re-reads the live state before the
+  # agent starts, so a stale label costs a gate run and nothing else.
+  if [ -n "${ANSWER_PREFIX:-}" ] \
+     && ! printf '%s' "$COMMENT" | grep -qiF '@claude' \
+     && printf '%s' "${LABELS:-}" | grep -qF "\"$ANSWER_PREFIX"; then
+    go "a comment on an issue waiting for answers ($ANSWER_PREFIX*)" "answer"
+  fi
   stop "comment did not name a command for this workflow"
+fi
+
+# RULE 7, `bots: request`. Every request path above (the request label, a
+# command, an answer) has already proceeded, so what reaches here is ambient:
+# an issue opened, reopened or assigned. A bot's issue stops on those, because
+# bots open issues at machine volume, but a person may still ask for one.
+if [ "$BOTS" = "request" ] && [ "$kind" != "human" ]; then
+  stop "bot author: $AUTHOR, and nobody requested this run"
 fi
 
 go "$EVENT${ACTION:+/$ACTION}"

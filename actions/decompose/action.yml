@@ -1,0 +1,34 @@
+# Create the child issues an Epic's triage proposed, once a person confirmed.
+# Thin wrapper; the rules and the reasoning are in decompose.sh.
+name: Decompose
+description: Create the confirmed children of an Epic or Initiative and link them as sub-issues.
+
+inputs:
+  number:
+    description: 'The parent issue number'
+    required: true
+  token:
+    description: 'Token to create, label and link issues with. Needs issues: write.'
+    default: ${{ github.token }}
+  proposer:
+    description: >-
+      The exact login triage comments as. Only its ```children block, or one
+      from a person with write access, is filed; any other bot's is ignored.
+      Empty trusts no bot.
+    default: 'claude[bot]'
+  dry-run:
+    description: '"true" prints what would be created and writes nothing'
+    default: 'false'
+
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      env:
+        REPO:        ${{ github.repository }}
+        NUMBER:      ${{ inputs.number }}
+        GH_TOKEN:    ${{ inputs.token }}
+        DRY_RUN:     ${{ inputs.dry-run == 'true' && '1' || '0' }}
+        PROPOSER:    ${{ inputs.proposer }}
+        ACTION_PATH: ${{ github.action_path }}
+      run: '"$ACTION_PATH/decompose.sh" run'

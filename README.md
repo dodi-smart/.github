@@ -66,9 +66,10 @@ caller keeps working.
 | `deps-verify.yml` | Renovate/Dependabot PRs | Reads the PR checks result, reads upstream changelogs, fixes code the update broke, posts a one-comment verdict. Never merges. |
 | `deps-automerge.yml` | verdict labels, `review / verdict`, `renovate/stability-days`, PR Checks done | Merges a dependency bot's minor, patch or lock file PR once it is `deps:verified`, or `deps:fixed` and approved, and the required check is green, and only into the default branch. Three more policies, steps of the same one job, merge the clean back-merge PR a hotfix release opens on `chore/backmerge-*`, an approved security patch on the hotfix lane, and the org App's pure, approved standards sync. No agent decides a merge |
 | `pr-review.yml` | `ready_for_review`, `agent:review` | Second-opinion review, deeper on sensitive paths. Publishes the `review / verdict` status and a `review-verdict.json` artifact |
-| `issue-triage.yml` | issue opened or reopened, `agent:triage`, `@claude triage`, manual dispatch with `issue-number` | Classifies, sets fields, then plans or asks blocking questions |
+| `issue-triage.yml` | issue opened or reopened, `agent:triage`, `@claude triage`, manual dispatch with `issue-number`, a plain comment on an issue in `Needs info` | Classifies, sets fields, then plans or asks blocking questions with a draft message for a person to send. The answer, commented on the issue, runs it again. On an Epic or an Initiative the plan proposes child issues in a ```` ```children ```` block |
+| `issue-decompose.yml` | `agent:decompose`, applied by a person | Creates the children triage proposed on an Epic or an Initiative as sub-issues, with a script, not an agent. Nothing is created when one entry is bad. The rules are in `actions/decompose/decompose.sh` |
 | `issue-implement.yml` | `agent:implement`, `@claude implement` | Holdout tests from the plan's acceptance criteria, then code. A step pushes one commit to `feat\|fix\|chore/<n>-<slug>` and opens a draft PR. Requires a plan. |
-| `pr-iterate.yml` | `agent:iterate`, PR Checks completed, the review verdict status | The agent fix loop: up to 3 fix rounds on red checks or a `changes` verdict, then ready for review, then a squash merge (the repo must allow squash merges) when the issue is `Autonomous` with Risk and Effort `Low`. A PR that conflicts with its base gets the base merged in, or goes to a person with the conflicted files; the caller should add a `schedule:` trigger for the sweep that finds them. Every push, ready and merge is a step, not the agent. A Renovate or Dependabot PR stops, label or not: deps-verify owns it |
+| `pr-iterate.yml` | `agent:iterate`, PR Checks completed, the review verdict status | The agent fix loop: up to 3 fix rounds on red checks or a `changes` verdict, and none once the issue's agent spend reaches `max-cost-usd` (default 20 USD, read from the `Agent run` notices), then ready for review, then a squash merge (the repo must allow squash merges) when the issue is `Autonomous` with Risk and Effort `Low`. A PR that conflicts with its base gets the base merged in, or goes to a person with the conflicted files; the caller should add a `schedule:` trigger for the sweep that finds them. Every push, ready and merge is a step, not the agent. A Renovate or Dependabot PR stops, label or not: deps-verify owns it |
 | `judge.yml` | `agent:judge`, a review by `dodi-judge[bot]`, a schedule | The independent judge (another model family, Grok Bot acting as the review-only `dodi-judge` App): marks `judge / verdict` pending, posts the judge's verdict on the head with the org App, and times out unanswered requests. On the merge tier, every issue type but Chore needs its approval to land (DODI-00070). See [Judge verdict](#judge-verdict) |
 | `dispatch.yml` | PR closed, review submitted, issue unlabeled or edited, a schedule | The deterministic dispatcher: applies `agent:implement`, as the org App, to the highest-Priority issue that is `Plan ready` and `Autonomous`, while open agent PRs are under a WIP cap and their review wait is under a ceiling. No agent runs. Off unless `FACTORY_DISPATCH` is `true`. See [Dispatch](#dispatch) |
 | `claude-assist.yml` | `@claude <anything else>` | The general assistant |
@@ -397,6 +398,7 @@ Renovate marker, and a bump releases as `chore(deps)`.
 | Action | Purpose |
 |---|---|
 | `actions/agent-gate` | Decides whether an agent may run. Evaluates `agent:no-touch` first, always. |
+| `actions/decompose` | Files the confirmed children of an Epic or an Initiative. `decompose.sh parse` is the pure check of the proposal and `run` the writes; `DRY_RUN=1` writes nothing |
 | `actions/run-agent` | Invokes the agent with the org's tool allowlist and reporting defaults, on the model `actions/pick-model` chooses for its `stage`. Does not start it when the running workflow file differs from the default branch, says why a run stopped (`why`), and with `report-file` guarantees a valid report file on every path |
 | `actions/pr-facts` | Resolves the PR from a number or a pull_request, workflow_run or status event, and checks it is open, not a fork, and at the expected head |
 | `actions/judge-verdict` | Marks an `agent:judge` request pending, turns a review by the exact judge login on the current head into `judge / verdict` with the org App token, or ends unanswered requests in `error`. Fails closed on anything it cannot trust; `verdict.sh` holds the rules |
@@ -462,9 +464,10 @@ whatever `patterns` is. The token needs `pull-requests: read`.
 
 | Name | Meaning |
 |---|---|
-| input `bots` | `reject` (default): stop on any non-human author. `only`: proceed for dependency bots only. `allow`: ignore the author. |
+| input `bots` | `reject` (default): stop on any non-human author. `only`: proceed for dependency bots only. `allow`: ignore the author. `request`: a bot's issue proceeds only on a request (the request label, a command or an answer), never on an ambient event such as `opened`. `issue-triage.yml` uses it. |
 | input `number` | Override for the issue or PR number. The gate reads it from the event payload, so set it only where the payload has none (a `workflow_dispatch`). Before a run proceeds, the gate reads the item's current labels and stops on `agent:no-touch` added after the event. A failed read warns and proceeds. Needs `issues: read` or `pull-requests: read` on the gate job. |
 | input `events` | Space-separated `github.event_name` values the workflow handles, checked right after `agent:no-touch`. Any other event stops the run. Empty (default) allows every event. `issue-triage.yml` passes `issues issue_comment workflow_dispatch`, so a person's PR review never reaches it. |
+| input `answer-prefix` | A label prefix, such as `needs:`, marking an issue as waiting on answers. A comment with no command and no `@claude` on such an issue proceeds in mode `answer`. The label is only the payload's hint: `issue-triage.yml` re-reads `Triage state` through `actions/factory` and stops unless it is `Needs info`. Empty (default) treats no comment as an answer. |
 | output `author-kind` | `dependency` (Renovate, Dependabot), `agent` (`claude[bot]`), `automation` (any other `[bot]` or `app/` login) or `human`. Written before every rule, `agent:no-touch` included, so it is set on a stopped run too. A workflow that needs only the classification can call the gate for it and ignore `proceed`; a script runs `gate.sh kind LOGIN`. |
 | output `dependency-bots` | The comma-separated dependency-bot logins, for `claude-code-action`'s `allowed_bots`. `deps-verify.yml` reads it. |
 
@@ -1800,7 +1803,14 @@ Each run dispatches at most one issue, and the first rule that holds wins:
    reach `review-wait-ceiling` (default 24): hold. A PR waits while it is not a
    draft and no person has reviewed it, counted from when it was last marked
    ready, so the dispatcher never feeds a queue nobody drains.
-4. **Pick.** The open issue whose `Triage state` is `required-state` (default
+4. **Monthly budget.** The repo's agent spend since the 1st (UTC) reaches the
+   org or repo variable `FACTORY_BUDGET_USD`: hold. Unset holds before any read,
+   so no repo dispatches without a budget. The spend is every `Agent run` notice
+   on this month's runs of the repo's agent workflows; an unpriced run (`cost=?`)
+   adds nothing, and the reason names how many there were. It is read last,
+   since it opens every such run. A cost breaker never changes a field
+   (DODI-00068).
+5. **Pick.** The open issue whose `Triage state` is `required-state` (default
    `Plan ready`, as in issue-implement) and whose `Agent mode` is `Autonomous`,
    highest Priority first (Urgent, High, Medium, Low, then unset), then the
    oldest, then the lowest number. Skipped: `agent:no-touch`, an issue carrying
@@ -1814,7 +1824,7 @@ workflow. A held run mints only a read-only token, for the App's login; the
 write token is minted only to label. With no App configured nothing is
 dispatched. A read that fails holds. Runs never overlap in one repo, so two
 cannot both see room under the cap. The job summary gives the decision, the
-WIP and the median wait.
+WIP, the median wait and the month's spend.
 
 issue-implement accepts the request from the org App alone (`allowed-bots`), and
 clears `agent:implement` whenever its gate stops a request, a bot's issue

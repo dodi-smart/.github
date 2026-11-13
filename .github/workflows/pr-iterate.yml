@@ -19,7 +19,7 @@
 #   land                 tier merge, green, review approved (and the judge, for
 #                        anything but a Chore): squash-merge
 #   handoff              approved below tier merge: a person takes it
-#   give-up              still red or still `changes` after max-rounds
+#   give-up              before a round, at max-rounds or the max-cost-usd spend cap
 #   stop                 anything else, including agent:no-touch anywhere
 #
 # claude-code-action does not run on a `status` event, so a fix round decided on
@@ -55,6 +55,11 @@ on:
       max-rounds:
         type: number
         default: 3
+      # The issue's agent spend at which the loop gives up before another
+      # round, read from the `Agent run` notices (DODI-00068).
+      max-cost-usd:
+        type: number
+        default: 20
       timeout-minutes:
         type: number
         default: 45
@@ -93,8 +98,9 @@ jobs:
       contents: read
       pull-requests: read
       issues: read             # labels and the issue's fields
-      checks: read             # PR Checks on the head
+      checks: read             # PR Checks on the head, the Agent run notices
       statuses: read           # the review and judge verdicts on the head
+      actions: read            # the runs whose notices hold the issue's spend
     outputs:
       action:   ${{ steps.route.outputs.action }}
       reason:   ${{ steps.decide.outputs.reason }}
@@ -150,6 +156,7 @@ jobs:
           pr:         ${{ github.event.pull_request.number || github.event.workflow_run.pull_requests[0].number }}
           event-sha:  ${{ github.event.workflow_run.head_sha || github.event.sha }}
           max-rounds: ${{ inputs.max-rounds }}
+          max-cost-usd: ${{ inputs.max-cost-usd }}
 
       # The agent cannot run on a status event; see the header.
       - id: route
@@ -213,6 +220,8 @@ jobs:
           PR:        ${{ steps.decide.outputs.number }}
           ACTION:    ${{ steps.route.outputs.action }}
           REASON:    ${{ steps.decide.outputs.reason }}
+          BREAKER:   ${{ steps.decide.outputs.breaker }}
+          ISSUE:     ${{ steps.decide.outputs.issue }}
           TIER:      ${{ steps.decide.outputs.tier }}
           MERGED:    ${{ steps.land.outputs.merged }}
           NOT_WHY:   ${{ steps.land.outputs.reason }}
@@ -245,7 +254,14 @@ jobs:
               say "Review approved this head. The issue's fields put it on tier \`$TIER\`, which stops here: a person merges." ;;
             give-up)
               unlabel "$PR"
-              say "**Stopping the fix loop.** $REASON. A person takes it from here." ;;
+              say "**Stopping the fix loop.** $REASON. A person takes it from here."
+              # A cost breaker says so on the issue too, where the budget is
+              # read. It writes no field: cost never demotes a tier. The stop
+              # above already worked, so a failed comment only warns.
+              if [ "$BREAKER" = cost ] && [ -n "$ISSUE" ]; then
+                gh issue comment "$ISSUE" --repo "$REPO" --body "**Cost cap reached.** $REASON. The fix loop on #$PR stopped, and a person takes it from here." >/dev/null \
+                  || echo "::warning title=Issue not told::the cost-cap comment on #$ISSUE failed"
+              fi ;;
             relay)
               # A labeled event the agent can run on. The removal starts nothing:
               # callers listen to `labeled` only.

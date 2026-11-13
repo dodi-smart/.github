@@ -1,3 +1,10 @@
+## [1.50.0](https://github.com/dodi-smart/.github/compare/v1.49.0...v1.50.0) (2026-11-13)
+
+### ✨ Features
+
+* **factory:** give up on an issue at a cost cap and hold dispatch at a monthly budget ([#235](https://github.com/dodi-smart/.github/issues/235)) ([cf51a6a](https://github.com/dodi-smart/.github/commit/cf51a6a705404eeb3bc32bbe92a52f464c068001))
+* **issue-triage:** re-run on an answer, draft the Needs info message, and split Epics by script ([#234](https://github.com/dodi-smart/.github/issues/234)) ([e63cb3a](https://github.com/dodi-smart/.github/commit/e63cb3ae695c5312e117a3726c8f88e5f16f0385))
+
 ## [1.49.0](https://github.com/dodi-smart/.github/compare/v1.48.0...v1.49.0) (2026-11-12)
 
 ### ✨ Features

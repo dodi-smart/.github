@@ -1,9 +1,10 @@
 # Reusable: the deterministic dispatcher (factory move 3). Applies
 # `agent:implement` with the org App to the next issue the factory may take on
-# its own, under a WIP cap and a review-wait ceiling. No agent runs here. The
+# its own, under a WIP cap, a review-wait ceiling and a monthly budget. No agent runs here. The
 # rules and the caller wrapper are the README's Dispatch section; `factory.sh
 # next` applies them and test.sh covers them. Kill switch: FACTORY_DISPATCH,
-# off unless `true`.
+# off unless `true`. Budget: FACTORY_BUDGET_USD, the repo's agent spend in USD
+# a month; unset holds (DODI-00068).
 name: Dispatch
 
 on:
@@ -43,8 +44,10 @@ jobs:
     runs-on: ${{ fromJSON((github.event.repository.private && !github.event.pull_request.head.repo.fork) && '["self-hosted","Linux","light"]' || '"ubuntu-latest"') }}
     timeout-minutes: 5
     permissions:
-      issues: read             # the issues and their fields, the label history
+      issues: read             # the issues and their fields
       pull-requests: read      # the open agent PRs and their reviews
+      actions: read            # this month's runs, whose notices hold the spend
+      checks: read             # the Agent run notices on their jobs
     steps:
       - uses: dodi-smart/.github/actions/runner-report@v1
         with:
@@ -66,6 +69,7 @@ jobs:
           wip-cap:             ${{ inputs.wip-cap }}
           review-wait-ceiling: ${{ inputs.review-wait-ceiling }}
           required-state:      ${{ inputs.required-state }}
+          budget-usd:          ${{ vars.FACTORY_BUDGET_USD }}
           app-bot:             ${{ steps.app.outputs.login }}
 
       # The write token only on the path that labels. The label is in the
@@ -95,10 +99,12 @@ jobs:
           REASON: ${{ steps.next.outputs.reason }}
           WIP:    ${{ steps.next.outputs.wip }}
           WAIT:   ${{ steps.next.outputs.review-wait-h }}
+          SPEND:  ${{ steps.next.outputs.spend }}
+          BUDGET: ${{ vars.FACTORY_BUDGET_USD }}
         run: |
           set -euo pipefail
           {
             echo "**${ACTION:-not decided}**: ${REASON:-see the log}"
             echo
-            echo "WIP ${WIP:-?}, median review wait ${WAIT:-none}${WAIT:+h}"
+            echo "WIP ${WIP:-?}, median review wait ${WAIT:-none}${WAIT:+h}${SPEND:+, spent $SPEND of $BUDGET USD budget this month}"
           } >> "$GITHUB_STEP_SUMMARY"

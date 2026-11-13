@@ -81,16 +81,17 @@ read_fields() {
   local owner="${REPO%%/*}" name="${REPO##*/}" values
   # shellcheck disable=SC2016  # $o/$r/$n are GraphQL variables, not shell
   if values=$(gh api graphql -f query='query($o:String!,$r:String!,$n:Int!){
-    repository(owner:$o,name:$r){ issue(number:$n){ issueType{ name } '"$FIELDS_GQL"' } } }' \
+    repository(owner:$o,name:$r){ issue(number:$n){ createdAt title issueType{ name } '"$FIELDS_GQL"' } } }' \
     -f o="$owner" -f r="$name" -F n="$ISSUE" \
-    --jq "$FIELDS_JQ .data.repository.issue | fields + {\"Issue type\": (.issueType.name // null)} | tojson" 2>/dev/null); then
+    --jq "$FIELDS_JQ .data.repository.issue | {fields: (fields + {\"Issue type\": (.issueType.name // null)}), created: .createdAt, title} | tojson" 2>/dev/null); then
     F_READ=true
   else
     values='{}'; F_READ=false
   fi
-  get() { jq -r --arg f "$1" '.[$f] // empty' <<<"$values"; }
+  get() { jq -r --arg f "$1" '.fields[$f] // empty' <<<"$values"; }
   F_STATE=$(get "Triage state"); F_MODE=$(get "Agent mode"); F_RISK=$(get "Risk"); F_EFFORT=$(get "Effort")
   F_PRIORITY=$(get "Priority"); F_TYPE=$(get "Issue type")
+  F_CREATED=$(jq -r '.created // empty' <<<"$values"); F_TITLE=$(jq -r '.title // empty' <<<"$values")
 }
 
 # ---------------------------------------------------------------------------
@@ -244,11 +245,65 @@ skip_reason() {
 }
 
 # ---------------------------------------------------------------------------
+# notices SINCE [KEEP]: agent spend, read from the one record of it: the
+# `Agent run` notice run-agent writes on its job, parsed by run-agent's own
+# notice.jq. Prints one {cost, issue, pr} per notice, cost null when the run was
+# unpriced (`cost=?`). Fails when any read fails: missing spend is not zero.
+#
+# The read is narrow. Only the repo's agent workflows are listed: those whose
+# newest runs (five, so one that failed to start hides none) call a shared
+# workflow that runs an agent (the ones in this repo
+# that call run-agent, read from the files the action's checkout carries). Of
+# their completed runs created since SINCE (YYYY-MM-DD), only those KEEP, a jq
+# condition on the run, accepts are opened, and of those only jobs with
+# annotations. KEEP may read values the caller passes in the environment
+# through $ENV.
+# ---------------------------------------------------------------------------
+notices() {
+  local keep="${2:-true}" wf ids id newest suites s jobs j
+  wf=$(grep -l 'actions/run-agent' "$HERE"/../../.github/workflows/*.yml 2>/dev/null \
+         | sed 's|.*/||; s|\.yml$||' | paste -sd '|' -)
+  [ -n "$wf" ] || return 1
+  ids=$(gh api --paginate "/repos/$REPO/actions/workflows?per_page=100" --jq '.workflows[].id') || return 1
+  suites=$(for id in $ids; do
+    newest=$(gh api "/repos/$REPO/actions/workflows/$id/runs?per_page=5") || exit 1
+    jq -e --arg wf "$wf" 'any(.workflow_runs[].referenced_workflows[]?;
+      .path | test("/\\.github/workflows/(" + $wf + ")\\.yml(@|$)"))' <<<"$newest" >/dev/null || continue
+    gh api --paginate "/repos/$REPO/actions/workflows/$id/runs?created=%3E%3D$1&status=completed&exclude_pull_requests=true&per_page=100" \
+      --jq ".workflow_runs[] | select(.conclusion != \"skipped\" and ($keep)) | .check_suite_id" || exit 1
+  done) || return 1
+  for s in $suites; do
+    jobs=$(gh api --paginate "/repos/$REPO/check-suites/$s/check-runs?per_page=100" \
+             --jq '.check_runs[] | select((.output.annotations_count // 0) > 0) | .id') || return 1
+    for j in $jobs; do
+      gh api --paginate "/repos/$REPO/check-runs/$j/annotations?per_page=100" \
+        --jq '.[] | select(.title == "Agent run") | .message' || return 1
+    done
+  done | jq -Rc -f "$HERE/../run-agent/notice.jq"
+}
+# tally SELECT < NOTICES -> {usd, runs, unpriced, note} over the notices SELECT
+# keeps: usd to the cent, and note the clause that names the unpriced runs, so
+# they never read as free. decide and pick both word it from here.
+tally() {
+  jq -sc "[.[] | select($1)]"' | {usd: ([.[].cost // 0] | add // 0 | . * 100 | round / 100), runs: length,
+    unpriced: ([.[] | select(.cost == null)] | length)}
+    | .note = (if .unpriced == 0 then "" else "; \(.unpriced) unpriced run\(if .unpriced == 1 then " is" else "s are" end) not in that sum" end)'
+}
+is_num() { [[ "$1" =~ ^[0-9]+([.][0-9]+)?$ ]]; }
+
+# ---------------------------------------------------------------------------
 # decide: what the fix loop does next for one PR. Reads everything live, so a
 # re-run decides from the state now, never from the event that started it.
 #
 # env: REPO, PR (may be empty), EVENT_SHA (the commit the event was about; may be
-#      empty), MAX_ROUNDS, APP_BOT (the org App's login, `<app-slug>[bot]`)
+#      empty), MAX_ROUNDS, APP_BOT (the org App's login, `<app-slug>[bot]`),
+#      MAX_COST_USD (the issue's agent spend at which it gives up; empty: no cap)
+#
+# Before a round (update, fix-ci, fix-review) it gives up at MAX_ROUNDS fix
+# rounds, or once the agent spend of the PR's issue (its notices plus the PR's;
+# the PR's alone with no issue) reaches MAX_COST_USD. Unpriced runs add nothing
+# and the reason names them. A spend it cannot read gives up too (fail closed).
+# The cost cap writes no field: it never demotes a tier (DODI-00068).
 #
 # The verdict is the newest `review / verdict` the org App posted on the head,
 # read through merge-gate's statuses.sh. The same context from anyone else is
@@ -264,8 +319,10 @@ skip_reason() {
 #   on it, so no event would ever reach the loop. It is judged before the checks.
 # ---------------------------------------------------------------------------
 decide() {
-  local pr="${PR:-}" json state draft labels head base body issue rounds checks run_id verdict tier skip
-  finish() { out action "$1"; out reason "$2"; exit 0; }
+  local pr="${PR:-}" json state draft labels head ref base body issue rounds checks run_id verdict tier skip
+  # note: what capped learnt about spend, carried by every reason after it.
+  local note=''
+  finish() { out action "$1"; out reason "$2$note"; exit 0; }
 
   if [ -z "$pr" ] && [ -n "${EVENT_SHA:-}" ]; then
     pr=$(gh api "/repos/$REPO/commits/$EVENT_SHA/pulls" \
@@ -279,7 +336,8 @@ decide() {
   labels=$(jq -c '[.labels[].name]' <<<"$json")
   head=$(jq -r .head.sha <<<"$json"); base=$(jq -r .base.ref <<<"$json")
   body=$(jq -r '.body // ""' <<<"$json")
-  out head-sha "$head"; out head-ref "$(jq -r .head.ref <<<"$json")"; out base-ref "$base"
+  ref=$(jq -r .head.ref <<<"$json")
+  out head-sha "$head"; out head-ref "$ref"; out base-ref "$base"
 
   [ "$state" = open ] || finish stop "#$pr is $state"
   skip=$(skip_reason "$json" "$pr")
@@ -293,7 +351,7 @@ decide() {
   # read of our own output, not a guess at a person's wording.
   issue=$(printf '%s' "$body" | closes_of)
   out issue "${issue:-}"
-  F_STATE=''; F_MODE=''; F_RISK=''; F_EFFORT=''; F_PRIORITY=''; F_TYPE=''
+  F_STATE=''; F_MODE=''; F_RISK=''; F_EFFORT=''; F_PRIORITY=''; F_TYPE=''; F_CREATED=''; F_TITLE=''
   if [ -n "$issue" ]; then
     if gh api "/repos/$REPO/issues/$issue/labels?per_page=100" --jq '[.[].name]' 2>/dev/null | grep -q '"agent:no-touch"'; then
       finish stop "agent:no-touch on issue #$issue"
@@ -314,13 +372,47 @@ decide() {
   last=$(printf '%s\n' "$nums" | tail -n 1)
   out rounds "$rounds"
 
+  # capped WHY: give up before another round when the round cap or the cost cap
+  # is reached. The spend is read only here, before a round that would add to
+  # it, and sets `note`, which the round's reason carries.
+  # The runs that can hold this issue's notices: those on the PR's branch (review,
+  # a labelled round), those titled with the issue (triage, implement, which run
+  # on `issues` before the PR exists) or with the PR (a comment on it runs on
+  # `issue_comment` with the default branch), and the fix rounds, which run on
+  # `workflow_run` with the default branch and no PR on the run, so every one
+  # since the PR opened. A spend it cannot read gives up: the cap is a breaker,
+  # and a breaker that cannot see fails closed, as the dispatcher does.
+  capped() {
+    [ "$rounds" -ge "${MAX_ROUNDS:-3}" ] && finish give-up "$1 after $rounds fix rounds"
+    local cap="${MAX_COST_USD:-}" since="$F_CREATED" who="issue #$issue" t usd runs over opened
+    # shellcheck disable=SC2016  # $ENV is jq's, read inside notices
+    local keep='.head_branch == $ENV.KEEP_REF
+      or (.display_title != "" and (.display_title == $ENV.KEEP_PR_TITLE or .display_title == $ENV.KEEP_TITLE))
+      or (.event == "workflow_run" and .created_at >= $ENV.KEEP_SINCE)'
+    [ -n "$cap" ] || return 0
+    is_num "$cap" || { note="; max-cost-usd \"$cap\" is not a number, so no cost cap applies"; return 0; }
+    opened=$(jq -r '.created_at // ""' <<<"$json")
+    [ -n "$issue" ] || { who="#$pr"; since="$opened"; }
+    if [ -z "$since" ] || ! t=$(KEEP_REF="$ref" KEEP_PR_TITLE="$(jq -r '.title // ""' <<<"$json")" KEEP_TITLE="$F_TITLE" KEEP_SINCE="$opened" notices "${since%%T*}" "$keep" 2>/dev/null \
+         | tally "(.issue != null and .issue == ${issue:-null}) or .pr == $pr"); then
+      out breaker cost
+      finish give-up "$1, and the agent spend of $who could not be read, so the cost cap cannot be checked"
+    fi
+    IFS=$'\t' read -r usd runs over note < <(jq -r --argjson c "$cap" '[.usd, .runs, .usd >= $c, .note] | @tsv' <<<"$t")
+    if [ "$over" = true ]; then
+      out breaker cost
+      finish give-up "$1, and $who has spent $usd USD of its $cap USD cap over $runs agent run$([ "$runs" = 1 ] || echo s)"
+    fi
+    [ -z "$note" ] || note="; $who has spent $usd USD of $cap$note"
+  }
+
   # Only `dirty` is a conflict; behind, blocked, unstable and a state GitHub has
   # not computed are left to the rules below.
   local mstate
   mstate=$(mergeable_of "$pr" "$json")
   out mergeable-state "$mstate"
   if [ "$mstate" = dirty ]; then
-    [ "$rounds" -ge "${MAX_ROUNDS:-3}" ] && finish give-up "the branch conflicts with its base after $rounds fix rounds"
+    capped "the branch conflicts with its base"
     finish update "the branch conflicts with $base"
   fi
 
@@ -349,7 +441,7 @@ decide() {
     '') finish stop "PR Checks has not reported on $head" ;;
     completed\ success*) ;;
     completed\ failure*|completed\ timed_out*)
-      [ "$rounds" -ge "${MAX_ROUNDS:-3}" ] && finish give-up "PR Checks is red after $rounds fix rounds"
+      capped "PR Checks is red"
       # Only a first round can go to the lint model, so later rounds skip the read.
       [ "$rounds" -eq 0 ] && [ "$(lint_only "$run_id")" = true ] && out signals lint-only
       finish fix-ci "PR Checks failed on $head" ;;
@@ -377,7 +469,7 @@ decide() {
           finish judge "review approved $head; a ${F_TYPE:-untyped} issue also needs the judge" ;;
       esac ;;
     failure|error)
-      [ "$rounds" -ge "${MAX_ROUNDS:-3}" ] && finish give-up "review asked for changes after $rounds fix rounds"
+      capped "review asked for changes"
       finish fix-review "review asked for changes on $head" ;;
     pending) finish stop "review is running on $head" ;;
     *)
@@ -423,9 +515,11 @@ sweep() {
 # facts and test.sh feeds it JSON. The rules, in order, are the README's
 # Dispatch section; the kill switch is checked before any fact is read.
 #
-# facts: {required, cap, ceiling_h, now,
+# facts: {required, cap, ceiling_h, now, budget,
+#         spend:  {usd, runs, unpriced, note}         this month's agent spend (tally)
 #         prs:    [{number, closes, waiting_since}]   waiting_since: ISO 8601, or null
 #         issues: [{number, created, priority, state, mode, labels}]}
+# budget: FACTORY_BUDGET_USD, null when unset, which holds (DODI-00068).
 # An issue implement already started is no longer `Plan ready` (set_state), so
 # it is never picked twice without a person.
 # ---------------------------------------------------------------------------
@@ -436,15 +530,20 @@ def median: sort | length as $n
   | if $n == 0 then null elif $n % 2 == 1 then .[($n - 1) / 2] else (.[$n / 2 - 1] + .[$n / 2]) / 2 end;
 def hold($r): {action: "hold", reason: $r};
 . as $f
+| $f.spend as $s
+| "\($s.usd) USD of the \($f.budget) USD budget this month\($s.note)" as $spent
 | [$f.prs[].closes] as $covered
 | def has_pr: .number as $n | $covered | index($n) != null;
   def labelled($l): .labels | index($l) != null;
   [$f.issues[] | select(labelled("agent:implement") and (has_pr | not))] as $inflight
 | (($f.prs | length) + ($inflight | length)) as $wip
 | ([$f.prs[] | select(.waiting_since != null) | ($f.now - (.waiting_since | fromdateiso8601)) / 3600] | median) as $wait
-| {wip: $wip, wait: (if $wait == null then "" else ($wait * 10 | floor) / 10 end)} as $m
-| $m + if $wip >= $f.cap then hold("\($f.prs | length) agent PRs open and \($inflight | length) issues being implemented: the WIP cap is \($f.cap)")
+| {wip: $wip, wait: (if $wait == null then "" else ($wait * 10 | floor) / 10 end),
+   spend: $s.usd} as $m
+| $m + if $f.budget == null then hold("FACTORY_BUDGET_USD is not set: with no monthly budget nothing is dispatched")
+  elif $wip >= $f.cap then hold("\($f.prs | length) agent PRs open and \($inflight | length) issues being implemented: the WIP cap is \($f.cap)")
   elif $wait != null and $wait >= $f.ceiling_h then hold("the median review wait is \($m.wait)h: the ceiling is \($f.ceiling_h)h")
+  elif $s.usd >= $f.budget then hold("the agent spend has reached \($spent)")
   else
     [$f.issues[]
       | select(.state == $f.required and .mode == "Autonomous"
@@ -452,13 +551,13 @@ def hold($r): {action: "hold", reason: $r};
     | sort_by([(.priority | rank), .created, .number]) | first
     | if . == null then hold("no open issue is \($f.required), Autonomous and untouched")
       else {action: "dispatch", issue: .number,
-            reason: "#\(.number) is \($f.required) and Autonomous, Priority \(.priority // "unset"); WIP \($wip) of \($f.cap)"} end
+            reason: "#\(.number) is \($f.required) and Autonomous, Priority \(.priority // "unset"); WIP \($wip) of \($f.cap); spent \($spent)"} end
   end'
 # emit DECISION -> the decision's fields as outputs
 emit() {
   local k v
   while IFS='=' read -r k v; do out "$k" "$v"; done < <(jq -r '"action=\(.action)", "issue=\(.issue // "")",
-    "reason=\(.reason)", "wip=\(.wip)", "review-wait-h=\(.wait)"' <<<"$1")
+    "reason=\(.reason)", "wip=\(.wip)", "review-wait-h=\(.wait)", "spend=\(.spend)"' <<<"$1")
 }
 pick() { emit "$(jq -c "$PICK_JQ")"; }
 
@@ -469,7 +568,11 @@ pick() { emit "$(jq -c "$PICK_JQ")"; }
 # env: REPO, DISPATCH (the FACTORY_DISPATCH variable), WIP_CAP (default 2),
 #      WAIT_CEILING_H (default 24), REQUIRED_STATE (default Plan ready, as in
 #      issue-implement), APP_BOT (the App's login, `<slug>[bot]`),
+#      BUDGET_USD (the FACTORY_BUDGET_USD variable; unset holds before any read),
 #      NOW (epoch seconds; the clock by default)
+#
+# The month's spend is every `Agent run` notice in the repo since the 1st (UTC),
+# read last, since it is the costliest read.
 #
 # An agent PR is an open PR the App opened whose body says `Closes #n`, which
 # implement always writes. One waits for review while it is not a draft and no
@@ -479,13 +582,15 @@ pick() { emit "$(jq -c "$PICK_JQ")"; }
 # ---------------------------------------------------------------------------
 next() {
   local dispatch="${DISPATCH:-}" cap="${WIP_CAP:-2}" ceil="${WAIT_CEILING_H:-24}" now="${NOW:-}"
-  local required="${REQUIRED_STATE:-Plan ready}"
+  local required="${REQUIRED_STATE:-Plan ready}" budget="${BUDGET_USD:-}"
   finish() { out action hold; out reason "$1"; exit 0; }
   # The kill switch, before any read.
   [ "$dispatch" = true ] || finish "FACTORY_DISPATCH is \"$dispatch\", not \"true\""
   [[ "$cap" =~ ^[0-9]+$ ]] || finish "wip-cap \"$cap\" is not a whole number"
-  [[ "$ceil" =~ ^[0-9]+([.][0-9]+)?$ ]] || finish "review-wait-ceiling \"$ceil\" is not a number of hours"
+  is_num "$ceil" || finish "review-wait-ceiling \"$ceil\" is not a number of hours"
   [ -n "${APP_BOT:-}" ] || finish "no agent login: the org App is not configured"
+  [ -n "$budget" ] || finish "FACTORY_BUDGET_USD is not set: with no monthly budget nothing is dispatched"
+  is_num "$budget" || finish "FACTORY_BUDGET_USD \"$budget\" is not a number of USD"
   [ -n "$now" ] || now=$(date +%s)
   # GraphQL names an App by its slug, with no [bot]. Slugs are [a-z0-9-], so it
   # is safe inside the jq programs below.
@@ -527,9 +632,14 @@ next() {
           | tojson" 2>/dev/null) \
     || finish "could not read the open issues"
 
+  local spend
+  spend=$(notices "$(jq -nr --argjson n "$now" '$n | strftime("%Y-%m-01")')" 2>/dev/null | tally true) \
+    || finish "could not read this month's agent spend"
+
   jq -nc --arg q "$required" --argjson cap "$cap" --argjson c "$ceil" --argjson now "$now" \
+     --argjson b "$budget" --argjson s "$spend" \
      --argjson prs "$prs" --argjson issues "$(jq -sc . <<<"$issues")" \
-     '{required: $q, cap: $cap, ceiling_h: $c, now: $now, prs: $prs, issues: $issues}' | pick
+     '{required: $q, cap: $cap, ceiling_h: $c, now: $now, budget: $b, spend: $s, prs: $prs, issues: $issues}' | pick
 }
 
 cmd="${1:-}"; shift || true
@@ -554,5 +664,6 @@ case "$cmd" in
   closes) closes_of ;;
   state)  set_state ;;
   pick)   pick ;;
-  *) echo "usage: factory.sh tier|branch|fields|state|push|holdout|decide|sweep|next|pick|closes" >&2; exit 2 ;;
+  tally)  tally "${1:-true}" ;;   # test.sh builds pick's spend facts with it
+  *) echo "usage: factory.sh tier|branch|fields|state|push|holdout|decide|sweep|next|pick|tally|closes" >&2; exit 2 ;;
 esac

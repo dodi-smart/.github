@@ -49,20 +49,20 @@ jobs:
       actions: read            # this month's runs, whose notices hold the spend
       checks: read             # the Agent run notices on their jobs
     steps:
-      - uses: dodi-smart/.github/actions/runner-report@v1
+      - uses: dodi-smart/.github/actions/runner-report@pinned/v1.51.0
         with:
           selector: light
 
       # A read-only token, for the App's login that names the agent PRs.
       - id: app
-        uses: dodi-smart/.github/actions/app-token@v1
+        uses: dodi-smart/.github/actions/app-token@pinned/v1.51.0
         with:
           client-id:   ${{ secrets.GH_APP_CLIENT_ID }}
           private-key: ${{ secrets.GH_APP_PRIVATE_KEY }}
           permissions: 'issues:read'
 
       - id: next
-        uses: dodi-smart/.github/actions/factory@v1
+        uses: dodi-smart/.github/actions/factory@pinned/v1.51.0
         with:
           command:             next
           dispatch:            ${{ vars.FACTORY_DISPATCH }}
@@ -76,7 +76,7 @@ jobs:
       # universal set, so it exists.
       - id: app-write
         if: steps.next.outputs.action == 'dispatch'
-        uses: dodi-smart/.github/actions/app-token@v1
+        uses: dodi-smart/.github/actions/app-token@pinned/v1.51.0
         with:
           client-id:   ${{ secrets.GH_APP_CLIENT_ID }}
           private-key: ${{ secrets.GH_APP_PRIVATE_KEY }}

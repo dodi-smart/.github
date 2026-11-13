@@ -32,7 +32,9 @@
 #              `agent:no-touch`, the issue's fields put it on the `merge` tier
 #              (actions/factory, the one place the tier is computed), no
 #              conflict with the base (the fix loop merges the base in; nothing
-#              here asks anyone to rebase), and `review / verdict` approves the head
+#              here asks anyone to rebase), and `review / verdict` approves the head;
+#              when the issue's type is anything but Chore (unset included),
+#              `judge / verdict` must approve the head too (DODI-00071)
 #        hotfix  a security patch on the hotfix lane: the base is the release
 #              branch, actions/target-guard's verdict, derived again here from
 #              the live PR, is `lane`, and no conflict with the base. A person
@@ -83,8 +85,10 @@ AGE_CONTEXT='renovate/stability-days'
 # the render is pure (the agent pass edited nothing).
 VERIFY_CONTEXT='standards / verify'
 RENDER_CONTEXT='standards / render'
+# The independent judge's verdict, which judge.yml posts with the org App.
+JUDGE_CONTEXT='judge / verdict'
 # The contexts that count only when the org App posted them.
-APP_CONTEXTS=("$REVIEW_CONTEXT" "$VERIFY_CONTEXT" "$RENDER_CONTEXT")
+APP_CONTEXTS=("$REVIEW_CONTEXT" "$VERIFY_CONTEXT" "$RENDER_CONTEXT" "$JUDGE_CONTEXT")
 SYNC_BRANCH='chore/standards-sync'
 REGENERATED='backmerge:regenerated'
 
@@ -98,8 +102,8 @@ has() { grep -qxF "$1" <<<"$labels"; }
 # backmerge and standards-sync HEAD_REF, for backmerge PARENTS (the head
 # commit's parent count) and P1_REL, P2_REL (the compare API's status of each
 # parent against the base and the release branch: `identical` or `ahead` means
-# the parent is an ancestor of, or equal to, that branch), for factory TIER and
-# ISSUE_NO_TOUCH, for hotfix RELEASE_BRANCH, LANE and LANE_REASON (target-guard's
+# the parent is an ancestor of, or equal to, that branch), for factory TIER,
+# ISSUE_TYPE and ISSUE_NO_TOUCH, for hotfix RELEASE_BRANCH, LANE and LANE_REASON (target-guard's
 # verdict and reason), and for standards-sync AUTHOR, APP_BOT (the org App's
 # login), VERIFY and RENDER. decide runs it and sets review_wanted.
 rules() {
@@ -166,7 +170,14 @@ rules() {
       # No rebase box here: the loop's update job merges the base into the branch.
       if [ "${MERGEABLE:-}" = dirty ]; then reason="the branch conflicts with its base; the fix loop brings it up to date"; return; fi
       [ "$REVIEW" = success ] || { reason="waits for $REVIEW_CONTEXT to approve (it is ${REVIEW:-missing})"; return; }
-      ok="tier merge and approved, and the required check passed" ;;
+      # Only a Chore merges on the review alone. Any other type, or one that
+      # could not be read, also needs the judge, another model family.
+      if [ "${ISSUE_TYPE:-}" != Chore ]; then
+        [ "${JUDGE:-}" = success ] || { reason="a ${ISSUE_TYPE:-untyped} issue waits for $JUDGE_CONTEXT to approve (it is ${JUDGE:-missing})"; return; }
+        ok="tier merge, approved by the review and the judge, and the required check passed"
+      else
+        ok="tier merge and approved, and the required check passed"
+      fi ;;
     *) reason="unknown policy '${POLICY}'"; return ;;
   esac
   if [ "$CHECK" != success ]; then reason="the required check is ${CHECK:-missing}"; return; fi
@@ -182,7 +193,7 @@ rules() {
   merge=true reason="$ok"
 }
 
-# pick: from STATUSES and APP_BOT, sets REVIEW, VERIFY and RENDER to the state
+# pick: from STATUSES and APP_BOT, sets REVIEW, VERIFY, RENDER and JUDGE to the state
 # of the newest status the org App posted for each (statuses.sh app, the rule
 # the fix loop and request-review share), AGE to pending when any poster's newest stability-days status is
 # pending and otherwise to the newest one's state, and DISCOUNTED to the App
@@ -192,6 +203,7 @@ rules() {
 pick() {
   app_state() { "$HERE/statuses.sh" app "$1" "${APP_BOT:-}" <<<"$STATUSES"; }
   REVIEW=$(app_state "$REVIEW_CONTEXT") VERIFY=$(app_state "$VERIFY_CONTEXT") RENDER=$(app_state "$RENDER_CONTEXT")
+  JUDGE=$(app_state "$JUDGE_CONTEXT")
   AGE=$(jq -r --arg c "$AGE_CONTEXT" '[.[] | select(.context == $c)] | (group_by(.creator) | map(max_by(.id).state)) as $newest
                | if any($newest[]; . == "pending") then "pending" else (max_by(.id).state // empty) end' <<<"$STATUSES")
   DISCOUNTED=$(jq -r --arg by "${APP_BOT:-}" --args '[.[] | select((.context | IN($ARGS.positional[])) and ($by == "" or .creator != $by))
@@ -247,7 +259,7 @@ esac
 
 : "${REPO:?}" "${PR:?}" "${SHA:?}" "${POLICY:?}" "${REQUIRED_CHECK:?}"
 labels=$(jq -r '.[]' <<<"$LABELS")
-CHECK='' FOREIGN='' TIER='' ISSUE_NO_TOUCH='' MERGEABLE="${MERGEABLE:-}"
+CHECK='' FOREIGN='' TIER='' ISSUE_TYPE='' ISSUE_NO_TOUCH='' MERGEABLE="${MERGEABLE:-}"
 HEAD_REF="${HEAD_REF:-}" BASE_REF="${BASE_REF:-}" DEFAULT_BRANCH="${DEFAULT_BRANCH:-}"
 PARENTS='' P1_REL='' P2_REL='' LANE='' LANE_REASON='' STATUSES='[]'
 AUTHOR="${AUTHOR:-}" APP_BOT="${APP_BOT:-}"
@@ -292,7 +304,8 @@ read_inputs() {
       if gh api "/repos/$REPO/issues/$ISSUE/labels?per_page=100" --jq '[.[].name]' 2>/dev/null | grep -q '"agent:no-touch"'; then
         ISSUE_NO_TOUCH=true
       fi
-      TIER=$(REPO="$REPO" ISSUE="$ISSUE" GITHUB_OUTPUT=/dev/null "$HERE/../factory/factory.sh" fields | sed -n 's/^tier=//p')
+      fields=$(REPO="$REPO" ISSUE="$ISSUE" GITHUB_OUTPUT=/dev/null "$HERE/../factory/factory.sh" fields)
+      TIER=$(sed -n 's/^tier=//p' <<<"$fields") ISSUE_TYPE=$(sed -n 's/^type=//p' <<<"$fields")
     fi
   fi
   # Each read only when the labels and the cheap rules leave something to decide:
@@ -327,5 +340,5 @@ decide
   echo "kind=$kind"
   echo "reason=$reason"
 } >> "$GITHUB_OUTPUT"
-echo "#$PR at $SHA: kind=$kind base=${BASE_REF:-unknown}/${DEFAULT_BRANCH:-unknown} parents=${PARENTS:-none}/${P1_REL:-none}/${P2_REL:-none} check=${CHECK:-missing} review=${REVIEW:-missing} age=${AGE:-none} mergeable=${MERGEABLE:-unknown} foreign=${FOREIGN:-none} tier=${TIER:-none} lane=${LANE:-none} verify=${VERIFY:-none} render=${RENDER:-none} discounted=${DISCOUNTED:-none} author=${AUTHOR:-unknown}"
+echo "#$PR at $SHA: kind=$kind base=${BASE_REF:-unknown}/${DEFAULT_BRANCH:-unknown} parents=${PARENTS:-none}/${P1_REL:-none}/${P2_REL:-none} check=${CHECK:-missing} review=${REVIEW:-missing} age=${AGE:-none} mergeable=${MERGEABLE:-unknown} foreign=${FOREIGN:-none} tier=${TIER:-none} type=${ISSUE_TYPE:-none} judge=${JUDGE:-none} lane=${LANE:-none} verify=${VERIFY:-none} render=${RENDER:-none} discounted=${DISCOUNTED:-none} author=${AUTHOR:-unknown}"
 echo "merge=$merge: $reason"

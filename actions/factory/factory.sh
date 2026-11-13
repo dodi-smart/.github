@@ -29,6 +29,7 @@ HOLDOUT_DIR='.factory/holdout.d'   # one list per issue
 HOLDOUT='.factory/holdout'         # the old shared list, read only
 # The commit status pr-review writes its verdict to: success approve, failure changes.
 REVIEW_CONTEXT='review / verdict'
+JUDGE_CONTEXT='judge / verdict'
 # Which status counts is merge-gate's rule, shared: see statuses.sh.
 STATUSES_SH="$HERE/../merge-gate/statuses.sh"
 
@@ -80,16 +81,16 @@ read_fields() {
   local owner="${REPO%%/*}" name="${REPO##*/}" values
   # shellcheck disable=SC2016  # $o/$r/$n are GraphQL variables, not shell
   if values=$(gh api graphql -f query='query($o:String!,$r:String!,$n:Int!){
-    repository(owner:$o,name:$r){ issue(number:$n){ createdAt title '"$FIELDS_GQL"' } } }' \
+    repository(owner:$o,name:$r){ issue(number:$n){ createdAt title issueType{ name } '"$FIELDS_GQL"' } } }' \
     -f o="$owner" -f r="$name" -F n="$ISSUE" \
-    --jq "$FIELDS_JQ .data.repository.issue | {fields: fields, created: .createdAt, title} | tojson" 2>/dev/null); then
+    --jq "$FIELDS_JQ .data.repository.issue | {fields: (fields + {\"Issue type\": (.issueType.name // null)}), created: .createdAt, title} | tojson" 2>/dev/null); then
     F_READ=true
   else
     values='{}'; F_READ=false
   fi
   get() { jq -r --arg f "$1" '.fields[$f] // empty' <<<"$values"; }
   F_STATE=$(get "Triage state"); F_MODE=$(get "Agent mode"); F_RISK=$(get "Risk"); F_EFFORT=$(get "Effort")
-  F_PRIORITY=$(get "Priority")
+  F_PRIORITY=$(get "Priority"); F_TYPE=$(get "Issue type")
   F_CREATED=$(jq -r '.created // empty' <<<"$values"); F_TITLE=$(jq -r '.title // empty' <<<"$values")
 }
 
@@ -322,7 +323,9 @@ is_num() { [[ "$1" =~ ^[0-9]+([.][0-9]+)?$ ]]; }
 # MERGEABLE_WAIT: seconds to wait before the one re-read of a mergeable state
 #      GitHub has not computed yet (default 5)
 #
-# action: stop | update | fix-ci | fix-review | ready | review | land | handoff | give-up
+# action: stop | update | fix-ci | fix-review | ready | review | judge | land | handoff | give-up
+#   judge is an approved merge-tier PR whose issue is not a Chore and whose head
+#   has no judge verdict: add agent:judge. A Chore lands on the review alone.
 #   update is a PR GitHub reports as conflicting with its base: no PR Checks run
 #   on it, so no event would ever reach the loop. It is judged before the checks.
 # ---------------------------------------------------------------------------
@@ -359,7 +362,7 @@ decide() {
   # read of our own output, not a guess at a person's wording.
   issue=$(printf '%s' "$body" | closes_of)
   out issue "${issue:-}"
-  F_STATE=''; F_MODE=''; F_RISK=''; F_EFFORT=''; F_PRIORITY=''; F_CREATED=''; F_TITLE=''
+  F_STATE=''; F_MODE=''; F_RISK=''; F_EFFORT=''; F_PRIORITY=''; F_TYPE=''; F_CREATED=''; F_TITLE=''
   if [ -n "$issue" ]; then
     if gh api "/repos/$REPO/issues/$issue/labels?per_page=100" --jq '[.[].name]' 2>/dev/null | grep -q '"agent:no-touch"'; then
       finish stop "agent:no-touch on issue #$issue"
@@ -369,7 +372,7 @@ decide() {
   tier=$(tier_of "$F_MODE" "$F_RISK" "$F_EFFORT")
   out tier "$tier"
   # The model policy reads these. See actions/pick-model.
-  out risk "$F_RISK"; out effort "$F_EFFORT"; out priority "$F_PRIORITY"
+  out risk "$F_RISK"; out effort "$F_EFFORT"; out priority "$F_PRIORITY"; out type "$F_TYPE"
 
   # Every round number on the branch, in commit order: rounds after 0 are fix
   # rounds, and the last one says whether the head is a fix round.
@@ -431,7 +434,9 @@ decide() {
                    | "\(.status) \(.conclusion // "none") \(.details_url // "")"' 2>/dev/null || true)
   run_id=$(printf '%s' "$checks" | grep -oE '/actions/runs/[0-9]+' | grep -oE '[0-9]+' || true)
   out run-id "${run_id:-}"
-  verdict=$("$STATUSES_SH" read "$REPO" "$head" | "$STATUSES_SH" app "$REVIEW_CONTEXT" "${APP_BOT:-}" 2>/dev/null || true)
+  local statuses judge
+  statuses=$("$STATUSES_SH" read "$REPO" "$head" 2>/dev/null) || statuses='[]'
+  verdict=$("$STATUSES_SH" app "$REVIEW_CONTEXT" "${APP_BOT:-}" <<<"$statuses" 2>/dev/null || true)
 
   # A draft on the ready or merge tier is marked ready unless PR Checks is
   # red. Most callers skip PR Checks on drafts, so waiting for green there
@@ -458,8 +463,22 @@ decide() {
   [ "$draft" = true ] && finish stop "checks are green; tier draft, so a person marks it ready"
   case "$verdict" in
     success)
-      [ "$tier" = merge ] && finish land "checks green and review approved $head"
-      finish handoff "review approved $head; tier $tier stops here for a person" ;;
+      [ "$tier" = merge ] || finish handoff "review approved $head; tier $tier stops here for a person"
+      # Only a Chore lands on the review alone; any other type, or none, also
+      # needs the judge (DODI-00071). merge-gate enforces the same rule.
+      [ "$F_TYPE" = Chore ] && finish land "checks green and review approved $head"
+      judge=$("$STATUSES_SH" app "$JUDGE_CONTEXT" "${APP_BOT:-}" <<<"$statuses" 2>/dev/null || true)
+      case "$judge" in
+        success) finish land "checks green, review and judge approved $head" ;;
+        failure)
+          [ "$rounds" -ge "${MAX_ROUNDS:-3}" ] && finish give-up "the judge asked for changes after $rounds fix rounds"
+          finish fix-review "the judge asked for changes on $head" ;;
+        error) finish handoff "the judge did not answer on $head; a person decides" ;;
+        pending) finish stop "the judge is reading $head" ;;
+        *)
+          grep -q '"agent:judge"' <<<"$labels" && finish stop "the judge was already asked on #$pr"
+          finish judge "review approved $head; a ${F_TYPE:-untyped} issue also needs the judge" ;;
+      esac ;;
     failure|error)
       capped "review asked for changes"
       finish fix-review "review asked for changes on $head" ;;
@@ -641,7 +660,7 @@ case "$cmd" in
   fields)
     read_fields
     out read "$F_READ"; out state "$F_STATE"; out mode "$F_MODE"; out risk "$F_RISK"; out effort "$F_EFFORT"
-    out priority "$F_PRIORITY"
+    out priority "$F_PRIORITY"; out type "$F_TYPE"
     out tier "$(tier_of "$F_MODE" "$F_RISK" "$F_EFFORT")" ;;
   push)    push_round ;;
   holdout)

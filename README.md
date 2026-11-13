@@ -70,7 +70,7 @@ caller keeps working.
 | `issue-decompose.yml` | `agent:decompose`, applied by a person | Creates the children triage proposed on an Epic or an Initiative as sub-issues, with a script, not an agent. Nothing is created when one entry is bad. The rules are in `actions/decompose/decompose.sh` |
 | `issue-implement.yml` | `agent:implement`, `@claude implement` | Holdout tests from the plan's acceptance criteria, then code. A step pushes one commit to `feat\|fix\|chore/<n>-<slug>` and opens a draft PR. Requires a plan. |
 | `pr-iterate.yml` | `agent:iterate`, PR Checks completed, the review verdict status | The agent fix loop: up to 3 fix rounds on red checks or a `changes` verdict, and none once the issue's agent spend reaches `max-cost-usd` (default 20 USD, read from the `Agent run` notices), then ready for review, then a squash merge (the repo must allow squash merges) when the issue is `Autonomous` with Risk and Effort `Low`. A PR that conflicts with its base gets the base merged in, or goes to a person with the conflicted files; the caller should add a `schedule:` trigger for the sweep that finds them. Every push, ready and merge is a step, not the agent. A Renovate or Dependabot PR stops, label or not: deps-verify owns it |
-| `judge.yml` | `agent:judge`, a review by `dodi-judge[bot]`, a schedule | The independent judge (another model family, Grok Bot acting as the review-only `dodi-judge` App): marks `judge / verdict` pending, posts the judge's verdict on the head with the org App, and times out unanswered requests. Advisory: no gate reads it yet. See [Judge verdict](#judge-verdict) |
+| `judge.yml` | `agent:judge`, a review by `dodi-judge[bot]`, a schedule | The independent judge (another model family, Grok Bot acting as the review-only `dodi-judge` App): marks `judge / verdict` pending, posts the judge's verdict on the head with the org App, and times out unanswered requests. On the merge tier, every issue type but Chore needs its approval to land (DODI-00070). See [Judge verdict](#judge-verdict) |
 | `dispatch.yml` | PR closed, review submitted, issue unlabeled or edited, a schedule | The deterministic dispatcher: applies `agent:implement`, as the org App, to the highest-Priority issue that is `Plan ready` and `Autonomous`, while open agent PRs are under a WIP cap and their review wait is under a ceiling. No agent runs. Off unless `FACTORY_DISPATCH` is `true`. See [Dispatch](#dispatch) |
 | `claude-assist.yml` | `@claude <anything else>` | The general assistant |
 | `release.yml` | push to a release branch | semantic-release, single or multi-module |
@@ -1761,7 +1761,11 @@ contract it writes to.
   ends in `error`. Every ending removes `agent:judge`.
 
 The judge App has no statuses permission, so it can never post its own verdict.
-No gate reads `judge / verdict` yet; that takes a new decision. Kill switch:
+The `factory` merge policy requires `judge / verdict` to be `success` for every
+issue type but Chore, an unset type included (dev-standards DODI-00070), and
+`pr-iterate` adds `agent:judge` once the review approves such a head. A repo
+without the `judge.yml` caller gets no verdict, so its non-Chore agent PRs wait
+for a person. Kill switch:
 the variable `FACTORY_JUDGE` set to `false`.
 
 ## Dispatch
@@ -2076,9 +2080,10 @@ waits for a person. A request is a label, never a merge.
 
 The gate reads every status on the head from the commit's statuses list, which
 names each one's creator. `review / verdict`, `standards / verify` and
-`standards / render` count only when the org App posted them, and the newest of
-the App's decides; one from anyone else is treated as missing, and the reason
-says so. `judge / verdict` is not a gate input.
+`standards / render` and `judge / verdict` count only when the org App posted
+them, and the newest of the App's decides; one from anyone else is treated as
+missing, and the reason says so. `judge / verdict` is read only by the `factory`
+policy, for an issue that is not a Chore.
 
 The caller listens for every event that can complete the evidence:
 

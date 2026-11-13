@@ -3,7 +3,7 @@
 # The caller listens to three events and this workflow decides what each means:
 #   pull_request (labeled agent:iterate)   a person or issue-implement asks
 #   workflow_run (PR Checks, completed)    the build verdict on a new head
-#   status (the review verdict context)    pr-review's verdict on a head
+#   status (review or judge verdict)      pr-review's or the judge's verdict on a head
 # and may add `schedule:` (and `workflow_dispatch:`) for the sweep below.
 #
 # One deterministic step, `actions/factory decide`, reads the PR, its issue's
@@ -14,7 +14,10 @@
 #   fix-ci, fix-review   the agent makes one fix round; a step pushes it
 #   ready                a draft at tier ready or merge whose checks are not red
 #   review               ready, green, no verdict on this head: add agent:review
-#   land                 tier merge, green, review approved: squash-merge
+#   judge                approved on tier merge, the issue is not a Chore, and
+#                        no judge verdict on this head: add agent:judge
+#   land                 tier merge, green, review approved (and the judge, for
+#                        anything but a Chore): squash-merge
 #   handoff              approved below tier merge: a person takes it
 #   give-up              before a round, at max-rounds or the max-cost-usd spend cap
 #   stop                 anything else, including agent:no-touch anywhere
@@ -87,7 +90,7 @@ jobs:
     if: >-
       (github.event_name != 'pull_request' || (github.event.action == 'labeled' && github.event.label.name == 'agent:iterate'))
       && (github.event_name != 'workflow_run' || (github.event.workflow_run.event == 'pull_request' && endsWith(github.event.workflow_run.triggering_actor.login, '[bot]') && github.event.workflow_run.conclusion != 'cancelled' && github.event.workflow_run.conclusion != 'skipped'))
-      && (github.event_name != 'status' || (github.event.context == 'review / verdict' && github.event.state != 'pending'))
+      && (github.event_name != 'status' || ((github.event.context == 'review / verdict' || github.event.context == 'judge / verdict') && github.event.state != 'pending'))
     runs-on: ${{ fromJSON((github.event.repository.private && !github.event.pull_request.head.repo.fork) && '["self-hosted","Linux","light"]' || '"ubuntu-latest"') }}
     timeout-minutes: 10
     # Read only. Labels, ready and the merge go through the App token below.
@@ -96,7 +99,7 @@ jobs:
       pull-requests: read
       issues: read             # labels and the issue's fields
       checks: read             # PR Checks on the head, the Agent run notices
-      statuses: read           # the review verdict on the head
+      statuses: read           # the review and judge verdicts on the head
       actions: read            # the runs whose notices hold the issue's spend
     outputs:
       action:   ${{ steps.route.outputs.action }}
@@ -203,7 +206,7 @@ jobs:
       # workflows; GITHUB_TOKEN's do not. Marking a PR ready needs contents
       # write as well as pull-requests write.
       - id: app-token
-        if: contains(fromJSON('["ready","review","land","handoff","give-up","relay"]'), steps.route.outputs.action) || steps.sweep.outputs.dirty != ''
+        if: contains(fromJSON('["ready","review","judge","land","handoff","give-up","relay"]'), steps.route.outputs.action) || steps.sweep.outputs.dirty != ''
         uses: dodi-smart/.github/actions/app-token@v1
         with:
           client-id:   ${{ secrets.GH_APP_CLIENT_ID }}
@@ -211,7 +214,7 @@ jobs:
           permissions: contents:write pull-requests:write issues:write
 
       - id: act
-        if: contains(fromJSON('["ready","review","land","handoff","give-up","relay"]'), steps.route.outputs.action)
+        if: contains(fromJSON('["ready","review","judge","land","handoff","give-up","relay"]'), steps.route.outputs.action)
         env:
           REPO:      ${{ github.repository }}
           PR:        ${{ steps.decide.outputs.number }}
@@ -239,6 +242,10 @@ jobs:
               gh label create agent:review --repo "$REPO" --color 5319e7 >/dev/null 2>&1 || true
               gh pr edit "$PR" --repo "$REPO" --add-label agent:review
               echo "::notice title=Review requested::$REASON" ;;
+            judge)
+              gh label create agent:judge --repo "$REPO" --color 5319e7 >/dev/null 2>&1 || true
+              gh pr edit "$PR" --repo "$REPO" --add-label agent:judge
+              echo "::notice title=Judge requested::$REASON" ;;
             land)
               unlabel "$PR"
               [ "$MERGED" = true ] || say "**Not merged.** ${NOT_WHY:-the merge gate made no decision}. A person merges." ;;

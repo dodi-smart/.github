@@ -1,3 +1,10 @@
+## [1.51.0](https://github.com/dodi-smart/.github/compare/v1.50.0...v1.51.0) (2026-11-13)
+
+### ✨ Features
+
+* **merge-gate,factory:** land a non-Chore agent PR only when the independent judge also approves it ([#237](https://github.com/dodi-smart/.github/issues/237)) ([c286c36](https://github.com/dodi-smart/.github/commit/c286c360870b2e7fe1ce3e9c6689856160dd5699))
+* **push-round,factory:** leave a metadata-only record of every refused round ([#236](https://github.com/dodi-smart/.github/issues/236)) ([f6da342](https://github.com/dodi-smart/.github/commit/f6da342c5b9288833e903eed38fe4369198c4f33))
+
 ## [1.50.0](https://github.com/dodi-smart/.github/compare/v1.49.0...v1.50.0) (2026-11-13)
 
 ### ✨ Features

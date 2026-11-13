@@ -238,6 +238,7 @@ while [ $# -gt 0 ]; do
   shift
 done
 [ "$path" = graphql ] && path=graphql-issue
+printf '%s\n' "$path" >> "$STUB_API/.calls" 2>/dev/null || true
 key=$(printf '%s' "${path%%\?*}" | tr '/' '_')
 f="$STUB_API/$key"
 # A path with numbered answers (file.1, file.2, ...) answers them in order and
@@ -260,13 +261,13 @@ api() { mkdir -p "$WORK/api"; printf '%s' "$2" > "$WORK/api/$(printf '%s' "$1" |
 scenario() {
   rm -rf "$WORK/api"
   local mode="$1" checks="$2" verdict="$3" draft="${4:-false}" labels="${5:-[\"agent:iterate\"]}" rounds="${6:-0}"
-  api /repos/o/r/pulls/5 "{\"state\":\"open\",\"draft\":$draft,\"labels\":$(jq -c '[.[]|{name:.}]' <<<"$labels"),
+  api /repos/o/r/pulls/5 "{\"state\":\"open\",\"title\":\"feat: x\",\"draft\":$draft,\"labels\":$(jq -c '[.[]|{name:.}]' <<<"$labels"),
     \"head\":{\"sha\":\"abc\",\"ref\":\"feat/1-x\",\"repo\":{\"full_name\":\"o/r\"}},
     \"base\":{\"ref\":\"main\",\"repo\":{\"full_name\":\"o/r\"}},\"body\":\"text\n\nCloses #1\",
-    \"mergeable_state\":\"${MSTATE:-clean}\",\"user\":{\"login\":\"${AUTHOR:-dodi-smart-github-assistant[bot]}\"}}"
+    \"mergeable_state\":\"${MSTATE:-clean}\",\"created_at\":\"2026-11-02T00:00:00Z\",\"user\":{\"login\":\"${AUTHOR:-dodi-smart-github-assistant[bot]}\"}}"
   api /repos/o/r/issues/1/labels '[]'
   local m r e; read -r m r e <<<"$mode"
-  api graphql-issue "{\"data\":{\"repository\":{\"issue\":{\"issueFieldValues\":{\"nodes\":[
+  api graphql-issue "{\"data\":{\"repository\":{\"issue\":{\"createdAt\":\"2026-11-01T09:00:00Z\",\"title\":\"CSV export\",\"issueFieldValues\":{\"nodes\":[
     {\"name\":\"$m\",\"field\":{\"name\":\"Agent mode\"}},{\"name\":\"$r\",\"field\":{\"name\":\"Risk\"}},
     {\"name\":\"$e\",\"field\":{\"name\":\"Effort\"}},{\"name\":\"Plan ready\",\"field\":{\"name\":\"Triage state\"}},
     {\"name\":\"Medium\",\"field\":{\"name\":\"Priority\"}}]}}}}}"
@@ -287,7 +288,8 @@ scenario() {
 decide() {  # decide [EVENT_SHA] -> action
   : > "$WORK/out"
   env -i PATH="$WORK/bin:$PATH" HOME="$WORK" STUB_API="$WORK/api" REPO=o/r PR=5 EVENT_SHA="${1:-}" \
-    APP_BOT="${APP_BOT-app[bot]}" MAX_ROUNDS=3 MERGEABLE_WAIT=0 GITHUB_OUTPUT="$WORK/out" bash "$F" decide > "$WORK/log" 2>&1
+    APP_BOT="${APP_BOT-app[bot]}" MAX_ROUNDS=3 MAX_COST_USD="${COST:-}" MERGEABLE_WAIT=0 GITHUB_OUTPUT="$WORK/out" \
+    bash "$F" decide > "$WORK/log" 2>&1
   val action
 }
 
@@ -319,6 +321,74 @@ decide >/dev/null
 expect "after a fix round lint is not checked: the next round is Opus anyway" test -z "$(val signals)"
 scenario 'Autonomous Low Low' 'completed failure' '' false '["agent:iterate"]' 3
 expect "red after 3 rounds gives up"          test "$(decide)" = give-up
+# The cost cap. Spend is the `Agent run` notices on the agent workflows' runs that
+# can hold the issue's (issue=1) and its PR's (pr=5). Unpriced runs add nothing.
+run() {  # run SUITE WORKFLOW CONCLUSION EVENT BRANCH TITLE CREATED
+  jq -nc --argjson s "$1" --arg w "$2" --arg c "$3" --arg e "$4" --arg b "$5" --arg t "$6" --arg at "$7" \
+    '{check_suite_id: $s, conclusion: $c, event: $e, head_branch: $b, display_title: $t, created_at: $at,
+      referenced_workflows: [{path: "dodi-smart/.github/.github/workflows/\($w).yml@refs/tags/v1"}]}'
+}
+runs() { api "/repos/o/r/actions/workflows/$1/runs" "{\"workflow_runs\":[$2]}"; }
+note() { jq -nc --arg m "$1" --arg t "${2:-Agent run}" '{title: $t, message: $m}'; }
+spend() {  # the workflows, runs, jobs and notices behind 20.5 USD for issue #1, one run of it unpriced
+  api /repos/o/r/actions/workflows '{"workflows":[{"id":11},{"id":12},{"id":13}]}'
+  # PR Iterate: a fix round since the PR opened counts; one from before it is never opened.
+  runs 11 "$(run 101 pr-iterate success workflow_run main 'PR Iterate' 2026-11-05T00:00:00Z),
+           $(run 108 pr-iterate success workflow_run main 'PR Iterate' 2026-11-01T10:00:00Z)"
+  # Agents: the issue's implement runs, skipped or not, and another issue's, by title.
+  runs 12 "$(run 104 issue-implement failure issues main 'CSV export' 2026-11-01T10:00:00Z),
+           $(run 103 issue-implement skipped issues main 'CSV export' 2026-11-01T10:00:00Z),
+           $(run 107 issue-implement success issues main 'Other issue' 2026-11-03T00:00:00Z)"
+  # PR Checks calls no agent workflow, so its runs are never listed.
+  runs 13 "$(run 102 pr-checks failure pull_request feat/1-x 'feat: x' 2026-11-05T00:00:00Z)"
+  api /repos/o/r/check-suites/101/check-runs '{"check_runs":[{"id":1001,"output":{"annotations_count":2}},{"id":1002,"output":{"annotations_count":0}}]}'
+  api /repos/o/r/check-runs/1001/annotations "[$(note 'stage=fix-ci model=m turns=9 cost=12.5 priced=table wall=60 pr=5 (fix: a=b)'),$(note 'x=1' Warning)]"
+  api /repos/o/r/check-suites/104/check-runs '{"check_runs":[{"id":1004,"output":{"annotations_count":3}}]}'
+  api /repos/o/r/check-runs/1004/annotations "[$(note 'stage=implement model=m turns=40 cost=8 priced=table wall=900 issue=1 (implement)'),
+    $(note 'stage=implement model=m turns=? cost=? priced=none wall=? issue=1 (implement)'),
+    $(note 'stage=implement model=m turns=3 cost=100 priced=table wall=9 issue=2 (implement)'),
+    $(note 'stage=review model=m turns=3 cost=50 priced=table wall=9 pr=6 (review)')]"
+  local s; for s in 102 103 107 108; do
+    api /repos/o/r/check-suites/$s/check-runs "{\"check_runs\":[{\"id\":$s$s,\"output\":{\"annotations_count\":1}}]}"
+    api /repos/o/r/check-runs/$s$s/annotations "[$(note 'stage=x model=m turns=1 cost=999 priced=table wall=1 issue=1 pr=5 (x)')]"
+  done
+}
+scenario 'Autonomous Low Low' 'completed failure' '' false '["agent:iterate"]' 1; spend
+expect "at the cost cap red checks give up, though rounds are left" test "$(COST=20 decide)" = give-up
+expect "and the breaker is the cost one"      test "$(val breaker)" = cost
+expect "only the agent workflows' runs that can hold the issue's spend are opened" \
+  test "$(grep -oE 'check-suites/[0-9]+|workflows/[0-9]+/runs\?created' "$WORK/api/.calls" | sort -u | paste -sd ' ' -)" \
+       = 'check-suites/101 check-suites/104 workflows/11/runs?created workflows/12/runs?created'
+expect "the reason gives the spend, the cap and the unpriced run" \
+  test "$(val reason)" = 'PR Checks is red, and issue #1 has spent 20.5 USD of its 20 USD cap over 3 agent runs; 1 unpriced run is not in that sum'
+expect "under the cap the fix round runs"     test "$(COST=25 decide)" = fix-ci
+expect "and its reason still names the unpriced run" \
+  test "$(val reason)" = 'PR Checks failed on abc; issue #1 has spent 20.5 USD of 25; 1 unpriced run is not in that sum'
+expect "with no cap set no spend is read"     test "$(rm -f "$WORK/api/.calls"; decide) $(grep -c 'check-suites' "$WORK/api/.calls")" = 'fix-ci 0'
+expect "a cap that is not a number caps nothing" test "$(COST=lots decide)" = fix-ci
+expect "and says so"                          grep -q 'max-cost-usd "lots" is not a number' "$WORK/out"
+rm "$WORK/api/_repos_o_r_check-runs_1004_annotations"
+expect "unreadable spend gives up: the breaker fails closed" test "$(COST=1 decide) $(val breaker)" = 'give-up cost'
+expect "and the reason says why" \
+  test "$(val reason)" = 'PR Checks is red, and the agent spend of issue #1 could not be read, so the cost cap cannot be checked'
+scenario 'Autonomous Low Low' 'completed failure' '' false '["agent:iterate"]' 1; spend
+# Assist on a comment on the PR: issue_comment, the default branch, the PR's title.
+api /repos/o/r/actions/workflows '{"workflows":[{"id":11},{"id":12},{"id":13},{"id":14}]}'
+runs 14 "{\"conclusion\":\"startup_failure\",\"referenced_workflows\":[]}, $(run 109 claude-assist success issue_comment main 'feat: x' 2026-11-06T00:00:00Z)"
+api /repos/o/r/check-suites/109/check-runs '{"check_runs":[{"id":1009,"output":{"annotations_count":1}}]}'
+api /repos/o/r/check-runs/1009/annotations "[$(note 'stage=assist model=m turns=2 cost=1 priced=table wall=9 pr=5 (assist)')]"
+expect "a comment run on the PR counts, found past a run that failed to start" \
+  test "$(COST=21 decide): $(val reason)" = 'give-up: PR Checks is red, and issue #1 has spent 21.5 USD of its 21 USD cap over 4 agent runs; 1 unpriced run is not in that sum'
+scenario 'Autonomous Low Low' 'completed success' 'failure' false '["agent:iterate"]' 1; spend
+expect "a changes verdict at the cost cap gives up" test "$(COST=20 decide)" = give-up
+MSTATE=dirty scenario 'Autonomous Low Low' '' '' false '["agent:iterate"]' 1; spend
+expect "a conflict at the cost cap gives up"  test "$(COST=20 decide)" = give-up
+scenario 'Autonomous Low Low' 'completed success' 'success'; spend
+expect "a green, approved PR over the cap still lands: no round is started" test "$(COST=1 decide)" = land
+scenario 'Autonomous Low Low' 'completed failure' '' false '["agent:iterate"]' 1; spend
+api /repos/o/r/pulls/5 "$(jq -c '.body = "no issue"' "$WORK/api/_repos_o_r_pulls_5")"
+expect "with no issue only the PR's own spend counts" test "$(COST=13 decide) $(COST=12.5 decide): $(val reason)" = 'fix-ci give-up: PR Checks is red, and #5 has spent 12.5 USD of its 12.5 USD cap over 1 agent run'
+
 scenario 'Autonomous Low Low' 'in_progress none' ''
 expect "running checks wait"                  test "$(decide)" = stop
 scenario 'Autonomous Low Low' '' ''
@@ -498,10 +568,12 @@ iss() {  # iss NUM PRIORITY [JQ-PATCH]: a Plan ready, Autonomous issue, then the
   jq -nc --argjson n "$1" --arg p "$2" '{number: $n, priority: (if $p == "" then null else $p end),
     created: "2026-01-01T00:00:00Z", labels: [], state: "Plan ready", mode: "Autonomous"} | '"${3:-.}"
 }
-facts() {  # facts CAP PRS-JSON ISSUE...
-  local cap="$1" prs="$2"; shift 2
-  printf '%s\n' "$@" | jq -sc --argjson cap "$cap" --argjson prs "$prs" \
-    '{required: "Plan ready", cap: $cap, ceiling_h: 24, now: 1000000, prs: $prs, issues: .}'
+facts() {  # facts CAP PRS-JSON ISSUE...: SPEND USD priced, UNPRICED runs with no price, through tally
+  local cap="$1" prs="$2" spend; shift 2
+  spend=$(jq -nc --argjson u "${SPEND:-0}" --argjson n "${UNPRICED:-0}" '{cost: $u}, (range($n) | {cost: null})' \
+    | bash "$F" tally)
+  printf '%s\n' "$@" | jq -sc --argjson cap "$cap" --argjson prs "$prs" --argjson b "${BUDGET-100}" --argjson s "$spend" \
+    '{required: "Plan ready", cap: $cap, ceiling_h: 24, now: 1000000, prs: $prs, issues: ., budget: $b, spend: $s}'
 }
 pr() { jq -nc --argjson n "$1" --argjson c "$2" --argjson w "${3:-null}" '{number: $n, closes: $c, waiting_since: ($w | if . == null then null else todate end)}'; }
 two_issues=("$(iss 1 Low)" "$(iss 2 High)")
@@ -556,6 +628,22 @@ expect "no PR waiting is no review wait"                               test "$(v
 pickf "$(facts 2 "[$(pr 20 5 $((now - 99 * h))),$(pr 21 6 $((now - 99 * h)))]" "${two_issues[@]}")"
 expect "the cap is judged before the wait"                             grep -q 'WIP cap' "$WORK/out"
 
+pickf "$(SPEND=12.345 UNPRICED=1 facts 2 '[]' "${two_issues[@]}")"
+expect "under the monthly budget it dispatches, and says what was spent" \
+  test "$(val action) $(val spend)" = 'dispatch 12.35'
+expect "naming the unpriced run"                                       grep -q 'spent 12.35 USD of the 100 USD budget this month; 1 unpriced run is not in that sum' "$WORK/out"
+pickf "$(SPEND=100 facts 2 '[]' "${two_issues[@]}")"
+expect "at the monthly budget it holds"                                test "$(val action): $(val reason)" = 'hold: the agent spend has reached 100 USD of the 100 USD budget this month'
+pickf "$(SPEND=150 UNPRICED=2 facts 2 '[]' "${two_issues[@]}")"
+expect "over it too, and the unpriced runs are named" \
+  test "$(val reason)" = 'the agent spend has reached 150 USD of the 100 USD budget this month; 2 unpriced runs are not in that sum'
+pickf "$(BUDGET=null facts 2 '[]' "${two_issues[@]}")"
+expect "with no budget nothing is dispatched"                          test "$(val action): $(val reason)" = 'hold: FACTORY_BUDGET_USD is not set: with no monthly budget nothing is dispatched'
+pickf "$(BUDGET=0 facts 2 '[]' "${two_issues[@]}")"
+expect "a budget of 0 dispatches nothing"                              test "$(val action)" = hold
+pickf "$(SPEND=500 facts 2 "[$(pr 20 5),$(pr 21 6)]" "${two_issues[@]}")"
+expect "the WIP cap is judged before the budget"                       grep -q 'WIP cap' "$WORK/out"
+
 # next reads the facts in two GraphQL reads: the App's PRs, then the issues with their label history.
 rm -rf "$WORK/api"; mkdir -p "$WORK/api"
 gp() {  # gp NUM AUTHOR DRAFT BODY [REVIEWS-JSON] [READY-AT]
@@ -578,16 +666,36 @@ gi() {  # gi NUM PRIORITY CREATED [STATE]: an Autonomous issue, Plan ready unles
 api graphql-issues "{\"data\":{\"repository\":{\"issues\":{\"nodes\":[
   $(gi 5 Urgent 2026-01-01T00:00:00Z), $(gi 8 High 2026-01-01T00:00:00Z 'Ready for agent'), $(gi 9 High 2026-01-02T00:00:00Z),
   $(gi 10 Medium 2026-01-01T00:00:00Z)]}}}}"
+# This month's spend: 10 USD and one unpriced run, on a run of a shared agent workflow.
+month() {
+  api /repos/o/r/actions/workflows '{"workflows":[{"id":21},{"id":22}]}'
+  runs 21 "$(run 301 issue-implement success issues main 'Any issue' 2026-11-03T00:00:00Z)"
+  runs 22 "$(run 302 pr-checks success pull_request feat/9-x 'feat: y' 2026-11-03T00:00:00Z)"
+  api /repos/o/r/check-suites/301/check-runs '{"check_runs":[{"id":3001,"output":{"annotations_count":2}}]}'
+  api /repos/o/r/check-runs/3001/annotations '[{"title":"Agent run","message":"stage=implement model=m turns=4 cost=10 priced=table wall=9 issue=3 (implement)"},
+    {"title":"Agent run","message":"stage=triage model=m turns=? cost=? priced=none wall=? issue=4 (triage)"}]'
+}
+month
 nextf() {
   : > "$WORK/out"
   env -i PATH="$WORK/bin:$PATH" HOME="$WORK" STUB_API="$WORK/api" REPO=o/r DISPATCH="${DISPATCH-true}" APP_BOT='app[bot]' \
-    WIP_CAP="${CAP:-2}" WAIT_CEILING_H="${CEIL:-24}" NOW="$(jq -n '"2026-11-12T12:00:00Z" | fromdateiso8601')" \
+    WIP_CAP="${CAP:-2}" WAIT_CEILING_H="${CEIL:-24}" BUDGET_USD="${BUDGET_USD-50}" \
+    NOW="$(jq -n '"2026-11-12T12:00:00Z" | fromdateiso8601')" \
     GITHUB_OUTPUT="$WORK/out" bash "$F" next > "$WORK/log" 2>&1
 }
 CAP=3 CEIL=48 nextf
 expect "next counts the App's PRs that close an issue, and skips the closed issue and one implement started" \
   test "$(val action) $(val issue) $(val wip)" = 'dispatch 9 2'
 expect "and the wait runs from the last ready_for_review, past a bot's review" test "$(val review-wait-h)" = 36
+expect "and the month's spend is read from the 1st, unpriced runs named" \
+  test "$(val spend)" = 10 && grep -q '1 unpriced run is not in that sum' "$WORK/out"
+expect "the runs listed are this month's"                              grep -q 'created=%3E%3D2026-11-01&' "$WORK/api/.calls"
+CAP=3 CEIL=48 BUDGET_USD=10 nextf
+expect "next holds at the monthly budget"                              test "$(val action): $(val reason)" = 'hold: the agent spend has reached 10 USD of the 10 USD budget this month; 1 unpriced run is not in that sum'
+mv "$WORK/api/_repos_o_r_check-runs_3001_annotations" "$WORK/api/notes"
+CAP=3 CEIL=48 nextf
+expect "an unreadable spend holds"                                     test "$(val action): $(val reason)" = "hold: could not read this month's agent spend"
+mv "$WORK/api/notes" "$WORK/api/_repos_o_r_check-runs_3001_annotations"
 CAP=3 CEIL=36 nextf
 expect "next holds at the ceiling"                                     test "$(val action)" = hold
 rm "$WORK/api/graphql-issues"
@@ -605,6 +713,10 @@ for v in false '' TRUE yes; do
   expect "FACTORY_DISPATCH='$v' holds before any read (the stub has no answers)" \
     test "$(val action): $(val reason)" = "hold: FACTORY_DISPATCH is \"$v\", not \"true\""
 done
+BUDGET_USD='' nextf
+expect "an unset FACTORY_BUDGET_USD holds before any read"             test "$(val reason)" = 'FACTORY_BUDGET_USD is not set: with no monthly budget nothing is dispatched'
+BUDGET_USD='lots' nextf
+expect "a FACTORY_BUDGET_USD that is not a number holds"               test "$(val reason)" = 'FACTORY_BUDGET_USD "lots" is not a number of USD'
 mkdir -p "$WORK/api"
 for bad in 'x' '-1'; do
   CAP="$bad" nextf

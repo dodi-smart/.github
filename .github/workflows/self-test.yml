@@ -1358,6 +1358,12 @@ jobs:
           from lib import load
 
           files = ['pr-review', 'claude-assist', 'issue-triage', 'issue-implement', 'pr-iterate']
+          # The gates that may read the Actions API, each with the reason. Every
+          # other gate gaining it is an error.
+          reads_actions = {
+              'pr-review': 'held it before this rule existed',
+              'pr-iterate': "decide lists the runs whose notices hold the issue's agent spend (DODI-00068)",
+          }
           bad = []
           for f in files:
               jobs = load('.github/workflows/' + f + '.yml')['jobs']
@@ -1367,7 +1373,7 @@ jobs:
                   bad.append(f + ': gate has no job-level if for the payload-only filters')
               if 'agent:no-touch' in cond:
                   bad.append(f + ': the kill switch belongs to the gate action, not the job if')
-              if gate.get('permissions', {}).get('actions') and f != 'pr-review':
+              if gate.get('permissions', {}).get('actions') and f not in reads_actions:
                   bad.append(f + ': gate gained an actions permission')
               for name, job in jobs.items():
                   first = (job.get('steps') or [{}])[0]

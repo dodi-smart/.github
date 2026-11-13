@@ -309,6 +309,8 @@ outcome success '[{"type":"result","subtype":"success","is_error":false,"num_tur
 expect "tokens times the table, every model summed, a [1m] suffix ignored" grep -qx 'cost=0.66051' "$WORK/out"
 expect "priced by the table, timed by the session" bash -c 'grep -qx "priced=table" "$1" && grep -qx "wall=312" "$1"' _ "$WORK/out"
 expect "the notice carries cost, priced and wall" grep -q '::notice title=Agent run::stage=review model=m turns=14 cost=0.66051 priced=table wall=312 (r)' "$WORK/log"
+expect "and notice.jq, the reader the factory's breakers use, reads it back" \
+  test "$(sed -n 's/^::notice title=Agent run:://p' "$WORK/log" | jq -Rc -f "$HERE/notice.jq")" = '{"cost":0.66051,"issue":null,"pr":null}'
 outcome success '[{"type":"result","subtype":"success","is_error":false,"num_turns":2,"total_cost_usd":0.42,"modelUsage":{"claude-sonnet-4-5-20250929":{"outputTokens":100000},"claude-new-9":{"inputTokens":9}},"result":"ok"}]'
 expect "a model with no row falls back to the reported cost" bash -c 'grep -qx "cost=0.42" "$1" && grep -qx "priced=reported" "$1"' _ "$WORK/out"
 expect "and warns, naming the model and the table" grep -q '::warning title=Model not in the price table::claude-new-9 has no row in actions/pick-model/prices.tsv' "$WORK/log"

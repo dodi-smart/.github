@@ -255,7 +255,8 @@ chmod +x "$WORK/bin/gh"
 printf '#!/usr/bin/env bash\necho "$*" >> "${WORK_SLEEPS:-/dev/null}"\n' > "$WORK/bin/sleep"
 chmod +x "$WORK/bin/sleep"
 
-# scenario TIER-FIELDS CHECKS VERDICT [DRAFT] [LABELS] [ROUNDS]; MSTATE sets mergeable_state
+# scenario TIER-FIELDS CHECKS VERDICT [DRAFT] [LABELS] [ROUNDS]; MSTATE sets mergeable_state,
+# TYPE the issue type (Chore by default, empty for none), JUDGE the App's judge verdict
 api() { mkdir -p "$WORK/api"; printf '%s' "$2" > "$WORK/api/$(printf '%s' "$1" | tr '/' '_')"; }
 scenario() {
   rm -rf "$WORK/api"
@@ -266,7 +267,8 @@ scenario() {
     \"mergeable_state\":\"${MSTATE:-clean}\",\"user\":{\"login\":\"${AUTHOR:-dodi-smart-github-assistant[bot]}\"}}"
   api /repos/o/r/issues/1/labels '[]'
   local m r e; read -r m r e <<<"$mode"
-  api graphql-issue "{\"data\":{\"repository\":{\"issue\":{\"issueFieldValues\":{\"nodes\":[
+  local itype='null'; [ -z "${TYPE-Chore}" ] || itype="{\"name\":\"${TYPE-Chore}\"}"
+  api graphql-issue "{\"data\":{\"repository\":{\"issue\":{\"issueType\":$itype,\"issueFieldValues\":{\"nodes\":[
     {\"name\":\"$m\",\"field\":{\"name\":\"Agent mode\"}},{\"name\":\"$r\",\"field\":{\"name\":\"Risk\"}},
     {\"name\":\"$e\",\"field\":{\"name\":\"Effort\"}},{\"name\":\"Plan ready\",\"field\":{\"name\":\"Triage state\"}},
     {\"name\":\"Medium\",\"field\":{\"name\":\"Priority\"}}]}}}}}"
@@ -278,11 +280,10 @@ scenario() {
   else
     api /repos/o/r/commits/abc/check-runs '{"check_runs":[]}'
   fi
-  if [ -n "$verdict" ]; then
-    api /repos/o/r/commits/abc/statuses "[{\"context\":\"review / verdict\",\"state\":\"$verdict\",\"creator\":{\"login\":\"app[bot]\"},\"id\":1}]"
-  else
-    api /repos/o/r/commits/abc/statuses '[]'
-  fi
+  local sts='[]'
+  [ -z "$verdict" ] || sts=$(jq -c --arg s "$verdict" '. + [{context: "review / verdict", state: $s, creator: {login: "app[bot]"}, id: 1}]' <<<"$sts")
+  [ -z "${JUDGE:-}" ] || sts=$(jq -c --arg s "$JUDGE" '. + [{context: "judge / verdict", state: $s, creator: {login: "app[bot]"}, id: 2}]' <<<"$sts")
+  api /repos/o/r/commits/abc/statuses "$sts"
 }
 decide() {  # decide [EVENT_SHA] -> action
   : > "$WORK/out"
@@ -347,6 +348,28 @@ scenario 'Autonomous Low Low' 'completed success' 'failure' false '["agent:itera
 expect "changes after 3 rounds gives up"      test "$(decide)" = give-up
 scenario 'Autonomous Low Low' 'completed success' 'success'
 expect "green and approved at merge lands"    test "$(decide)" = land
+# Only a Chore lands on the review alone; anything else asks the judge (DODI-00071).
+TYPE=Bug scenario 'Autonomous Low Low' 'completed success' 'success'
+expect "an approved Bug at merge asks the judge" test "$(decide)" = judge
+expect "and outputs the issue type"           test "$(val type)" = Bug
+TYPE='' scenario 'Autonomous Low Low' 'completed success' 'success'
+expect "an untyped issue asks the judge too"  test "$(decide)" = judge
+TYPE=Improvement scenario 'Autonomous Low Low' 'completed success' 'success' false '["agent:iterate","agent:judge"]'
+expect "a judge already asked is not asked again" test "$(decide)" = stop
+TYPE=Bug JUDGE=pending scenario 'Autonomous Low Low' 'completed success' 'success'
+expect "a pending judge waits"                test "$(decide)" = stop
+TYPE=Bug JUDGE=success scenario 'Autonomous Low Low' 'completed success' 'success'
+expect "a Bug the judge approves lands"       test "$(decide)" = land
+TYPE=Bug JUDGE=failure scenario 'Autonomous Low Low' 'completed success' 'success'
+expect "the judge's changes start a fix round" test "$(decide)" = fix-review
+TYPE=Bug JUDGE=failure scenario 'Autonomous Low Low' 'completed success' 'success' false '["agent:iterate"]' 3
+expect "the judge's changes after 3 rounds give up" test "$(decide)" = give-up
+TYPE=Bug JUDGE=error scenario 'Autonomous Low Low' 'completed success' 'success'
+expect "a judge that timed out hands off"     test "$(decide)" = handoff
+TYPE=Bug scenario 'Autonomous Medium Medium' 'completed success' 'success'
+expect "a Bug below tier merge still hands off without the judge" test "$(decide)" = handoff
+JUDGE=failure scenario 'Autonomous Low Low' 'completed success' 'success'
+expect "a Chore ignores the judge"            test "$(decide)" = land
 scenario 'Autonomous Medium Medium' 'completed success' 'success'
 expect "green and approved at ready is done"  test "$(decide)" = handoff
 scenario 'Supervised Low Low' 'completed success' 'success'

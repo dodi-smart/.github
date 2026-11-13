@@ -19,16 +19,18 @@ st() { jq -cn --arg c "$1" --arg s "$2" --arg by "$3" --argjson id "$4" '{contex
 sts() { jq -cs . <<<"$(printf '%s\n' "$@")"; }
 
 # gd [VAR=value ...]: gate.sh decide on a green check into the default branch,
-# nothing else set. REVIEW, VERIFY and RENDER become statuses the org App
+# nothing else set. REVIEW, VERIFY, RENDER and JUDGE become statuses the org App
 # (app[bot]) posted, and AGE one Renovate posted; STATUSES replaces them all.
-gd() { local a r='' v='' n='' g=''
+# A factory issue is a Chore unless ISSUE_TYPE says otherwise.
+gd() { local a r='' v='' n='' g='' j=''
   for a in "$@"; do  # the last assignment wins, as env would have it
-    case "$a" in REVIEW=*) r=${a#*=} ;; VERIFY=*) v=${a#*=} ;; RENDER=*) n=${a#*=} ;; AGE=*) g=${a#*=} ;; esac
+    case "$a" in REVIEW=*) r=${a#*=} ;; VERIFY=*) v=${a#*=} ;; RENDER=*) n=${a#*=} ;; AGE=*) g=${a#*=} ;; JUDGE=*) j=${a#*=} ;; esac
   done
-  env -i PATH="$PATH" LABELS='[]' TITLE='fix: x' CHECK=success FOREIGN='' KILL='' APP_BOT='app[bot]' \
+  env -i PATH="$PATH" LABELS='[]' TITLE='fix: x' CHECK=success FOREIGN='' KILL='' APP_BOT='app[bot]' ISSUE_TYPE=Chore \
     BASE_REF=develop DEFAULT_BRANCH=develop STATUSES="$(sts ${r:+"$(st 'review / verdict' "$r" 'app[bot]' 1)"} \
       ${v:+"$(st 'standards / verify' "$v" 'app[bot]' 2)"} ${n:+"$(st 'standards / render' "$n" 'app[bot]' 3)"} \
-      ${g:+"$(st renovate/stability-days "$g" 'renovate[bot]' 4)"})" "$@" "$HERE/gate.sh" decide; }
+      ${g:+"$(st renovate/stability-days "$g" 'renovate[bot]' 4)"} ${j:+"$(st 'judge / verdict' "$j" 'app[bot]' 5)"})" \
+    "$@" "$HERE/gate.sh" decide; }
 
 # $1 name, $2 want merge (true, false, or rebase), then env assignments. The default is a mergeable
 # verified minor into the default branch with a green check and only allowed authors.
@@ -121,6 +123,17 @@ decide "factory: merge tier, approved, green"                     true  "$F" "$F
 decide "factory: the branch conflicts with its base"              false "$F" "$FL" TIER=merge REVIEW=success MERGEABLE=dirty
 decide "factory: behind its base is not a conflict"               true  "$F" "$FL" TIER=merge REVIEW=success MERGEABLE=behind
 decide "factory: mergeable state not computed yet"                true  "$F" "$FL" TIER=merge REVIEW=success MERGEABLE=unknown
+# Only a Chore lands on the review alone (DODI-00071).
+decide "factory: a Bug approved by the review alone"              false "$F" "$FL" TIER=merge REVIEW=success ISSUE_TYPE=Bug
+decide "factory: an Improvement approved by the review alone"     false "$F" "$FL" TIER=merge REVIEW=success ISSUE_TYPE=Improvement
+decide "factory: an untyped issue approved by the review alone"   false "$F" "$FL" TIER=merge REVIEW=success ISSUE_TYPE=
+decide "factory: a Bug the judge asks to change"                  false "$F" "$FL" TIER=merge REVIEW=success ISSUE_TYPE=Bug JUDGE=failure
+decide "factory: a Bug the judge is still reading"                false "$F" "$FL" TIER=merge REVIEW=success ISSUE_TYPE=Bug JUDGE=pending
+decide "factory: a Bug the judge timed out on"                    false "$F" "$FL" TIER=merge REVIEW=success ISSUE_TYPE=Bug JUDGE=error
+decide "factory: a Bug approved by the judge but not the review"  false "$F" "$FL" TIER=merge REVIEW=failure ISSUE_TYPE=Bug JUDGE=success
+decide "factory: a Bug approved by the review and the judge"      true  "$F" "$FL" TIER=merge REVIEW=success ISSUE_TYPE=Bug JUDGE=success
+decide "factory: an Improvement approved by both"                 true  "$F" "$FL" TIER=merge REVIEW=success ISSUE_TYPE=Improvement JUDGE=success
+decide "factory: a Chore ignores a judge that asks for changes"   true  "$F" "$FL" TIER=merge REVIEW=success JUDGE=failure
 
 # The new policies' PR shapes, shared with the says and wants cases below: a
 # security patch into main, the App's pure sync, a regenerated back-merge.
@@ -233,6 +246,8 @@ decide "status: the App's newest wins over its older changes"      true  "${FX[@
 decide "status: the App's newest changes beat its older approval"  false "${FX[@]}" "STATUSES=$(sts "$(st 'review / verdict' failure 'app[bot]' 7)" "$APPV")"
 decide "status: listed newest first, still the highest id wins"    true  "${FX[@]}" "STATUSES=$(sts "$APPV" "$(st 'review / verdict' failure 'app[bot]' 2)")"
 decide "status: with no App login no approval counts"              false "${FX[@]}" APP_BOT= "STATUSES=$(sts "$APPV")"
+decide "status: a Bug's judge approval from anyone else is missing" false "${FX[@]}" ISSUE_TYPE=Bug "STATUSES=$(sts "$APPV" "$(st 'judge / verdict' success 'dodi-judge[bot]' 8)")"
+decide "status: a Bug with the App's review and judge approvals"  true  "${FX[@]}" ISSUE_TYPE=Bug "STATUSES=$(sts "$APPV" "$(st 'judge / verdict' success 'app[bot]' 8)")"
 says "and the reason says the login is missing" \
   "waits for review / verdict to approve (it is missing) (not counted: review / verdict by app[bot]; the org App's login could not be read)" \
   "${FX[@]}" APP_BOT= "STATUSES=$(sts "$APPV")"

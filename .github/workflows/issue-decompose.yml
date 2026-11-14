@@ -43,13 +43,13 @@ jobs:
     permissions:
       issues: write
     steps:
-      - uses: dodi-smart/.github/actions/runner-report@v1
+      - uses: dodi-smart/.github/actions/runner-report@pinned/v1.52.0
         with:
           selector: light
 
       # agent:no-touch first, as in every workflow that writes to an issue.
       - id: gate
-        uses: dodi-smart/.github/actions/agent-gate@v1
+        uses: dodi-smart/.github/actions/agent-gate@pinned/v1.52.0
         with:
           labels:        ${{ toJson(github.event.issue.labels.*.name) }}
           event-name:    ${{ github.event_name }}
@@ -62,7 +62,7 @@ jobs:
           events:        'issues'
 
       - if: steps.gate.outputs.proceed == 'true'
-        uses: dodi-smart/.github/actions/decompose@v1
+        uses: dodi-smart/.github/actions/decompose@pinned/v1.52.0
         with:
           number: ${{ github.event.issue.number }}
 

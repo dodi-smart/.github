@@ -255,6 +255,7 @@ while [ $# -gt 0 ]; do
 done
 [ "$path" = graphql ] && path=graphql-issue
 printf '%s\n' "$path" >> "$STUB_API/.calls" 2>/dev/null || true
+printf '%s %s\n' "$path" "${GH_TOKEN:-}" >> "$STUB_API/.tokens" 2>/dev/null || true
 key=$(printf '%s' "${path%%\?*}" | tr '/' '_')
 f="$STUB_API/$key"
 # A path with numbered answers (file.1, file.2, ...) answers them in order and
@@ -637,6 +638,11 @@ pickf "$(facts 2 '[]' "$(iss 2 Urgent '.state = "Needs info"')" "$(iss 3 Urgent 
 expect "only Plan ready and Autonomous issues are picked"              test "$(val issue)" = 1
 pickf "$(facts 2 '[]' "$(iss 2 Urgent '.state = "Ready for agent"')" "$(iss 3 Urgent '.state = "Blocked"')" "$(iss 1 Low)")"
 expect "an issue implement started or gave up on is a person's to retry" test "$(val issue)" = 1
+pickf "$(facts 2 '[]' "$(iss 2 Urgent '.blocked = 1')" "$(iss 1 Low '.blocked = 0')")"
+expect "an issue with an open blocker, in any repo, is skipped"         test "$(val issue)" = 1
+pickf "$(facts 2 '[]' "$(iss 2 Urgent '.blocked = 2')" "$(iss 3 Low '.blocked = 1')")"
+expect "and with only blocked ones left, it holds and names them" \
+  test "$(val action): $(val reason)" = 'hold: #2, #3 are Plan ready but blocked by an open issue'
 pickf "$(facts 2 "[$(pr 20 2)]" "${two_issues[@]}")"
 expect "an issue an open agent PR closes is not picked again"          test "$(val issue)" = 1
 
@@ -718,6 +724,7 @@ month
 nextf() {
   : > "$WORK/out"
   env -i PATH="$WORK/bin:$PATH" HOME="$WORK" STUB_API="$WORK/api" REPO=o/r DISPATCH="${DISPATCH-true}" APP_BOT='app[bot]' \
+    GH_TOKEN=repo-token ISSUES_TOKEN="${ISSUES_TOKEN-org-token}" \
     WIP_CAP="${CAP:-2}" WAIT_CEILING_H="${CEIL:-24}" BUDGET_USD="${BUDGET_USD-50}" \
     NOW="$(jq -n '"2026-11-12T12:00:00Z" | fromdateiso8601')" \
     GITHUB_OUTPUT="$WORK/out" bash "$F" next > "$WORK/log" 2>&1
@@ -729,6 +736,14 @@ expect "and the wait runs from the last ready_for_review, past a bot's review" t
 expect "and the month's spend is read from the 1st, unpriced runs named" \
   test "$(val spend)" = 10 && grep -q '1 unpriced run is not in that sum' "$WORK/out"
 expect "the runs listed are this month's"                              grep -q 'created=%3E%3D2026-11-01&' "$WORK/api/.calls"
+cp "$WORK/api/graphql-issues" "$WORK/issues.bak"
+jq '.data.repository.issues.nodes |= map(if .number == 9 then . + {issueDependenciesSummary: {blockedBy: 1}} else . end)' \
+  "$WORK/issues.bak" > "$WORK/api/graphql-issues"
+CAP=3 CEIL=48 nextf
+expect "next reads each issue's open blockers and skips a blocked one"  test "$(val action) $(val issue)" = 'dispatch 10'
+expect "and reads the issues with the org-wide token, the PRs with the repo's" \
+  bash -c 'grep -qx "graphql-issues org-token" "$1" && grep -qx "graphql-prs repo-token" "$1"' _ "$WORK/api/.tokens"
+mv "$WORK/issues.bak" "$WORK/api/graphql-issues"
 CAP=3 CEIL=48 BUDGET_USD=10 nextf
 expect "next holds at the monthly budget"                              test "$(val action): $(val reason)" = 'hold: the agent spend has reached 10 USD of the 10 USD budget this month; 1 unpriced run is not in that sum'
 mv "$WORK/api/_repos_o_r_check-runs_3001_annotations" "$WORK/api/notes"
@@ -787,6 +802,101 @@ expect "a refused write says so, without failing"                     test "$(va
 rm "$WORK/api/graphql-fields"
 statef Blocked
 expect "unreadable fields say so, without failing"                    test "$(val written)" = 'false: the issue fields could not be read'
+
+# 9. blockers: the cross-repo dependencies triage names, checked before anything links.
+blk() { REPO=o/r bash "$F" blockers 2>"$WORK/err"; }
+body=$'### Plan\n\n```blocked-by\n[{"repo":"old","number":1}]\n```\nlater\n```blocked-by\n[{"repo":"api","number":12},{"repo":"o/web","title":"  feat: refunds ","plan":"POST /refunds"}]\n```\n'
+expect "the newest block wins, and names normalise to owner/repo" \
+  test "$(blk <<<"$body")" = '[{"repo":"o/api","number":12},{"repo":"o/web","title":"feat: refunds","plan":"POST /refunds"}]'
+expect "no block is no blockers"                                       test "$(blk <<<'just a plan')" = '[]'
+for bad in '[{"repo":"x/api","number":1}]' '[{"repo":"api"}]' '[{"repo":"api","number":0}]' '[{"number":3}]' \
+           '{"repo":"api","number":1}' '[{"repo":"a b","number":1}]' 'not json'; do
+  expect "a bad block fails as a whole: $bad" bash -c '! printf "\`\`\`blocked-by\n%s\n\`\`\`\n" "$1" | REPO=o/r bash "$2" blockers >/dev/null 2>&1' _ "$bad" "$F"
+done
+
+# 10. link: the blockers become issue dependencies; a missing one is filed once.
+L="$WORK/link"; rm -rf "$L"; mkdir -p "$L/bin" "$L/api"
+cat > "$L/bin/gh" <<'STUB'
+#!/usr/bin/env bash
+# gh api [-X M] PATH [-f k=v]... [--jq E]: answer from $LDIR/api/<METHOD>_<path>, log every call.
+m=GET; path=''; jqx=''
+shift
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -X) m="$2"; shift ;;
+    -f|-F) printf '  %s\n' "$2" >> "$LDIR/calls"; shift ;;
+    --jq) jqx="$2"; shift ;;
+    --paginate) ;;
+    *) path="$1" ;;
+  esac; shift
+done
+printf '%s %s\n' "$m" "$path" >> "$LDIR/calls"
+f="$LDIR/api/${m}_$(printf '%s' "${path%%\?*}" | tr '/' '_')"
+[ -f "$f" ] || exit 1
+if [ -n "$jqx" ]; then jq -r "$jqx" "$f"; else cat "$f"; fi
+STUB
+chmod +x "$L/bin/gh"
+la() { printf '%s' "$3" > "$L/api/${1}_$(printf '%s' "$2" | tr '/' '_')"; }
+linkf() {
+  : > "$WORK/out"; : > "$L/calls"
+  env -i PATH="$L/bin:$PATH" HOME="$WORK" LDIR="$L" REPO=o/mob ISSUE=4 AUTHORS='claude[bot] app[bot]' \
+    GITHUB_OUTPUT="$WORK/out" bash "$F" link > "$WORK/log" 2>&1
+}
+blockbody=$'### Plan\n```blocked-by\n[{"repo":"api","number":7},{"repo":"api","title":"feat: refunds","plan":"POST /refunds"},{"repo":"api","number":8}]\n```'
+la GET /repos/o/mob/issues/4/comments "$(jq -nc --arg b "$blockbody" '[{user:{login:"someone"},body:"```blocked-by\n[{\"repo\":\"api\",\"number\":99}]\n```",html_url:"u0"},
+  {user:{login:"app[bot]"},body:$b,html_url:"https://x/c1"}]')"
+la GET /repos/o/mob/issues/4/dependencies/blocked_by '[{"number":8,"repository_url":"https://api.github.com/repos/o/api"}]'
+la GET search/issues '{"items":[{"number":3,"title":"feat: other"}]}'
+la POST /repos/o/mob/issues/4/comments '{}'
+la GET /repos/o/api/issues/7 '{"id":700}'
+la POST /repos/o/mob/issues/4/dependencies/blocked_by '{}'
+la POST /repos/o/api/issues/7/comments '{}'
+linkf
+expect "link applies each blocker an agent named, skipping one already linked" \
+  test "$(val linked)|$(val missing)|$(val failed)" = 'o/api#7 o/api#8|1|'
+expect "a person's block is not read"                                  bash -c '! grep -q "issues/99" "$1"' _ "$L/calls"
+expect "the links are made by the blocker's id"                        test "$(grep -c '^  issue_id=700$' "$L/calls")" = 1
+expect "a missing blocker is never filed (DODI-00069)"                 bash -c '! grep -qx "POST /repos/o/api/issues" "$1"' _ "$L/calls"
+expect "but listed for a person, with its plan"                        grep -q 'POST /refunds' "$L/calls"
+expect "and the blocker hears where the plan is"                       grep -q 'POST /repos/o/api/issues/7/comments' "$L/calls"
+expect "the missing list carries a marker naming the plan"              grep -q 'missing-blockers https://x/c1' "$L/calls"
+saved=$(cat "$L/api/GET__repos_o_mob_issues_4_comments")
+la GET /repos/o/mob/issues/4/comments "$(jq -c '. + [{user:{login:"app[bot]"},body:"<!-- missing-blockers https://x/c1 -->",html_url:"m"}]' <<<"$saved")"
+linkf
+expect "and is not posted again for the same plan"                     bash -c '! grep -q "POST /repos/o/mob/issues/4/comments" "$1"' _ "$L/calls"
+la GET /repos/o/mob/issues/4/comments "$(jq -c '. + [{user:{login:"app[bot]"},body:"### Plan\nno other repo now",html_url:"c2"}]' <<<"$saved")"
+linkf
+expect "a newer plan with no block links nothing"                      test "$(val linked)|$(val missing)" = '|0'
+la GET /repos/o/mob/issues/4/comments "$(jq -c '. + [{user:{login:"app[bot]"},body:"### Questions for the team\n1. which?",html_url:"c3"}]' <<<"$saved")"
+linkf
+expect "but a questions-only comment leaves the plan standing"         test "$(val linked)" = 'o/api#7 o/api#8'
+la GET /repos/o/mob/issues/4/comments "$saved"
+la GET search/issues '{"items":[{"number":31,"title":"FEAT: Refunds"}]}'
+la GET /repos/o/api/issues/31 '{"id":3100}'
+la POST /repos/o/api/issues/31/comments '{}'
+linkf
+expect "a blocker named by title is found by it and linked"            test "$(val linked)|$(val missing)" = 'o/api#7 o/api#31 o/api#8|0'
+rm "$L/api/POST__repos_o_mob_issues_4_dependencies_blocked_by"
+linkf
+expect "a refused link is reported, not fatal"                         test "$(val failed)" = 'o/api#7 o/api#31'
+la GET search/issues '{"items":[]}'
+la GET /repos/o/api/issues '[{"number":31,"title":"feat: refunds"}]'
+la POST /repos/o/mob/issues/4/dependencies/blocked_by '{}'
+linkf
+expect "an issue search has not indexed yet is found in the newest list" test "$(val linked)|$(val missing)" = 'o/api#7 o/api#31 o/api#8|0'
+rm "$L/api/GET__repos_o_api_issues"
+: > "$WORK/out"; : > "$L/calls"
+env -i PATH="$L/bin:$PATH" HOME="$WORK" LDIR="$L" REPO=o/mob ISSUE=4 AUTHORS='app[bot]' BLOCKER_REPOS='web' \
+  GITHUB_OUTPUT="$WORK/out" bash "$F" link > "$WORK/log" 2>&1
+expect "a repo outside blocker-repos is refused, never linked"         test "$(val linked)|$(val failed)" = '|o/api:not-allowed o/api:not-allowed o/api:not-allowed'
+mv "$L/api/GET_search_issues" "$L/search"
+la POST /repos/o/mob/issues/4/dependencies/blocked_by '{}'
+linkf
+expect "a failed title search is a failure, not a missing issue"       test "$(val missing)|$(val failed)" = '0|o/api:feat: refunds'
+mv "$L/search" "$L/api/GET_search_issues"
+la GET /repos/o/mob/issues/4/comments '[{"user":{"login":"app[bot]"},"body":"```blocked-by\n[{\"repo\":\"x/api\",\"number\":1}]\n```","html_url":"u"}]'
+linkf
+expect "a bad block links nothing"                                     test "$(val failed)" = block
 
 printf '\n%s passed, %s failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

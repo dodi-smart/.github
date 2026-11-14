@@ -1814,10 +1814,26 @@ Each run dispatches at most one issue, and the first rule that holds wins:
    `Plan ready`, as in issue-implement) and whose `Agent mode` is `Autonomous`,
    highest Priority first (Urgent, High, Medium, Low, then unset), then the
    oldest, then the lowest number. Skipped: `agent:no-touch`, an issue carrying
-   `agent:implement` or closed by an open agent PR. issue-implement moves
+   `agent:implement` or closed by an open agent PR, and an issue with an open
+   "blocked by" issue in any repo of the org (GitHub's issue dependencies). When
+   only blocked issues are left, the reason names them. issue-implement moves
    `Triage state` to `Ready for agent` before its agent runs, and to `Blocked`
    when a run opens no PR, so an issue is never started twice until a person
    sets it back to `Plan ready`.
+
+**Dependencies across repos.** When a plan needs work in another repo first,
+triage names it in a ```` ```blocked-by ```` block: the issue there, or a title
+and one-line plan when none is known. A script step after the agent, as the org
+App, links each one as "blocked by". A titled one is found by its exact title;
+one that does not exist is listed in a comment for a person to file, since no
+agent step creates an issue. Each new link leaves the blocker one comment
+pointing at the plan, so the shared work is planned once, where its code lands. The
+issue read runs on an org-wide `issues:read` App token, so a blocker in a repo
+this one's token cannot see still counts. A caller can pass `blocker-repos`
+(repo names) to `issue-triage.yml`: the step then refuses a blocker in any other
+repo and mints its write token for those alone, and it mints none at all when
+the newest plan names no other repo. Link issues by hand the same way;
+the dispatcher reads the link, not the block.
 
 The org App applies the label, because a `GITHUB_TOKEN` label starts no
 workflow. A held run mints only a read-only token, for the App's login; the

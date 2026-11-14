@@ -53,13 +53,15 @@ jobs:
         with:
           selector: light
 
-      # A read-only token, for the App's login that names the agent PRs.
+      # A read-only token, for the App's login that names the agent PRs, and
+      # for the issue read: across the org, so a blocker in another repo counts.
       - id: app
         uses: dodi-smart/.github/actions/app-token@v1
         with:
-          client-id:   ${{ secrets.GH_APP_CLIENT_ID }}
-          private-key: ${{ secrets.GH_APP_PRIVATE_KEY }}
-          permissions: 'issues:read'
+          client-id:        ${{ secrets.GH_APP_CLIENT_ID }}
+          private-key:      ${{ secrets.GH_APP_PRIVATE_KEY }}
+          permissions:      'issues:read'
+          all-repositories: 'true'
 
       - id: next
         uses: dodi-smart/.github/actions/factory@v1
@@ -71,6 +73,7 @@ jobs:
           required-state:      ${{ inputs.required-state }}
           budget-usd:          ${{ vars.FACTORY_BUDGET_USD }}
           app-bot:             ${{ steps.app.outputs.login }}
+          issues-token:        ${{ steps.app.outputs.token }}
 
       # The write token only on the path that labels. The label is in the
       # universal set, so it exists.

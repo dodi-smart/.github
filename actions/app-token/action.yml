@@ -24,6 +24,19 @@ inputs:
       rulesets needs. Narrow it whenever the step only labels, comments or merges.
     default: ''
 
+  all-repositories:
+    description: >-
+      "true" mints for every repository the App is installed on in this org, not
+      only this one. For a read that has to see across repos, such as an issue's
+      blockers in another repo; keep `permissions` read-only when you set it.
+    default: 'false'
+
+  repositories:
+    description: >-
+      Repository names in this org, separated by spaces, minted for along with
+      this one. Narrower than all-repositories; ignored when that is "true".
+    default: ''
+
 outputs:
   token:
     description: 'The installation token, or empty when no App is configured'
@@ -43,8 +56,18 @@ runs:
       shell: bash
       env:
         PERMISSIONS: ${{ inputs.permissions }}
+        ALL:         ${{ inputs.all-repositories }}
+        THIS:        ${{ github.event.repository.name }}
+        MORE:        ${{ inputs.repositories }}
       run: |
         set -euo pipefail
+        # create-github-app-token takes a comma-separated list; empty means all.
+        repos=''
+        if [ "$ALL" != true ]; then
+          read -ra more <<<"$MORE"
+          repos=$(printf '%s\n' "$THIS" "${more[@]}" | sed '/^$/d' | sort -u | paste -sd, -)
+        fi
+        echo "repos=$repos" >> "$GITHUB_OUTPUT"
         for p in contents pull-requests statuses issues checks actions; do
           level=$(tr ' ' '\n' <<<"$PERMISSIONS" | sed -n "s/^$p://p" | head -n 1)
           echo "$p=$level" >> "$GITHUB_OUTPUT"
@@ -59,7 +82,7 @@ runs:
         client-id:    ${{ inputs.client-id }}
         private-key:  ${{ inputs.private-key }}
         owner:        ${{ github.repository_owner }}
-        repositories: ${{ github.event.repository.name }}
+        repositories: ${{ steps.perms.outputs.repos }}
         permission-contents:      ${{ steps.perms.outputs.contents }}
         permission-pull-requests: ${{ steps.perms.outputs.pull-requests }}
         permission-statuses:      ${{ steps.perms.outputs.statuses }}

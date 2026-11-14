@@ -9,7 +9,7 @@ description: Compute the autonomy tier or branch name, push a guarded round, dec
 
 inputs:
   command:
-    description: 'tier | branch | fields | state | push | holdout | decide | sweep | next'
+    description: 'tier | branch | fields | state | push | holdout | decide | sweep | next | link'
     required: true
   args:
     description: 'Positional arguments for tier (mode risk effort) and branch (type number title), newline-separated'
@@ -64,6 +64,18 @@ inputs:
     default: 'Plan ready'
   budget-usd:
     description: "The FACTORY_BUDGET_USD variable: the repo's agent spend this month at which the dispatcher holds. Unset holds (next)"
+    default: ''
+  issues-token:
+    description: >-
+      Token for next's read of the open issues. It must see every repo a
+      blocker may be in, so a blocker this token cannot read still counts: the
+      org App minted with all-repositories and issues:read. Empty uses token
+    default: ''
+  blocker-repos:
+    description: 'Repo names, separated by spaces, a blocker may be in; empty allows the whole org (link)'
+    default: ''
+  authors:
+    description: 'Space-separated logins whose ```blocked-by blocks link reads (link)'
     default: ''
   token:
     description: 'Token for reads'
@@ -128,6 +140,9 @@ runs:
         BUDGET_USD:     ${{ inputs.budget-usd }}
         STATE:          ${{ inputs.triage-state }}
         GH_TOKEN:       ${{ inputs.token }}
+        ISSUES_TOKEN:   ${{ inputs.issues-token }}
+        AUTHORS:        ${{ inputs.authors }}
+        BLOCKER_REPOS:  ${{ inputs.blocker-repos }}
         ACTION_PATH:    ${{ github.action_path }}
       run: |
         set -euo pipefail

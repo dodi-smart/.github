@@ -59,6 +59,13 @@ on:
       issue-number:
         type: string
         default: ""
+      # The repos a cross-repo blocker may be in, as names separated by spaces.
+      # The link step refuses any other, and its write token covers only these,
+      # so an issue author cannot steer a link elsewhere in the org. Empty
+      # allows every repo in the org.
+      blocker-repos:
+        type: string
+        default: ""
     secrets:
       CLAUDE_CODE_OAUTH_TOKEN: { required: true }
       GH_APP_CLIENT_ID:        { required: false }
@@ -392,6 +399,27 @@ jobs:
             a script files exactly what the block says. A person may correct
             the list by posting a new block; the newest one wins.
 
+            ## Work in another repository
+
+            When this plan cannot ship until something exists in another repo
+            of the org (an endpoint, a table, a shared contract), say so under
+              #### Blocked by
+            as ONE fenced block whose info string is `blocked-by`, holding a
+            JSON array. Each entry has `repo` (the repository name) and either
+              number  the issue there that delivers it, when the issue body or
+                      a link names one
+              title   and `plan`, one line, when you know of no such issue
+            A step after you links each entry as "blocked by" on this issue.
+            It finds a titled one by its exact title, and lists any it cannot
+            find for a person to file. You never file one. You cannot read
+            other repos; never guess a number.
+
+            Plan only this repo's side. When the shared work is planned in the
+            other issue, link it and do not restate it: one plan per piece of
+            work, where the code lands. Leave the block out when nothing in
+            another repo is needed. Its links keep the dispatcher off this
+            issue until every blocker closes, so it can stay `Plan ready`.
+
             ## Labels are requests; fields are state
 
             Set `Triage state` and STOP THERE. Do NOT add an `agent:plan` label.
@@ -511,3 +539,41 @@ jobs:
 
           echo "::error title=Triage did not set Triage state::$REPO#$NUM came out of triage with \`Triage state\` unset, so it is not eligible for \`agent:implement\` and no one downstream can act on it. Usual cause: the agent could not resolve issue-field ids. Resolve them from repository(owner,name){ issueFields }, because /orgs/*/issue-fields is 403 for this token."
           exit 1
+
+      # The cross-repo blockers the plan named, applied as GitHub issue
+      # dependencies by a script, not the agent: the agent's token is scoped to
+      # this repo, and the dispatcher skips an issue with an open blocker. A
+      # blocker named by title that does not exist is listed for a person, not
+      # filed (DODI-00069). No App, or no block, links nothing and fails nothing.
+      # Most plans name no other repo: look first, with this repo's token, so
+      # the org-wide write token is minted only when there is a block to link.
+      - id: block
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO:     ${{ github.repository }}
+          NUM:      ${{ inputs.issue-number || github.event.issue.number }}
+        run: |
+          set -euo pipefail
+          has=$(gh api --paginate "/repos/$REPO/issues/$NUM/comments?per_page=100" | jq -s '
+            [add // [] | .[] | select(.user.login | endswith("[bot]"))
+             | select(.body | test("(?m)^#{2,4}\\s+Plan\\s*$|^\\s*```+\\s*blocked-by\\s*$"))]
+            | last // {} | (.body // "") | test("(?m)^\\s*```+\\s*blocked-by\\s*$")') || has=true
+          echo "has=$has" >> "$GITHUB_OUTPUT"
+      - id: org
+        if: steps.block.outputs.has == 'true'
+        uses: dodi-smart/.github/actions/app-token@v1
+        with:
+          client-id:        ${{ secrets.GH_APP_CLIENT_ID }}
+          private-key:      ${{ secrets.GH_APP_PRIVATE_KEY }}
+          permissions:      'issues:write'
+          all-repositories: ${{ inputs.blocker-repos == '' && 'true' || 'false' }}
+          repositories:     ${{ inputs.blocker-repos }}
+      - name: Link cross-repo blockers
+        if: steps.org.outputs.token != ''
+        uses: dodi-smart/.github/actions/factory@v1
+        with:
+          command:       link
+          issue:         ${{ inputs.issue-number || github.event.issue.number }}
+          token:         ${{ steps.org.outputs.token }}
+          authors:       claude[bot] ${{ steps.org.outputs.login }}
+          blocker-repos: ${{ inputs.blocker-repos }}

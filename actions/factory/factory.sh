@@ -16,6 +16,8 @@
 #   factory.sh next     (env, see next())       -> action=dispatch|hold, issue, reason
 #   factory.sh pick     < FACTS                 -> next's decision from facts already read
 #   factory.sh closes   < BODY                  -> the issue number a PR body closes, or nothing
+#   factory.sh blockers < BODY                  -> the newest ```blocked-by block, checked, as JSON
+#   factory.sh link     (env, see link())       -> linked: the cross-repo blockers triage named, applied
 #
 # Outputs go to $GITHUB_OUTPUT as key=value lines, and are echoed for the log.
 set -euo pipefail
@@ -529,7 +531,9 @@ sweep() {
 # facts: {required, cap, ceiling_h, now, budget,
 #         spend:  {usd, runs, unpriced, note}         this month's agent spend (tally)
 #         prs:    [{number, closes, waiting_since}]   waiting_since: ISO 8601, or null
-#         issues: [{number, created, priority, state, mode, labels}]}
+#         issues: [{number, created, priority, state, mode, labels, blocked}]}
+# blocked: the issue's open "blocked by" issues, in any repo of the org
+# (GitHub's issue dependencies). One open blocker keeps it from being picked.
 # budget: FACTORY_BUDGET_USD, null when unset, which holds (DODI-00068).
 # An issue implement already started is no longer `Plan ready` (set_state), so
 # it is never picked twice without a person.
@@ -559,8 +563,11 @@ def hold($r): {action: "hold", reason: $r};
     [$f.issues[]
       | select(.state == $f.required and .mode == "Autonomous"
                and (labelled("agent:no-touch") | not) and (labelled("agent:implement") | not) and (has_pr | not))]
+    | ([.[] | select((.blocked // 0) > 0) | "#\(.number)"]) as $waiting
+    | [.[] | select((.blocked // 0) == 0)]
     | sort_by([(.priority | rank), .created, .number]) | first
-    | if . == null then hold("no open issue is \($f.required), Autonomous and untouched")
+    | if . == null and ($waiting | length) > 0 then hold("\($waiting | join(", ")) \(if ($waiting | length) == 1 then "is" else "are" end) \($f.required) but blocked by an open issue")
+      elif . == null then hold("no open issue is \($f.required), Autonomous and untouched")
       else {action: "dispatch", issue: .number,
             reason: "#\(.number) is \($f.required) and Autonomous, Priority \(.priority // "unset"); WIP \($wip) of \($f.cap); spent \($spent)"} end
   end'
@@ -580,7 +587,8 @@ pick() { emit "$(jq -c "$PICK_JQ")"; }
 #      WAIT_CEILING_H (default 24), REQUIRED_STATE (default Plan ready, as in
 #      issue-implement), APP_BOT (the App's login, `<slug>[bot]`),
 #      BUDGET_USD (the FACTORY_BUDGET_USD variable; unset holds before any read),
-#      NOW (epoch seconds; the clock by default)
+#      NOW (epoch seconds; the clock by default),
+#      ISSUES_TOKEN (for the issue read; it must see every repo a blocker is in)
 #
 # The month's spend is every `Agent run` notice in the repo since the 1st (UTC),
 # read last, since it is the costliest read.
@@ -631,14 +639,17 @@ next() {
   if [ "$n" -ge "$cap" ]; then out wip "$n"; finish "$n agent PRs open: the WIP cap is $cap"; fi
 
   # shellcheck disable=SC2016  # $o/$r/$endCursor are GraphQL variables, not shell
-  issues=$(gh api graphql --paginate -f query='query($o:String!,$r:String!,$endCursor:String){
+  # The issues are read with ISSUES_TOKEN when there is one: a blocker in a repo
+  # the read cannot see must still count, so that token sees the whole org.
+  issues=$(GH_TOKEN="${ISSUES_TOKEN:-${GH_TOKEN:-}}" gh api graphql --paginate -f query='query($o:String!,$r:String!,$endCursor:String){
     repository(owner:$o,name:$r){ issues(states:OPEN, first:100, after:$endCursor){
       pageInfo{ hasNextPage endCursor }
-      nodes{ number createdAt labels(first:50){ nodes{ name } } '"$FIELDS_GQL"'
+      nodes{ number createdAt labels(first:50){ nodes{ name } } issueDependenciesSummary{ blockedBy } '"$FIELDS_GQL"'
         } } } }' \
     -f o="$owner" -f r="$name" \
     --jq "$FIELDS_JQ .data.repository.issues.nodes[] | fields as \$v
           | {number, created: .createdAt, labels: [.labels.nodes[].name],
+             blocked: (.issueDependenciesSummary.blockedBy // 0),
              state: \$v[\"Triage state\"], mode: \$v[\"Agent mode\"], priority: \$v[\"Priority\"]}
           | tojson" 2>/dev/null) \
     || finish "could not read the open issues"
@@ -651,6 +662,122 @@ next() {
      --argjson b "$budget" --argjson s "$spend" \
      --argjson prs "$prs" --argjson issues "$(jq -sc . <<<"$issues")" \
      '{required: $q, cap: $cap, ceiling_h: $c, now: $now, budget: $b, spend: $s, prs: $prs, issues: $issues}' | pick
+}
+
+# ---------------------------------------------------------------------------
+# blockers: the newest ```blocked-by block in BODY, checked and normalised, as
+# one JSON array on stdout. Triage writes it when the plan needs work in
+# another repo first. Each entry names the repo and either the issue there
+# (`number`) or the one to file (`title` and a one-line `plan`):
+#   [{"repo": "api", "number": 12},
+#    {"repo": "api", "title": "feat: refund endpoint", "plan": "POST /refunds"}]
+# Every repo must be in REPO's org: a dependency never leaves it. Nothing is
+# returned when one entry is bad, so a half-read block links nothing.
+#
+# env: REPO
+# ---------------------------------------------------------------------------
+blockers() {
+  local owner="${REPO%%/*}" raw
+  raw=$(awk '/^[ \t]*```+[ \t]*blocked-by[ \t]*$/ {on=1; buf=""; next}
+             on && /^[ \t]*```+[ \t]*$/ {on=0; last=buf; next}
+             on {buf = buf $0 "\n"}
+             END {printf "%s", last}')
+  [ -n "$raw" ] || { echo '[]'; return 0; }
+  # shellcheck disable=SC2016  # $o, $e and the rest are jq variables, not shell
+  jq -ce --arg o "$owner" '
+    def name: if test("/") then (split("/") | if .[0] == $o then .[1] else null end) else . end;
+    def trim: gsub("^\\s+|\\s+$"; "");
+    if type != "array" then error("the block is not a JSON array")
+    elif length > 20 then error("more than 20 blockers")
+    else . end
+    | to_entries | map(.key as $i | .value as $e | "blocker \($i + 1)" as $at
+      | if ($e | type) != "object" or ($e.repo | type) != "string" then error("\($at): no repo") else . end
+      | ($e.repo | name) as $n
+      | (if ($e.title | type) == "string" then $e.title | trim else "" end) as $t
+      | if $n == null then error("\($at): \($e.repo) is outside \($o)")
+        elif ($n | test("^[A-Za-z0-9._-]+$") | not) then error("\($at): \"\($e.repo)\" is not a repository name")
+        elif ($e.number | type) == "number" and $e.number >= 1 and ($e.number | floor) == $e.number
+          then {repo: "\($o)/\($n)", number: $e.number}
+        elif $e.number != null then error("\($at): number is not an issue number")
+        elif $t != "" then {repo: "\($o)/\($n)", title: $t, plan: (($e.plan // "") | tostring)}
+        else error("\($at): neither a number nor a title") end)' <<<"$raw"
+}
+
+# ---------------------------------------------------------------------------
+# link: apply the blockers triage named on ISSUE as GitHub issue dependencies,
+# so the dispatcher, which skips an issue with an open blocker, waits for them.
+# Reads the newest plan an agent login posted, and the ```blocked-by block in it.
+# A blocker named by title is looked up in its repo by exact title, open or
+# closed. One that does not exist is listed in a comment for a person to file:
+# no agent step creates an issue (DODI-00069). Each new link leaves one
+# comment on the blocker pointing at the plan, so the shared work is planned
+# once, where it lands, and linked rather than restated.
+#
+# env: REPO, ISSUE, AUTHORS (space-separated logins whose comments count),
+#      BLOCKER_REPOS (repo names a blocker may be in; empty allows the org),
+#      GH_TOKEN (the action's token: the org App, issues:write on every repo a
+#      blocker may be in)
+# outputs: linked (owner/repo#n ...), missing (how many have no issue yet), failed
+# ---------------------------------------------------------------------------
+link() {
+  local authors="${AUTHORS:-claude[bot]}" comments newest url entries brepo num title plan bid have missing='' linked='' failed=''
+  comments=$(gh api --paginate "/repos/$REPO/issues/$ISSUE/comments?per_page=100" 2>/dev/null | jq -sc 'add // []') \
+    || { echo "::warning title=link::could not read the comments on #$ISSUE"; out linked ''; return 0; }
+  # The newest agent plan decides, block or not: a re-plan that drops the
+  # block links nothing more. A comment with only questions is not a plan.
+  # shellcheck disable=SC2016  # $a is a jq variable, not shell
+  newest=$(jq -c --arg a "$authors" '[.[] | select((.user.login as $l | $a | split(" ") | index($l))
+             and (.body | test("(?m)^#{2,4}\\s+Plan\\s*$|^\\s*```+\\s*blocked-by\\s*$")))]
+           | last // {} | {body: (.body // ""), url: (.html_url // "")}' <<<"$comments")
+  url=$(jq -r .url <<<"$newest")
+  entries=$(jq -r .body <<<"$newest" | blockers) \
+    || { echo "::warning title=link::the newest blocked-by block on #$ISSUE is not valid; nothing linked"; out linked ''; out failed block; return 0; }
+  [ "$entries" != '[]' ] || { out linked ''; out missing 0; return 0; }
+
+  have=$(gh api "/repos/$REPO/issues/$ISSUE/dependencies/blocked_by?per_page=100" \
+           --jq '.[] | "\(.repository_url | sub(".*/repos/"; ""))#\(.number)"' 2>/dev/null || true)
+  while IFS= read -r line; do
+    eval "$line"   # brepo= num= title= plan=, quoted by jq's @sh
+    # Only the repos the caller allows, so an issue cannot steer a link elsewhere.
+    if [ -n "${BLOCKER_REPOS:-}" ] && ! [[ " $BLOCKER_REPOS " == *" ${brepo#*/} "* ]]; then
+      failed="${failed:+$failed }$brepo:not-allowed"; continue
+    fi
+    if [ -z "$num" ]; then
+      # One search call, then an exact, case-blind title match.
+      # A failed search is a failure, never "missing": that would ask a person to
+      # file an issue that may exist. Quotes in the title would end the phrase.
+      num=$(gh api search/issues -X GET -f q="repo:$brepo is:issue in:title \"${title//\"/}\"" 2>/dev/null \
+              | jq -r --arg t "$title" '[.items[] | select((.title | ascii_downcase) == ($t | ascii_downcase)) | .number] | first // empty') \
+        || { failed="${failed:+$failed }$brepo:$title"; continue; }
+      # Search indexes with a delay: an issue filed minutes ago is in the
+      # newest page of the repo's own list before search sees it.
+      [ -n "$num" ] || num=$(gh api "/repos/$brepo/issues?state=all&sort=created&direction=desc&per_page=100" 2>/dev/null \
+              | jq -r --arg t "$title" '[.[] | select(.pull_request == null and (.title | ascii_downcase) == ($t | ascii_downcase)) | .number] | first // empty') || num=''
+      # DODI-00069: no agent step files an issue. A person files it and names
+      # its number, or links it by hand; the comment below lists what is missing.
+      [ -n "$num" ] || { missing="${missing:+$missing$'\n'}- \`$brepo\`: $title. $plan"; continue; }
+    fi
+    if grep -qxF "$brepo#$num" <<<"$have"; then linked="${linked:+$linked }$brepo#$num"; continue; fi
+    bid=$(gh api "/repos/$brepo/issues/$num" --jq .id 2>/dev/null) || { failed="${failed:+$failed }$brepo#$num"; continue; }
+    if gh api -X POST "/repos/$REPO/issues/$ISSUE/dependencies/blocked_by" -F issue_id="$bid" >/dev/null 2>&1; then
+      linked="${linked:+$linked }$brepo#$num"
+      gh api -X POST "/repos/$brepo/issues/$num/comments" \
+        -f body="$REPO#$ISSUE is blocked by this issue and waits for it to close. Plan the shared work here; that issue's plan links to it rather than repeating it: $url" >/dev/null 2>&1 || true
+    else
+      failed="${failed:+$failed }$brepo#$num"
+    fi
+  done < <(jq -r '.[] | @sh "brepo=\(.repo) num=\(.number // "") title=\(.title // "") plan=\(.plan // "")"' <<<"$entries")
+  [ -z "$failed" ] || echo "::warning title=link::could not link $failed to #$ISSUE"
+  # Once per plan: a marker naming the plan's comment keeps a re-run quiet.
+  local mark="<!-- missing-blockers $url -->"
+  # shellcheck disable=SC2016  # literal backticks in the comment text
+  if [ -n "$missing" ] && ! jq -e --arg m "$mark" 'any(.[]; (.body // "") | contains($m))' <<<"$comments" >/dev/null; then
+    gh api -X POST "/repos/$REPO/issues/$ISSUE/comments" -f body="$(printf '%s\n\n%s\n\n%s\n%s' \
+      'The plan needs work in another repo that has no issue yet. File each one there, then link it as "blocked by" here, or name its number in a new `blocked-by` block:' \
+      "$missing" 'Until then nothing holds the dispatcher off this issue.' "$mark")" >/dev/null 2>&1 \
+      || echo "::warning title=link::could not list the missing blockers on #$ISSUE"
+  fi
+  out linked "$linked"; out missing "$(grep -c '^- ' <<<"$missing" || true)"; out failed "$failed"
 }
 
 cmd="${1:-}"; shift || true
@@ -670,11 +797,13 @@ case "$cmd" in
     # setup-stack and deps-intent share.
     out merge-refuse-paths "($hp)|($(cat "$HERE/../setup-stack/lockfiles.re"))" ;;
   decide) decide ;;
+  blockers) blockers ;;
+  link)   link ;;
   sweep)  sweep ;;
   next)   next ;;
   closes) closes_of ;;
   state)  set_state ;;
   pick)   pick ;;
   tally)  tally "${1:-true}" ;;   # test.sh builds pick's spend facts with it
-  *) echo "usage: factory.sh tier|branch|fields|state|push|holdout|decide|sweep|next|pick|tally|closes" >&2; exit 2 ;;
+  *) echo "usage: factory.sh tier|branch|fields|state|push|holdout|decide|sweep|next|pick|tally|closes|blockers|link" >&2; exit 2 ;;
 esac

@@ -49,7 +49,7 @@ on:
           unreviewed upstream publish must not run there. A caller may pass its
           own spec.
         type: string
-        default: "0.9.18" # renovate: datasource=npm depName=react-doctor
+        default: "0.9.22" # renovate: datasource=npm depName=react-doctor
       timeout-minutes:
         description: "Cold npx pulls ~9.4 MB of dist plus oxlint and typescript."
         type: number

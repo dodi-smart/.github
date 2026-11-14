@@ -31,22 +31,22 @@ pick "triage, Risk Low"                         "$OPUS"   ""  STAGE=triage RISK=
 pick "assist"                                   "$OPUS"   ""  STAGE=assist
 
 echo "== implement escalates on the fields =="
-pick "implement Low/Low, Priority Medium"       "$SONNET" ""  STAGE=implement RISK=Low EFFORT=Low PRIORITY=Medium
-pick "implement Medium/Medium, Priority unset"  "$SONNET" ""  STAGE=implement RISK=Medium EFFORT=Medium
-pick "implement Effort High"                    "$OPUS"   ""  STAGE=implement RISK=Low EFFORT=High
-pick "implement Risk High"                      "$OPUS"   ""  STAGE=implement RISK=High EFFORT=Low
-pick "implement Risk Critical"                  "$OPUS"   ""  STAGE=implement RISK=Critical EFFORT=Low
-pick "implement Priority Urgent"                "$OPUS"   ""  STAGE=implement RISK=Low EFFORT=Low PRIORITY=Urgent
-pick "implement with no fields"                 "$OPUS"   ""  STAGE=implement
-pick "implement with Risk unset"                "$OPUS"   ""  STAGE=implement EFFORT=Low
+pick "implement Low/Low, Priority Medium"       "$SONNET" ""   STAGE=implement RISK=Low EFFORT=Low PRIORITY=Medium
+pick "implement Medium/Medium, Priority unset"  "$SONNET" ""   STAGE=implement RISK=Medium EFFORT=Medium
+pick "implement Effort High"                    "$SONNET" ""   STAGE=implement RISK=Low EFFORT=High
+pick "implement Risk High"                      "$SONNET" ""   STAGE=implement RISK=High EFFORT=Low
+pick "implement Risk Critical"                  "$SONNET" ""   STAGE=implement RISK=Critical EFFORT=Low
+pick "implement Priority Urgent"                "$SONNET" ""   STAGE=implement RISK=Low EFFORT=Low PRIORITY=Urgent
+pick "implement with no fields"                 "$SONNET" ""   STAGE=implement
+pick "implement with Risk unset"                "$SONNET" ""   STAGE=implement EFFORT=Low
 
 echo "== fix rounds =="
-pick "fix-ci round 1, Risk Low"                 "$SONNET" 60  STAGE=fix-ci ROUND=1 RISK=Low EFFORT=Low
-pick "fix-ci round 1, lint only"                "$HAIKU"  30  STAGE=fix-ci ROUND=1 RISK=Low EFFORT=Low SIGNALS=lint-only
-pick "fix-ci round 2, lint only"                "$OPUS"   60  STAGE=fix-ci ROUND=2 RISK=Low EFFORT=Low SIGNALS=lint-only
-pick "fix-ci round 1, lint only, Risk High"     "$OPUS"   60  STAGE=fix-ci ROUND=1 RISK=High SIGNALS=lint-only
-pick "fix-ci with no round given is round 1"    "$SONNET" 60  STAGE=fix-ci RISK=Low EFFORT=Low
-pick "fix-review round 1"                       "$OPUS"   60  STAGE=fix-review ROUND=1 RISK=Low
+pick "fix-ci round 1, Risk Low"                 "$SONNET" 60   STAGE=fix-ci ROUND=1 RISK=Low EFFORT=Low
+pick "fix-ci round 1, lint only"                "$SONNET" 60   STAGE=fix-ci ROUND=1 RISK=Low EFFORT=Low SIGNALS=lint-only
+pick "fix-ci round 2, lint only"                "$SONNET" 60   STAGE=fix-ci ROUND=2 RISK=Low EFFORT=Low SIGNALS=lint-only
+pick "fix-ci round 1, lint only, Risk High"     "$SONNET" 60   STAGE=fix-ci ROUND=1 RISK=High SIGNALS=lint-only
+pick "fix-ci with no round given is round 1"    "$SONNET" 60   STAGE=fix-ci RISK=Low EFFORT=Low
+pick "fix-review round 1"                       "$SONNET" 60   STAGE=fix-review ROUND=1 RISK=Low
 
 echo "== review =="
 pick "review, full"                             "$OPUS"   ""  STAGE=review SIGNALS=full
@@ -68,7 +68,7 @@ echo "== overrides =="
 pick "caller override beats policy"             "my-model" "" STAGE=triage MODEL=my-model
 pick "pin beats override"                       "pinned"   "" STAGE=triage MODEL=my-model PIN=pinned
 pick "caller max-turns beats policy"            "$SONNET" 99  STAGE=fleet-sync MAX_TURNS=99
-pick "stage and fields are case-insensitive"    "$OPUS"   ""  STAGE=Implement RISK=low EFFORT=HIGH
+pick "stage and signals are case-insensitive"   "$SONNET" ""  STAGE=Review SIGNALS=SCOPED
 
 echo "== a caller from before stages =="
 pick "no stage, a model: the caller's model"    "claude-sonnet-5" "40" MODEL=claude-sonnet-5 MAX_TURNS=40

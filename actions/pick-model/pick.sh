@@ -39,16 +39,6 @@ for w in $SIGNALS; do
 done
 has() { case "$SIGNALS" in *" $1 "*) return 0 ;; esac; return 1; }
 
-# The fields that make a change expensive to get wrong. Priority only
-# escalates when it is Urgent: triage leaves it unset whenever it cannot
-# justify a level, so unset says nothing.
-stakes() {
-  case "$RISK" in high|critical) echo "Risk $RISK"; return ;; esac
-  [ "$EFFORT" = high ] && { echo "Effort high"; return; }
-  [ "$PRIORITY" = urgent ] && { echo "Priority urgent"; return; }
-  true
-}
-
 model=''; turns=''; route=''
 pick() { model="$1"; turns="$2"; route="$STAGE: $3"; }
 
@@ -65,18 +55,12 @@ case "$STAGE" in
     fi ;;
   triage)     pick "$OPUS" '' "planning reads unfamiliar code and decides" ;;
   assist)     pick "$OPUS" '' "a person's open-ended request" ;;
-  implement)
-    s=$(stakes)
-    if [ -n "$s" ]; then pick "$OPUS" '' "$s"
-    elif [ -z "$RISK" ] || [ -z "$EFFORT" ]; then pick "$OPUS" '' "Risk or Effort unset"
-    else pick "$SONNET" '' "Risk $RISK, Effort $EFFORT"; fi ;;
-  fix-ci)
-    s=$(stakes)
-    if [ "$ROUND" -ge 2 ]; then pick "$OPUS" 60 "round $ROUND, an earlier round did not fix it"
-    elif [ -n "$s" ]; then pick "$OPUS" 60 "$s"
-    elif has lint-only; then pick "$HAIKU" 30 "round 1, only lint or format failed"
-    else pick "$SONNET" 60 "round 1"; fi ;;
-  fix-review) pick "$OPUS" 60 "review findings need judgement" ;;
+  # Planning thinks on Opus; execution runs on Sonnet. Triage writes the plan,
+  # so implement and the fix rounds follow it rather than re-deciding, and the
+  # independent review and the judge keep the stakes in check.
+  implement)  pick "$SONNET" '' "execution follows triage's plan" ;;
+  fix-ci)     pick "$SONNET" 60 "execution, round $ROUND" ;;
+  fix-review) pick "$SONNET" 60 "execution, the review named the findings" ;;
   review)
     if has elevated; then pick "$OPUS" '' "sensitive paths or a sec: label"
     elif has scoped; then pick "$SONNET" '' "scoped to trailered dependency commits"

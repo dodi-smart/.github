@@ -1400,16 +1400,18 @@ that matches wins.
 | Stage | Opus when | Otherwise | Turn cap |
 |---|---|---|---|
 | triage, assist | always | | action default |
-| implement | Effort High, Risk High or Critical, Priority Urgent, or Risk or Effort unset | Sonnet | action default |
-| fix-ci | round 2 or later, Risk High or Critical, Effort High, Priority Urgent | Haiku on round 1 when only `hk check --all` failed, else Sonnet | 30 Haiku, 60 else |
-| fix-review | always | | 60 |
+| implement | never | Sonnet | action default |
+| fix-ci | never | Sonnet | 60 |
+| fix-review | never | Sonnet | 60 |
 | review | full review, sensitive paths or a `sec:` label | Sonnet for a review scoped to trailered commits | action default |
 | deps-verify | CI red, or a major update | Haiku for a green patch or lockfile update, Sonnet for a green minor | 80 red, 40 major or Sonnet, 30 Haiku |
 | fleet-sync | never | Sonnet | 40 |
 
+Planning runs on Opus and execution on Sonnet. Triage writes the plan, so
+implement and the fix rounds follow it on Sonnet at every Risk and Effort;
+the full review and the independent judge are where the stakes are checked.
 Haiku runs only where a deterministic step already knows the answer and the
-next step catches a miss: the automerge gate after deps-verify, and an Opus
-round 2 after a lint fix that did not turn CI green. A full review stays on
+next step catches a miss: the automerge gate after deps-verify. A full review stays on
 Opus even at Risk Low, because on the merge tier it is the last check before
 an unattended merge.
 

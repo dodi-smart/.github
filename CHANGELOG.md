@@ -1,3 +1,14 @@
+## [1.52.0](https://github.com/dodi-smart/.github/compare/v1.51.0...v1.52.0) (2026-11-14)
+
+### ✨ Features
+
+* **factory,issue-triage,dispatch:** hold an issue with an open blocker in any repo, and link the blockers triage names ([#239](https://github.com/dodi-smart/.github/issues/239)) ([b658d9c](https://github.com/dodi-smart/.github/commit/b658d9c2fafb337b4024930ad88538880680bfed))
+
+### ⬆️ Dependencies
+
+* **deps:** update dependency @kilianpaquier/semantic-release-backmerge to v1.9.3 ([#225](https://github.com/dodi-smart/.github/issues/225)) ([4f6bf23](https://github.com/dodi-smart/.github/commit/4f6bf23d05adb3bde9ee3df46af409e742d9ea8e))
+* **deps:** update dependency react-doctor to v0.9.22 ([#226](https://github.com/dodi-smart/.github/issues/226)) ([798c149](https://github.com/dodi-smart/.github/commit/798c1493ff6ef77e571f9999263d6c700de4c92d))
+
 ## [1.51.0](https://github.com/dodi-smart/.github/compare/v1.50.0...v1.51.0) (2026-11-13)
 
 ### ✨ Features

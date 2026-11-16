@@ -1,3 +1,9 @@
+## [1.52.1](https://github.com/dodi-smart/.github/compare/v1.52.0...v1.52.1) (2026-11-16)
+
+### ⬆️ Dependencies
+
+* **deps:** update dependency @semantic-release/github to v12.0.11 ([#241](https://github.com/dodi-smart/.github/issues/241)) ([7e46cc6](https://github.com/dodi-smart/.github/commit/7e46cc6cb45cec49319971a8b4a8fd7906637cc2))
+
 ## [1.52.0](https://github.com/dodi-smart/.github/compare/v1.51.0...v1.52.0) (2026-11-14)
 
 ### ✨ Features

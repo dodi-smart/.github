@@ -28,6 +28,10 @@
 #   prompt before the agent runs. The guard below drops the progress comment
 #   for those cases rather than the run.
 #
+#   Tag mode re-checks the trigger even with a prompt: on issues/labeled the
+#   label must equal `label_trigger` (default `claude`), or the action skips
+#   itself, green. The gate already chose the label, so it is passed through.
+#
 #   claude-code-action sets its own git identity (`claude[bot]`) on the
 #   checkout, over whatever the caller configured earlier. A caller that checks
 #   who authored the agent's commits has to pass the identity it expects as
@@ -207,6 +211,13 @@ inputs:
   github-token:
     description: 'Reads the running workflow file at two refs, for the mismatch check below. Needs contents: read.'
     default: ${{ github.token }}
+  fail-on-self-skip:
+    description: >-
+      Fail the step when claude-code-action skipped itself and reported
+      success, for a caller whose job means nothing without an agent run.
+      An edited or deleted comment is not a self-skip: the action refuses it
+      by design.
+    default: 'false'
 
 # `execution-file` and `conclusion` are EMPTY when the agent never ran, which is
 # not the same as a run that found nothing. claude-code-action skips itself, and
@@ -226,6 +237,9 @@ outputs:
   skipped:
     description: '`workflow-mismatch` when the agent was not started because the running workflow file differs from the default branch; empty otherwise.'
     value: ${{ steps.validate.outputs.skipped }}
+  self-skipped:
+    description: '`true` when claude-code-action was started, left no result and reported success; empty otherwise.'
+    value: ${{ steps.outcome.outputs.self-skipped }}
   why:
     description: 'One line saying why the agent did not start, stopped without a result, or left no valid report. Empty for a run that finished normally.'
     value: ${{ steps.report.outputs.why || steps.outcome.outputs.why || steps.validate.outputs.why }}
@@ -409,6 +423,9 @@ runs:
         bot_name: ${{ inputs.bot-name }}
         bot_id: ${{ inputs.bot-id }}
         branch_prefix: ${{ inputs.branch-prefix }}
+        # See the header. Only with a prompt: in pure tag mode the label is
+        # the request itself, and any label would then start a run.
+        label_trigger: ${{ inputs.prompt != '' && github.event_name == 'issues' && github.event.action == 'labeled' && github.event.label.name || 'claude' }}
         # Never optional. See the header.
         display_report: true
         claude_args: >-
@@ -455,6 +472,8 @@ runs:
         STAGE:          ${{ inputs.stage }}
         MODEL:          ${{ steps.model.outputs.model }}
         ROUTE:          ${{ steps.model.outputs.route }}
+        EVENT:          ${{ github.event_name }}
+        ACTION:         ${{ github.event.action }}
       run: |
         set -euo pipefail
         exe="${EXECUTION_FILE:-$RUNNER_TEMP/claude-execution-output.json}"
@@ -462,8 +481,15 @@ runs:
         clock=''; [ -z "${STARTED:-}" ] || clock=$(( $(date +%s) - STARTED ))
         turns='' cost='?' priced=none wall='' denied='' why=''
         if [ -z "$r" ]; then
-          if [ "$OUTCOME" = success ]; then
-            echo "why=claude-code-action skipped itself and reported success." >> "$GITHUB_OUTPUT"
+          # Not a run, so no notice either way. An edited or deleted comment is
+          # refused ahead of any trigger, by design: its text may not be the
+          # actor's. Anything else is a skip a green job would hide.
+          if [ "$OUTCOME" = success ] && [[ ${EVENT:-} == *comment && ${ACTION:-created} != created ]]; then
+            echo "why=claude-code-action does not act on an ${ACTION} comment." >> "$GITHUB_OUTPUT"
+            exit 0
+          elif [ "$OUTCOME" = success ]; then
+            printf 'why=claude-code-action skipped itself and reported success.\nself-skipped=true\n' >> "$GITHUB_OUTPUT"
+            echo "::warning title=Agent never ran::claude-code-action skipped itself and reported success. Its log names the check that stopped it, usually 'No trigger found'."
             exit 0
           fi
           why="claude-code-action failed before the agent produced a result."
@@ -525,3 +551,11 @@ runs:
           echo "why=$why"
         } >> "$GITHUB_OUTPUT"
         echo "::warning title=No agent report::$why"
+
+    # Last, so the report and the outputs above exist on this path too.
+    - name: Fail a run the agent never reached
+      if: always() && inputs.fail-on-self-skip == 'true' && steps.outcome.outputs.self-skipped == 'true'
+      shell: bash
+      run: |
+        echo "::error title=Agent never ran::claude-code-action skipped itself and reported success, so this job did nothing. Its log names the check that stopped it."
+        exit 1

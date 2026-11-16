@@ -399,7 +399,7 @@ Renovate marker, and a bump releases as `chore(deps)`.
 |---|---|
 | `actions/agent-gate` | Decides whether an agent may run. Evaluates `agent:no-touch` first, always. |
 | `actions/decompose` | Files the confirmed children of an Epic or an Initiative. `decompose.sh parse` is the pure check of the proposal and `run` the writes; `DRY_RUN=1` writes nothing |
-| `actions/run-agent` | Invokes the agent with the org's tool allowlist and reporting defaults, on the model `actions/pick-model` chooses for its `stage`. Does not start it when the running workflow file differs from the default branch, says why a run stopped (`why`), and with `report-file` guarantees a valid report file on every path |
+| `actions/run-agent` | Invokes the agent with the org's tool allowlist and reporting defaults, on the model `actions/pick-model` chooses for its `stage`. Does not start it when the running workflow file differs from the default branch, says why a run stopped (`why`), warns when claude-code-action skipped itself (and fails with `fail-on-self-skip`), and with `report-file` guarantees a valid report file on every path |
 | `actions/pr-facts` | Resolves the PR from a number or a pull_request, workflow_run or status event, and checks it is open, not a fork, and at the expected head |
 | `actions/judge-verdict` | Marks an `agent:judge` request pending, turns a review by the exact judge login on the current head into `judge / verdict` with the org App token, or ends unanswered requests in `error`. Fails closed on anything it cannot trust; `verdict.sh` holds the rules |
 | `actions/request-review` | Applies `agent:review` with the App token when the head commit has no `review / verdict` from the org App yet |

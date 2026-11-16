@@ -1,0 +1,34 @@
+# Take an `agent:*` request label off an issue or pull request. Every workflow
+# that clears its request label goes through here, so the error handling is one
+# edit. Each caller keeps its own `if:`: when a request ends differs per
+# workflow. Thin wrapper; the outcomes and the reasoning are in clear.sh.
+name: Clear request label
+description: Remove an agent:* request label. A label already gone is silent; any other failure warns that the request stays on.
+
+inputs:
+  number:
+    description: >-
+      Issue or pull request number. Several, whitespace-separated, are cleared
+      one by one.
+    required: true
+  label:
+    description: 'The request label, for example agent:review'
+    required: true
+  token:
+    description: >-
+      Token to remove it with. Needs issues: write (or pull-requests: write on
+      a PR). GITHUB_TOKEN activity starts no workflow, so a removal with it
+      cannot loop; an App token emits an `unlabeled` event.
+    default: ${{ github.token }}
+
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      env:
+        GH_TOKEN:    ${{ inputs.token }}
+        REPO:        ${{ github.repository }}
+        NUMBER:      ${{ inputs.number }}
+        LABEL:       ${{ inputs.label }}
+        ACTION_PATH: ${{ github.action_path }}
+      run: '"$ACTION_PATH/clear.sh"'

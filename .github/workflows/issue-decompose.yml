@@ -69,8 +69,7 @@ jobs:
       # A request, never a record: cleared on every path, the refusal included.
       - name: Clear the request label
         if: always()
-        env:
-          GH_TOKEN: ${{ github.token }}
-          REPO:     ${{ github.repository }}
-          NUM:      ${{ github.event.issue.number }}
-        run: gh api -X DELETE "/repos/$REPO/issues/$NUM/labels/agent:decompose" >/dev/null 2>&1 || true
+        uses: dodi-smart/.github/actions/clear-request-label@v1
+        with:
+          number: ${{ github.event.issue.number }}
+          label:  agent:decompose

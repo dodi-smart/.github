@@ -213,6 +213,17 @@ jobs:
           private-key: ${{ secrets.GH_APP_PRIVATE_KEY }}
           permissions: contents:write pull-requests:write issues:write
 
+      # `agent:iterate` is a request: the stops (land, handoff, give-up) take
+      # it off, and a relay takes it off so the re-add in `act` emits a fresh
+      # `labeled` event. Before `act`, which needs the App token too.
+      - name: Clear the request label
+        if: contains(fromJSON('["land","handoff","give-up","relay"]'), steps.route.outputs.action) && steps.app-token.outputs.token != ''
+        uses: dodi-smart/.github/actions/clear-request-label@v1
+        with:
+          number: ${{ steps.decide.outputs.number }}
+          label:  agent:iterate
+          token:  ${{ steps.app-token.outputs.token }}
+
       - id: act
         if: contains(fromJSON('["ready","review","judge","land","handoff","give-up","relay"]'), steps.route.outputs.action)
         env:
@@ -232,7 +243,6 @@ jobs:
             echo "::error title=No App token::GH_APP_CLIENT_ID is not set. A GITHUB_TOKEN label or ready starts no workflow."
             exit 1
           fi
-          unlabel() { gh api -X DELETE "/repos/$REPO/issues/$1/labels/agent:iterate" >/dev/null 2>&1 || true; }
           say()     { gh pr comment "$PR" --repo "$REPO" --body "$1" >/dev/null; }
           case "$ACTION" in
             ready)
@@ -247,13 +257,10 @@ jobs:
               gh pr edit "$PR" --repo "$REPO" --add-label agent:judge
               echo "::notice title=Judge requested::$REASON" ;;
             land)
-              unlabel "$PR"
               [ "$MERGED" = true ] || say "**Not merged.** ${NOT_WHY:-the merge gate made no decision}. A person merges." ;;
             handoff)
-              unlabel "$PR"
               say "Review approved this head. The issue's fields put it on tier \`$TIER\`, which stops here: a person merges." ;;
             give-up)
-              unlabel "$PR"
               say "**Stopping the fix loop.** $REASON. A person takes it from here."
               # A cost breaker says so on the issue too, where the budget is
               # read. It writes no field: cost never demotes a tier. The stop
@@ -263,15 +270,23 @@ jobs:
                   || echo "::warning title=Issue not told::the cost-cap comment on #$ISSUE failed"
               fi ;;
             relay)
-              # A labeled event the agent can run on. The removal starts nothing:
-              # callers listen to `labeled` only.
-              unlabel "$PR"
+              # A labeled event the agent can run on. The removal (the step
+              # above) starts nothing: callers listen to `labeled` only.
               gh pr edit "$PR" --repo "$REPO" --add-label agent:iterate
               echo "::notice title=Relayed::$REASON. The fix round runs on the labeled event." ;;
           esac
 
       # Each conflicted PR gets its own labeled event, which decides `update`
-      # under that PR's own concurrency group.
+      # under that PR's own concurrency group: the label comes off every one
+      # first, so the re-add below is a fresh `labeled` event.
+      - name: Clear the request label on the conflicted PRs
+        if: steps.sweep.outputs.dirty != '' && steps.app-token.outputs.token != ''
+        uses: dodi-smart/.github/actions/clear-request-label@v1
+        with:
+          number: ${{ steps.sweep.outputs.dirty }}
+          label:  agent:iterate
+          token:  ${{ steps.app-token.outputs.token }}
+
       - id: relay-dirty
         if: steps.sweep.outputs.dirty != ''
         env:
@@ -284,9 +299,7 @@ jobs:
             echo "::error title=No App token::GH_APP_CLIENT_ID is not set. A GITHUB_TOKEN label starts no workflow."
             exit 1
           fi
-          unlabel() { gh api -X DELETE "/repos/$REPO/issues/$1/labels/agent:iterate" >/dev/null 2>&1 || true; }
           for pr in $DIRTY; do
-            unlabel "$pr"
             gh pr edit "$pr" --repo "$REPO" --add-label agent:iterate
             echo "::notice title=Relayed::#$pr conflicts with its base; the update runs on the labeled event."
           done
@@ -409,8 +422,13 @@ jobs:
           printf '**Branch not updated:** %s\n\nA person brings it up to date; the loop has stopped (`agent:iterate` removed). [Run log](%s)\n' "$why" "$RUN" > "$RUNNER_TEMP/handoff.md"
           [ -z "$APP_TOKEN" ] || [ -z "$RECORD" ] || printf '\n%s\n' "$RECORD" >> "$RUNNER_TEMP/handoff.md"
           GH_TOKEN="${APP_TOKEN:-$GH_TOKEN}" gh pr comment "$PR" --repo "$REPO" --body-file "$RUNNER_TEMP/handoff.md" || true
-          unlabel() { gh api -X DELETE "/repos/$REPO/issues/$1/labels/agent:iterate" >/dev/null 2>&1 || true; }
-          unlabel "$PR"
+
+      - name: Clear the request label
+        if: ${{ always() && steps.push.outputs.pushed != 'true' }}
+        uses: dodi-smart/.github/actions/clear-request-label@v1
+        with:
+          number: ${{ needs.gate.outputs.number }}
+          label:  agent:iterate
 
   # One fix round. The agent commits; the push step writes the round and
   # refuses a holdout edit, a stranger's commit, the cap, or a moved branch.

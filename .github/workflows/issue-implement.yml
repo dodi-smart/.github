@@ -141,6 +141,8 @@ jobs:
           fi
           # A failed read is not an unplanned issue. Fail rather than refuse.
           if [ "$READ" != "true" ]; then
+            # Still a stop: a label left on cannot be applied again to retry.
+            if [ "$EVENT_ACTION" = labeled ] && [ "$LABEL" = agent:implement ]; then clear_request; fi
             echo "::error title=Fields not read::could not read the issue fields of #$NUM"; exit 1
           fi
           state="$STATE"; mode="$MODE"
@@ -182,7 +184,7 @@ jobs:
           echo "proceed=true" >> "$GITHUB_OUTPUT"
 
       - name: Clear the request label
-        if: steps.check.outputs.clear == 'true'
+        if: always() && steps.check.outputs.clear == 'true'
         uses: dodi-smart/.github/actions/clear-request-label@v1
         with:
           number: ${{ github.event.issue.number }}

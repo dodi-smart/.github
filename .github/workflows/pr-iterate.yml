@@ -217,6 +217,7 @@ jobs:
       # it off, and a relay takes it off so the re-add in `act` emits a fresh
       # `labeled` event. Before `act`, which needs the App token too.
       - name: Clear the request label
+        id: unlabel
         if: contains(fromJSON('["land","handoff","give-up","relay"]'), steps.route.outputs.action) && steps.app-token.outputs.token != ''
         uses: dodi-smart/.github/actions/clear-request-label@v1
         with:
@@ -237,6 +238,7 @@ jobs:
           MERGED:    ${{ steps.land.outputs.merged }}
           NOT_WHY:   ${{ steps.land.outputs.reason }}
           GH_TOKEN:  ${{ steps.app-token.outputs.token }}
+          KEPT:      ${{ steps.unlabel.outputs.kept }}
         run: |
           set -euo pipefail
           if [ -z "$GH_TOKEN" ]; then
@@ -271,7 +273,12 @@ jobs:
               fi ;;
             relay)
               # A labeled event the agent can run on. The removal (the step
-              # above) starts nothing: callers listen to `labeled` only.
+              # above) starts nothing: callers listen to `labeled` only. A label
+              # it could not remove is still on, and re-adding it emits nothing.
+              if [ -n "$KEPT" ]; then
+                echo "::error title=Not relayed::#$PR still carries agent:iterate, so re-adding it starts no fix round. $REASON."
+                exit 1
+              fi
               gh pr edit "$PR" --repo "$REPO" --add-label agent:iterate
               echo "::notice title=Relayed::$REASON. The fix round runs on the labeled event." ;;
           esac
@@ -280,6 +287,7 @@ jobs:
       # under that PR's own concurrency group: the label comes off every one
       # first, so the re-add below is a fresh `labeled` event.
       - name: Clear the request label on the conflicted PRs
+        id: unlabel-dirty
         if: steps.sweep.outputs.dirty != '' && steps.app-token.outputs.token != ''
         uses: dodi-smart/.github/actions/clear-request-label@v1
         with:
@@ -292,6 +300,7 @@ jobs:
         env:
           REPO:     ${{ github.repository }}
           DIRTY:    ${{ steps.sweep.outputs.dirty }}
+          KEPT:     ${{ steps.unlabel-dirty.outputs.kept }}
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
           set -euo pipefail
@@ -300,6 +309,8 @@ jobs:
             exit 1
           fi
           for pr in $DIRTY; do
+            # Still labelled: a re-add emits no event. The warning above says so.
+            case " $KEPT " in *" $pr "*) continue ;; esac
             gh pr edit "$pr" --repo "$REPO" --add-label agent:iterate
             echo "::notice title=Relayed::#$pr conflicts with its base; the update runs on the labeled event."
           done

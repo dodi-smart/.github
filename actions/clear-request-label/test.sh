@@ -31,7 +31,8 @@ chmod +x "$WORK/bin/gh"
 clear() {
   : > "$WORK/calls"
   local n="$1" l="$2"; shift 2
-  env -i PATH="$WORK/bin:$PATH" STUB_CALLS="$WORK/calls" GH_TOKEN=t REPO=o/r \
+  : > "$WORK/gho"
+  env -i PATH="$WORK/bin:$PATH" STUB_CALLS="$WORK/calls" GH_TOKEN=t REPO=o/r GITHUB_OUTPUT="$WORK/gho" \
     NUMBER="$n" LABEL="$l" "$@" "$HERE/clear.sh" > "$WORK/out" 2>&1
   code=$?
 }
@@ -65,6 +66,13 @@ expect "a failure on one does not stop the next"         out 'agent:iterate was 
 expect "and only the failure warns"                      test "$(grep -c '^::warning' "$WORK/out")" -eq 1
 expect "and names its number"                            out '#8 keeps agent:iterate'
 expect "the step passes"                                 test "$code" -eq 0
+expect "and reports the one still labelled"            grep -qx 'kept=8' "$WORK/gho"
+
+clear 7 agent:review
+expect "nothing kept after a removal"                   grep -qx 'kept=' "$WORK/gho"
+
+clear '7 *' agent:review
+expect "a stray * is not expanded to file names"        test "$(grep -c 'is not an issue' "$WORK/out")" -eq 1
 
 clear 7 'needs: a/b c'
 expect "a slash or space in a label stays in one segment" called '/labels/needs%3A%20a%2Fb%20c'

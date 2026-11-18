@@ -17,7 +17,7 @@
 # clean-up that turns a refusal red hides the refusal's own message.
 #
 # Env: LABEL, NUMBER (one or more numbers, whitespace-separated), REPO
-# (owner/name), GH_TOKEN. Also called directly by actions/judge-verdict, whose
+# (owner/name), GH_TOKEN. Writes `kept`, the numbers that still carry it. Also called directly by actions/judge-verdict, whose
 # sweep clears many pull requests from inside a loop.
 set -uo pipefail
 
@@ -25,6 +25,9 @@ set -uo pipefail
 # the name, not the path, so the name goes out as one percent-encoded segment.
 enc=$(jq -rn --arg l "$LABEL" '$l|@uri')
 
+# Split on whitespace only: a stray `*` must not expand to file names.
+set -f
+kept=''
 for n in ${NUMBER:-}; do
   case "$n" in
     ''|*[!0-9]*)
@@ -37,7 +40,11 @@ for n in ${NUMBER:-}; do
     echo "$LABEL was not on #$n"
   else
     err=$(tr '\n' ' ' <<<"$err")
+    kept+="${kept:+ }$n"
     echo "::warning title=$LABEL not removed::#$n keeps $LABEL, so the request stays on and applying it again starts nothing. Remove it by hand before asking again. ${err:-no reason given}"
   fi
 done
+# For a caller that re-adds the label next (a relay): a label still on emits no
+# `labeled` event, so it must not count on one for these.
+[ -z "${GITHUB_OUTPUT:-}" ] || echo "kept=$kept" >> "$GITHUB_OUTPUT"
 exit 0

@@ -578,8 +578,10 @@ exactly one of them, because two sources for one fact disagree within weeks and
 then neither is trusted.
 
 Every `agent:*` label is self-clearing. The workflow removes it when it finishes,
-including when it refuses. If it is still there, the work is genuinely running,
-or the removal failed, which the run reports as a `<label> not removed` warning.
+including when it refuses, through `actions/clear-request-label`. A removal that
+fails is a `<label> not removed` warning in the run. One gap remains: a request
+the gate refuses before the job that clears it, as with `agent:review`, keeps
+its label, so remove it by hand before asking again.
 
 ```
   agent:triage    -> classify, then plan or ask

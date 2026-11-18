@@ -19,10 +19,16 @@ inputs:
       cannot loop; an App token emits an `unlabeled` event.
     default: ${{ github.token }}
 
+outputs:
+  kept:
+    description: 'The numbers that still carry the label, space-separated; empty when every removal worked or found it gone.'
+    value: ${{ steps.clear.outputs.kept }}
+
 runs:
   using: composite
   steps:
-    - shell: bash
+    - id: clear
+      shell: bash
       env:
         GH_TOKEN:    ${{ inputs.token }}
         REPO:        ${{ github.repository }}

@@ -9,7 +9,7 @@
 #     uses: dodi-smart/.github/.github/workflows/supabase-deploy.yml@v1
 #     with:
 #       ref: ${{ needs.release.outputs.tag }}
-#       cli-version: 2.111.0 # renovate: datasource=github-releases depName=supabase/cli
+#       cli-version: 3.2.0 # renovate: datasource=github-releases depName=supabase/cli
 #     secrets:
 #       SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
 #       SUPABASE_DB_PASSWORD:  ${{ secrets.SUPABASE_DB_PASSWORD }}
@@ -43,7 +43,7 @@ on:
       # controls is a version Renovate cannot see, so the CLI upgrades itself
       # (or silently doesn't) with no diff for anyone to review. Mark it in the
       # caller with a renovate regex comment, e.g.
-      #   cli-version: 2.111.0 # renovate: datasource=github-releases depName=supabase/cli
+      #   cli-version: 3.2.0 # renovate: datasource=github-releases depName=supabase/cli
       # so a CLI release opens a normal, revertable PR instead of taking every
       # project's next deploy down at once.
       cli-version:
@@ -165,6 +165,22 @@ jobs:
       - name: Link to Supabase project
         run: supabase link --project-ref "$SUPABASE_PROJECT_ID"
 
+      # CLI 3 points `db push` at the local stack unless it is given `--remote`,
+      # and CLI 2 has no `--remote`; `--linked` works on both but is gone in 4.
+      # So the flag follows the major version the caller pinned.
+      - name: Pick the database target
+        run: |
+          set -euo pipefail
+          major="$(supabase --version | sed -n 's/^v\{0,1\}\([0-9]*\)\..*/\1/p' | head -1)"
+          if [ "${major:-0}" -ge 3 ]; then
+            echo "DB_TARGET=--remote" >> "$GITHUB_ENV"
+          else
+            echo "DB_TARGET=--linked" >> "$GITHUB_ENV"
+          fi
+
+      # Every step below changes the hosted project, which CLI 3 refuses to do
+      # without a terminal unless `--yes` is passed. CLI 2 takes the same flag.
+      # Functions and secrets need no target: they go to the linked project on both.
       - name: Push database migrations
         env:
           SEED: ${{ inputs.seed }}
@@ -175,7 +191,7 @@ jobs:
             flag="--include-seed"
           fi
           # shellcheck disable=SC2086
-          supabase db push --project-ref "$SUPABASE_PROJECT_ID" $flag
+          supabase db push $flag "$DB_TARGET" --yes
 
       # Same guard as the org's own hand-rolled deploy jobs: `functions: true`
       # (the default) only deploys when the directory exists AND holds
@@ -185,7 +201,7 @@ jobs:
         run: |
           set -euo pipefail
           if [ -d "supabase/functions" ] && [ "$(ls -A supabase/functions 2>/dev/null)" ]; then
-            supabase functions deploy --project-ref "$SUPABASE_PROJECT_ID"
+            supabase functions deploy --yes
           else
             echo "supabase/functions is empty or missing; nothing to deploy"
           fi
@@ -218,7 +234,7 @@ jobs:
           secrets_file=$(mktemp "${RUNNER_TEMP:-/tmp}/function-secrets.XXXXXX")
           trap 'rm -f "$secrets_file"' EXIT
           printf '%s\n' "$FUNCTION_SECRETS" > "$secrets_file"
-          supabase secrets set --project-ref "$SUPABASE_PROJECT_ID" --env-file "$secrets_file"
+          supabase secrets set --env-file "$secrets_file" --yes
 
       - name: Say what the health check cannot prove
         if: inputs.health-url != '' && env.HEALTH_WAIT != 'true'

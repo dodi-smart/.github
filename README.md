@@ -216,7 +216,7 @@ jobs:
     uses: dodi-smart/.github/.github/workflows/supabase-deploy.yml@v1
     with:
       ref: ${{ needs.release.outputs.tag }}
-      cli-version: 2.117.0 # renovate: datasource=npm depName=supabase
+      cli-version: 3.2.0 # renovate: datasource=npm depName=supabase
       environment: production
     secrets:
       SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
@@ -243,6 +243,13 @@ review. Pin it in the caller with a Renovate regex-manager comment, as in the
 example above, so a CLI release opens a normal pull request instead of taking
 every project's next deploy down at once, the way an undetected `supabase/cli`
 regression once did.
+
+Both CLI majors work. The job runs `db push` against `--remote` on CLI 3 and
+`--linked` on CLI 2, because CLI 3 points database commands at the local stack
+by default. Every command that changes the hosted project passes `--yes`, which
+CLI 3 requires when there is no terminal. Before a caller moves to CLI 3, it
+renames `[inbucket]` to `[local_smtp]` in `supabase/config.toml` and checks
+`[auth.sms] enable_confirmations`, which CLI 2 applied inverted.
 
 #### Inputs
 
@@ -1318,7 +1325,7 @@ jobs:
     uses: dodi-smart/.github/.github/workflows/supabase-checks.yml@v1
     with:
       # renovate: datasource=npm depName=supabase
-      cli-version: 2.116.0
+      cli-version: 3.2.0
       types-path: src/lib/supabase/database.types.ts
       seed-check: true
       deno-dir: supabase/functions

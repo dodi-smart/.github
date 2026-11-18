@@ -658,3 +658,31 @@ jobs:
           else
             echo "agent:review was not on this PR"
           fi
+
+  # Clears `agent:review` on every labelled run the `review` job did not finish:
+  # a gate refusal (agent:no-touch included), a gate job skipped by its `if:`,
+  # or a cancel. The gate stays read-only; this job holds the one write.
+  release:
+    needs: [gate, review]
+    if: >-
+      always()
+      && github.event.action == 'labeled'
+      && github.event.label.name == 'agent:review'
+      && needs.review.result != 'success'
+      && needs.review.result != 'failure'
+    runs-on: ${{ fromJSON((github.event.repository.private && !github.event.pull_request.head.repo.fork) && '["self-hosted","Linux","light"]' || '"ubuntu-latest"') }}
+    timeout-minutes: 5
+    permissions:
+      pull-requests: write   # to remove the request label, and nothing else
+    steps:
+      - uses: dodi-smart/.github/actions/runner-report@v1
+        with:
+          selector: light
+
+      - uses: dodi-smart/.github/actions/release-request@v1
+        with:
+          owner:  pr-review
+          label:  agent:review
+          number: ${{ github.event.pull_request.number }}
+          author: ${{ github.event.pull_request.user.login }}
+          sender: ${{ github.event.sender.login }}

@@ -1446,9 +1446,14 @@ jobs:
                       bad.append(f + ' passes request-label ' + label + ' and no always() job clears it')
           for f in sorted(set(ELSEWHERE) - {os.path.basename(p) for p in glob.glob('.github/workflows/*.yml')}):
               bad.append(f + ' is listed in ELSEWHERE but no longer exists')
-          for f in ('pr-review.yml', 'deps-verify.yml'):
+          # One owner per request: a swapped owner leaves the label on for good.
+          for f, owner in (('pr-review.yml', 'pr-review'), ('deps-verify.yml', 'deps-verify')):
               if f not in shaped:
                   bad.append(f + ' lost its release job for agent:review')
+              got = [str((s.get('with') or {}).get('owner')) for j in load('.github/workflows/' + f)['jobs'].values()
+                     for s in (j.get('steps') or []) if 'actions/release-request@' in uses(s)]
+              if got != [owner]:
+                  bad.append('%s must release as owner %s, found %s' % (f, owner, got))
           if bad:
               sys.exit('::error::' + ' | '.join(bad))
           print('every request label is cleared on the paths that do not serve it (%d shaped, %d elsewhere)' % (len(shaped), len(ELSEWHERE)))

@@ -105,6 +105,35 @@ EOF
 }
 expect "run-agent turns the repo's hooks off with --settings" hooks_off
 
+# Tag mode compares an issues/labeled label to `label_trigger` (default `claude`),
+# so `agent:triage` skipped itself green. One parse of both files for the wiring.
+self_skip_wired() {
+python3 - "$ROOT" "$WORK" <<'EOF'
+import sys, yaml
+root = sys.argv[1]
+doc = yaml.safe_load(open(root + '/actions/run-agent/action.yml'))
+steps = doc['runs']['steps']
+lt = [s for s in steps if 'claude-code-action@' in str(s.get('uses', ''))][0]['with'].get('label_trigger', '')
+for part in ("inputs.prompt != ''", "github.event.action == 'labeled'", 'github.event.label.name', "|| 'claude'"):
+    assert part in lt, (part, lt)
+assert doc['inputs']['fail-on-self-skip']['default'] == 'false', doc['inputs'].get('fail-on-self-skip')
+fail = steps[-1]
+assert "inputs.fail-on-self-skip == 'true'" in fail['if'] and 'steps.outcome.outputs.self-skipped' in fail['if'], fail
+assert 'exit 1' in fail['run'], fail
+triage = yaml.safe_load(open(root + '/.github/workflows/issue-triage.yml'))['jobs']['triage']['steps']
+agent = [s for s in triage if 'run-agent@' in str(s.get('uses', ''))][0]['with']
+assert agent.get('fail-on-self-skip') == 'true', agent.get('fail-on-self-skip')
+clear = triage[-1]
+assert clear.get('name') == 'Clear the request label', 'the label is cleared last'
+# Not on a cancel: the run that cancelled this one may be the one the label asked for.
+assert clear.get('if') == "always() && (!cancelled() || github.event.action == 'labeled')", clear.get('if')
+# Through the shared action, whose own test covers the 404 and warning paths.
+assert 'actions/clear-request-label@' in clear.get('uses', ''), clear
+assert clear['with'].get('label') == 'agent:triage', clear['with']
+EOF
+}
+expect "a routed label reaches label_trigger, triage fails on a self-skip, and clears agent:triage last" self_skip_wired
+
 # The files the agent writes outside the checkout reach the tool list. That
 # pr-review names both of its own is a Self test check.
 writable_wired() {
@@ -263,6 +292,7 @@ outcome() {
   [ -n "${2:-}" ] && printf '%s' "$2" > "$WORK/exe.json"
   ( cd "$WORK" && env -i PATH="$PATH" HOME="$WORK" RUNNER_TEMP="$WORK/none" OUTCOME="$1" \
       GITHUB_ACTION_PATH="$ROOT/actions/run-agent" STARTED="${STARTED:-}" STAGE=review MODEL=m ROUTE=r PR="${PR:-}" ISSUE="${ISSUE:-}" \
+      EVENT="${EVENT:-issues}" ACTION="${ACTION:-labeled}" \
       EXECUTION_FILE="${2:+$WORK/exe.json}" GITHUB_OUTPUT="$WORK/out" bash "$WORK/outcome.sh" ) > "$WORK/log" 2>&1
 }
 out_why() { sed -n 's/^why=//p' "$WORK/out"; }
@@ -296,8 +326,15 @@ expect "no refusals, no warning" bash -c 'grep -qx "denied=" "$1" && ! grep -q "
 outcome success
 expect "no result after a success is the action skipping itself" grep -q 'skipped itself' <(out_why)
 expect "which is not a run, so it writes no notice" bash -c '! grep -q "title=Agent run" "$1"' _ "$WORK/log"
+expect "but says so in a warning, so the green job does not read as a run" grep -q '::warning title=Agent never ran::' "$WORK/log"
+expect "and marks it for the caller" grep -qx 'self-skipped=true' "$WORK/out"
+EVENT=issue_comment ACTION=edited outcome success
+expect "an edited comment is refused by design, not a self-skip" bash -c '! grep -q "^self-skipped=" "$1" && ! grep -q "never ran" "$2"' _ "$WORK/out" "$WORK/log"
+EVENT=issue_comment ACTION=created outcome success
+expect "a new comment that skipped is one" grep -qx 'self-skipped=true' "$WORK/out"
 STARTED=$(( $(date +%s) - 7 )) outcome failure
 expect "no result after a failure says the action failed first" grep -q 'failed before the agent produced a result' <(out_why)
+expect "a failure is not a self-skip" bash -c '! grep -q "^self-skipped=" "$1"' _ "$WORK/out"
 expect "and is still a run: counted unpriced, timed by the step's clock" \
   grep -Eq '::notice title=Agent run::stage=review model=m turns=\? cost=\? priced=none wall=(7|8) \(r\)$' "$WORK/log"
 expect "with cost ? and priced none in the outputs" bash -c 'grep -qx "cost=?" "$1" && grep -qx "priced=none" "$1"' _ "$WORK/out"

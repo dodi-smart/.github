@@ -880,3 +880,33 @@ jobs:
       # Red after the comment is up; publish decides when.
       - if: ${{ !cancelled() && steps.publish.outputs.failed == 'true' }}
         run: exit 1
+
+  # Clears `agent:review` after every labelled run that is deps-verify's to
+  # serve, whatever the gate decided. A run stopped because PR Checks has not
+  # finished loses nothing: that run's completion verifies without the label.
+  # The `if:` drops only what release.sh would leave (a person's PR, a bot's
+  # request) and tests the SHAPE of a bot login, so it stays looser than it.
+  release:
+    needs: [gate, verify]
+    if: >-
+      always()
+      && github.event.action == 'labeled'
+      && github.event.label.name == 'agent:review'
+      && endsWith(github.event.pull_request.user.login, '[bot]')
+      && !endsWith(github.event.sender.login, '[bot]')
+    runs-on: ${{ fromJSON((github.event.repository.private && !github.event.pull_request.head.repo.fork) && '["self-hosted","Linux","light"]' || '"ubuntu-latest"') }}
+    timeout-minutes: 5
+    permissions:
+      pull-requests: write   # to remove the request label, and nothing else
+    steps:
+      - uses: dodi-smart/.github/actions/runner-report@v1
+        with:
+          selector: light
+
+      - uses: dodi-smart/.github/actions/release-request@v1
+        with:
+          owner:  deps-verify
+          label:  agent:review
+          number: ${{ github.event.pull_request.number }}
+          author: ${{ github.event.pull_request.user.login }}
+          sender: ${{ github.event.sender.login }}

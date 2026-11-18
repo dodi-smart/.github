@@ -1394,6 +1394,71 @@ jobs:
           print('agent gates filter on the payload, report their selector and check agent:no-touch first')
           PY
 
+      # A request label left on a refused or unserved request makes asking
+      # again do nothing. Every workflow passing `request-label:` clears it
+      # from an `always()` job through actions/release-request, keyed on the
+      # labelled event and never on `proceed`. The others are listed with the
+      # reason; an entry that stops being true is an error, so the list shrinks.
+      - name: Every request label is cleared on the paths that do not serve it
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import glob, os, re, sys
+          from lib import load, uses, conjuncts
+          ELSEWHERE = {
+              'issue-implement.yml': "clears in the gate's check step on every stop, and its gate if: never skips the labelled request",
+              'issue-decompose.yml': 'clears in an always() step of its only job',
+              'issue-triage.yml':    'not yet: a refused triage request keeps its label',
+              'pr-iterate.yml':      'exempt: agent:iterate is loop state the App removes and re-adds; a refusal must not end the loop',
+          }
+          bad, shaped = [], set()
+          for path in sorted(glob.glob('.github/workflows/*.yml')):
+              f = os.path.basename(path)
+              jobs = load(path)['jobs']
+              labels = {str((s.get('with') or {}).get('request-label', '')) for j in jobs.values() for s in (j.get('steps') or [])
+                        if 'actions/agent-gate@' in uses(s)} - {''}
+              for label in sorted(labels):
+                  ok = False
+                  for jid, job in jobs.items():
+                      if not any('actions/release-request@' in uses(s) and (s.get('with') or {}).get('label') == label
+                                 for s in (job.get('steps') or [])):
+                          continue
+                      terms, where = conjuncts(job.get('if', '')), '%s: job %s' % (f, jid)
+                      if 'always()' not in terms:
+                          bad.append(where + ' clears ' + label + ' but is not always(), so a skipped or failed gate skips it')
+                      if "github.event.label.name == '%s'" % label not in terms or "github.event.action == 'labeled'" not in terms:
+                          bad.append(where + ' does not key on the labelled event for ' + label)
+                      if re.search(r'proceed', str(job.get('if', ''))):
+                          bad.append(where + ' depends on proceed, which is false on exactly the path it exists for')
+                      if 'gate' not in (job.get('needs') or []):
+                          bad.append(where + ' does not wait for the gate')
+                      if (job.get('permissions') or {}) not in ({'pull-requests': 'write'}, {'issues': 'write'}):
+                          bad.append(where + ' holds more than the one write it needs: %r' % job.get('permissions'))
+                      ok = True
+                  gp = (jobs.get('gate') or {}).get('permissions') or {}
+                  if ok and any(v == 'write' for k, v in gp.items() if k in ('issues', 'pull-requests')):
+                      bad.append(f + ': the gate gained a label write; the release job holds it')
+                  if ok:
+                      shaped.add(f)
+                      if f in ELSEWHERE:
+                          bad.append(f + ' clears ' + label + ' from a release job now; drop it from ELSEWHERE')
+                  elif f not in ELSEWHERE:
+                      bad.append(f + ' passes request-label ' + label + ' and no always() job clears it')
+          for f in sorted(set(ELSEWHERE) - {os.path.basename(p) for p in glob.glob('.github/workflows/*.yml')}):
+              bad.append(f + ' is listed in ELSEWHERE but no longer exists')
+          # One owner per request: a swapped owner leaves the label on for good.
+          for f, owner in (('pr-review.yml', 'pr-review'), ('deps-verify.yml', 'deps-verify')):
+              if f not in shaped:
+                  bad.append(f + ' lost its release job for agent:review')
+              got = [str((s.get('with') or {}).get('owner')) for j in load('.github/workflows/' + f)['jobs'].values()
+                     for s in (j.get('steps') or []) if 'actions/release-request@' in uses(s)]
+              if got != [owner]:
+                  bad.append('%s must release as owner %s, found %s' % (f, owner, got))
+          if bad:
+              sys.exit('::error::' + ' | '.join(bad))
+          print('every request label is cleared on the paths that do not serve it (%d shaped, %d elsewhere)' % (len(shaped), len(ELSEWHERE)))
+          PY
+
       # Every unattended merge goes through actions/merge-gate, so its rules
       # exist once. `gh pr merge` anywhere else is a second gate. deps-automerge
       # runs no agent, and the preset still labels the update kinds the gate
@@ -1492,8 +1557,13 @@ jobs:
           src = open('.github/workflows/deps-verify.yml').read()
           jobs = yaml.safe_load(src)['jobs']
           bad = []
-          if sorted(jobs) != ['gate', 'verify']:
-              bad.append('deps-verify must have exactly the gate and verify jobs, found %s: a third job is how a waiting job comes back' % sorted(jobs))
+          if sorted(jobs) != ['gate', 'release', 'verify']:
+              bad.append('deps-verify must have exactly the gate, verify and release jobs, found %s: another job is how a waiting job comes back' % sorted(jobs))
+          # release only clears the request label: two fixed steps, no checkout, no wait.
+          rel = jobs.get('release') or {}
+          kinds = [str(s.get('uses', '')).split('@')[0] for s in rel.get('steps', [])]
+          if kinds != ['dodi-smart/.github/actions/runner-report', 'dodi-smart/.github/actions/release-request'] or int(rel.get('timeout-minutes', 99)) > 5:
+              bad.append('the release job must be runner-report and release-request, within 5 minutes, found %s' % kinds)
           if 'sleep ' in src:
               bad.append('deps-verify must not sleep: it reads a finished pr-checks run, it never polls one')
           gate, verify = jobs.get('gate') or {}, jobs.get('verify') or {}

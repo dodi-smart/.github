@@ -92,12 +92,12 @@ for v in 'GH_TOKEN: +\$\{\{ inputs\.token \}\}' 'NUMBER: +\$\{\{ inputs\.number 
 done
 
 # A tripwire, not enforcement: no workflow or action spells out an `agent:*`
-# label removal by hand. A second copy is how the error handling drifted to
+# label removal by hand (a test's fake gh log is not one). A second copy is how the error handling drifted to
 # `|| true`. A label held in a variable is not caught. judge-verdict calls clear.sh directly, from inside its sweep loop.
 ROOT="$(cd "$HERE/../.." && pwd)"
 hand=$(grep -nE -- "--remove-label[ =]*['\"]?agent:|labels/(agent:|agent%3A)" \
          "$ROOT"/.github/workflows/*.yml "$ROOT"/actions/*/*.sh "$ROOT"/actions/*/action.yml 2>/dev/null |
-       grep -v -e "/clear-request-label/" | tr "\n" " " || true)
+       grep -v -e "/clear-request-label/" -e "/test.sh:" | tr "\n" " " || true)
 expect "no request label is removed outside this action${hand:+: $hand}" test -z "$hand"
 expect "judge-verdict clears through clear.sh" \
   grep -qF '/../clear-request-label/clear.sh"' "$ROOT/actions/judge-verdict/verdict.sh"

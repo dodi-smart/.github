@@ -253,6 +253,9 @@ jobs:
           # Live progress comment, so a run in flight is visible. Silence reads
           # the same whether the job is working or broken.
           track-progress: 'true'
+          # An issue triaged before keeps its old state, so the check below
+          # cannot tell a skipped run from a finished one. This can.
+          fail-on-self-skip: 'true'
           prompt: |
             Triage issue #${{ inputs.issue-number || github.event.issue.number }} in ${{ github.repository }}.
             Mode: ${{ needs.gate.outputs.mode }}
@@ -486,10 +489,9 @@ jobs:
 
             ## Finally
 
-            Remove the `agent:triage` label if it is present. It means "triage
-            requested / in progress"; leaving it on makes a finished issue look
-            like it is still being worked. Do NOT add it yourself. It is an
-            input, not a record of what you did.
+            Leave the `agent:triage` label alone. A step after you removes it
+            on every path. Do NOT add it yourself. It is an input, not a
+            record of what you did.
 
             Keep the comment tight. No preamble, no restating the issue back.
 
@@ -501,7 +503,7 @@ jobs:
       # The read is repo-scoped on purpose. It must use the same token the agent
       # had, or it would pass where the agent failed. No `if:`, so it runs only
       # when the agent step succeeded, which is the one case where a green job
-      # would otherwise mislead.
+      # would otherwise mislead. A self-skip already failed in run-agent.
       - name: Verify triage recorded its state
         env:
           GH_TOKEN: ${{ github.token }}
@@ -577,3 +579,18 @@ jobs:
           token:         ${{ steps.org.outputs.token }}
           authors:       claude[bot] ${{ steps.org.outputs.login }}
           blocker-repos: ${{ inputs.blocker-repos }}
+
+      # `agent:triage` is a REQUEST, never a record, so it goes on every path:
+      # an agent that never ran or failed cannot remove it, and a label left on
+      # cannot be applied again, which is the only way to ask twice. Removing
+      # it with github.token cannot loop, because GitHub starts no workflow run
+      # from GITHUB_TOKEN activity. A cancelled run clears it only if the label
+      # started it: `cancel-in-progress` may have handed the issue to a newer
+      # run that the label requested, while a timeout or a manual cancel of a
+      # labeled run must still free the request.
+      - name: Clear the request label
+        if: always() && (!cancelled() || github.event.action == 'labeled')
+        uses: dodi-smart/.github/actions/clear-request-label@v1
+        with:
+          number: ${{ inputs.issue-number || github.event.issue.number }}
+          label:  agent:triage

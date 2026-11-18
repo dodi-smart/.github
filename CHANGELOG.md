@@ -1,3 +1,9 @@
+## [1.52.2](https://github.com/dodi-smart/.github/compare/v1.52.1...v1.52.2) (2026-11-18)
+
+### 🐛 Bug Fixes
+
+* **run-agent,issue-triage:** run triage on the agent:triage label, and fail when the agent never ran ([#243](https://github.com/dodi-smart/.github/issues/243)) ([20a8d07](https://github.com/dodi-smart/.github/commit/20a8d074d2f53760b902b90e5b5c58251df23800)), closes [#242](https://github.com/dodi-smart/.github/issues/242)
+
 ## [1.52.1](https://github.com/dodi-smart/.github/compare/v1.52.0...v1.52.1) (2026-11-16)
 
 ### ⬆️ Dependencies

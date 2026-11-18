@@ -127,25 +127,12 @@ clear = triage[-1]
 assert clear.get('name') == 'Clear the request label', 'the label is cleared last'
 # Not on a cancel: the run that cancelled this one may be the one the label asked for.
 assert clear.get('if') == "always() && (!cancelled() || github.event.action == 'labeled')", clear.get('if')
-assert 'agent%3Atriage' in clear['run'], clear['run']
-open(sys.argv[2] + '/clear.sh', 'w').write(clear['run'])
+# Through the shared action, whose own test covers the 404 and warning paths.
+assert 'actions/clear-request-label@' in clear.get('uses', ''), clear
+assert clear['with'].get('label') == 'agent:triage', clear['with']
 EOF
 }
 expect "a routed label reaches label_trigger, triage fails on a self-skip, and clears agent:triage last" self_skip_wired
-
-# The clear step, run for real: a 404 is a label that was not there, anything
-# else leaves the request on and says so.
-clear() {
-  mkdir -p "$WORK/cbin"
-  printf '#!/bin/sh\n%s\n' "$1" > "$WORK/cbin/gh"; chmod +x "$WORK/cbin/gh"
-  ( env -i PATH="$WORK/cbin:$PATH" REPO=o/r NUM=7 bash -e "$WORK/clear.sh" ) > "$WORK/log" 2>&1
-}
-clear 'exit 0'
-expect "a removed label is quiet" bash -c '! grep -q warning "$1"' _ "$WORK/log"
-clear 'echo "gh: Label does not exist (HTTP 404)" >&2; exit 1'
-expect "an absent label is not a warning" bash -c '! grep -q warning "$1"' _ "$WORK/log"
-clear 'echo "gh: Resource not accessible by integration (HTTP 403)" >&2; exit 1'
-expect "any other failure warns that the request stays on" grep -q '::warning title=agent:triage not removed::#7 keeps agent:triage.*HTTP 403' "$WORK/log"
 
 # The files the agent writes outside the checkout reach the tool list. That
 # pr-review names both of its own is a Self test check.

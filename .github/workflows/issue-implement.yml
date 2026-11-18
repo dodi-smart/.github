@@ -131,8 +131,9 @@ jobs:
         run: |
           set -euo pipefail
           # Request labels self-clear on every stop, so a stopped request never
-          # looks like work in flight (or holds the dispatcher's WIP slot).
-          clear_request() { gh issue edit "$NUM" --repo "$REPO" --remove-label 'agent:implement' 2>/dev/null || true; }
+          # looks like work in flight (or holds the dispatcher's WIP slot). The
+          # next step removes it when this one says so.
+          clear_request() { echo "clear=true" >> "$GITHUB_OUTPUT"; }
           if [ "$PROCEED" != "true" ]; then
             echo "proceed=false" >> "$GITHUB_OUTPUT"
             if [ "$EVENT_ACTION" = labeled ] && [ "$LABEL" = agent:implement ]; then clear_request; fi
@@ -140,6 +141,8 @@ jobs:
           fi
           # A failed read is not an unplanned issue. Fail rather than refuse.
           if [ "$READ" != "true" ]; then
+            # Still a stop: a label left on cannot be applied again to retry.
+            if [ "$EVENT_ACTION" = labeled ] && [ "$LABEL" = agent:implement ]; then clear_request; fi
             echo "::error title=Fields not read::could not read the issue fields of #$NUM"; exit 1
           fi
           state="$STATE"; mode="$MODE"
@@ -179,6 +182,13 @@ jobs:
           esac
 
           echo "proceed=true" >> "$GITHUB_OUTPUT"
+
+      - name: Clear the request label
+        if: always() && steps.check.outputs.clear == 'true'
+        uses: dodi-smart/.github/actions/clear-request-label@v1
+        with:
+          number: ${{ github.event.issue.number }}
+          label:  agent:implement
 
       # The org App token, narrowed to issues. Its login is run-agent's
       # allowed-bots when the App asked (the dispatcher); any other bot actor
@@ -441,7 +451,7 @@ jobs:
           triage-state: Blocked
           token:        ${{ steps.app-token.outputs.token }}
 
-      # Report on the issue, and clear the request label on every path.
+      # Report on the issue, then clear the request label, on every path.
       - if: ${{ always() }}
         env:
           URL:     ${{ steps.open.outputs.url }}
@@ -464,4 +474,10 @@ jobs:
             [ -z "$APP_TOKEN" ] || [ -z "$RECORD" ] || body="$body"$'\n\n'"$RECORD"
             GH_TOKEN="${APP_TOKEN:-$GH_TOKEN}" gh issue comment "$NUM" --repo "$REPO" --body "$body" || true
           fi
-          gh issue edit "$NUM" --repo "$REPO" --remove-label 'agent:implement' >/dev/null 2>&1 || true
+
+      - name: Clear the request label
+        if: ${{ always() }}
+        uses: dodi-smart/.github/actions/clear-request-label@v1
+        with:
+          number: ${{ github.event.issue.number }}
+          label:  agent:implement

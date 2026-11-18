@@ -645,19 +645,10 @@ jobs:
       # starts no workflow run from GITHUB_TOKEN activity.
       - name: Clear the request label
         if: always()
-        env:
-          GH_TOKEN: ${{ github.token }}
-          REPO:     ${{ github.repository }}
-          PR:       ${{ github.event.pull_request.number }}
-        run: |
-          set -euo pipefail
-          # Percent-encoded: the colon is part of the label name, not a path
-          # separator, and it reaches the API as a single segment either way.
-          if gh api -X DELETE "/repos/$REPO/issues/$PR/labels/agent%3Areview" --silent 2>/dev/null; then
-            echo "removed agent:review, apply it again to request another pass"
-          else
-            echo "agent:review was not on this PR"
-          fi
+        uses: dodi-smart/.github/actions/clear-request-label@v1
+        with:
+          number: ${{ github.event.pull_request.number }}
+          label:  agent:review
 
   # Clears `agent:review` on every labelled run the `review` job did not finish:
   # a gate refusal (agent:no-touch included), a gate job skipped by its `if:`,

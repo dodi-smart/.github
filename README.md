@@ -404,6 +404,7 @@ Renovate marker, and a bump releases as `chore(deps)`.
 | `actions/judge-verdict` | Marks an `agent:judge` request pending, turns a review by the exact judge login on the current head into `judge / verdict` with the org App token, or ends unanswered requests in `error`. Fails closed on anything it cannot trust; `verdict.sh` holds the rules |
 | `actions/release-request` | Removes a request label from a `release` job that runs on every labelled event, if this workflow owns the request (a person's `agent:review` on a dependency bot's PR is deps-verify's, every other one pr-review's). A 404 is silent; any other failure warns. Never fails the step |
 | `actions/request-review` | Applies `agent:review` with the App token when the head commit has no `review / verdict` from the org App yet |
+| `actions/clear-request-label` | Removes an `agent:*` request label from one or more issues or PRs. A label already gone is silent; any other failure is a `::warning` that the request stays on. Never fails the step. The one way a workflow clears its request label |
 | `actions/merge-gate` | The one unattended merge: resolves the PR, runs `agent-gate`, decides by policy (`deps`, `factory`, `backmerge`, `hotfix` or `standards-sync`) from labels, the required check, `review / verdict` (only the org App's counts), Renovate's release-age status, mergeability, the base branch, commit authors, for a back-merge the head commit's parents, for a security patch `target-guard`'s verdict, and for a standards sync `standards / verify` and `standards / render`, and merges with the App token (a dependency PR by rebase, an agent PR, a security patch and a standards sync by squash, a back-merge by merge commit). A conflicted Renovate PR gets its rebase box ticked instead; a conflicted agent PR waits for the fix loop. For `hotfix` it takes target-guard's verdict from `guard.sh verdict`, which prints it without failing. When the policy needs a review the head does not have, it applies `agent:review` through `request-review` |
 | `actions/push-round` | Checks an agent's commits on a PR branch, regenerates lockfiles, and pushes them as one trailered commit with the App token, or refuses with a reason; its merge mode pushes the update job's merge of the base. Every round, round 0 included, passes `guard.sh`, which refuses a deleted, skipped or loosened test, a deleted snapshot, and any edit to a workflow, the merge gate or lint, test or CI config |
 | `actions/app-token` | Mints the org App token for this repo, optionally narrowed; empty when no App is configured. Also outputs the App's `app-slug` and its `login` (`<slug>[bot]`), the creator of the statuses it posts |
@@ -578,7 +579,10 @@ exactly one of them, because two sources for one fact disagree within weeks and
 then neither is trusted.
 
 Every `agent:*` label is self-clearing. The workflow removes it when it finishes,
-including when it refuses. If it is still there, the work is genuinely running.
+including when it refuses, through `actions/clear-request-label`. A removal that
+fails is a `<label> not removed` warning in the run. One gap remains: a request
+the gate refuses before the job that clears it, as with `agent:review`, keeps
+its label, so remove it by hand before asking again.
 
 ```
   agent:triage    -> classify, then plan or ask

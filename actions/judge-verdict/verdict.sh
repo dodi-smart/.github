@@ -109,12 +109,11 @@ post() { # sha state description [target]
   [ -n "${4:-}" ] && args+=(-f "target_url=$4")
   gh api "/repos/$REPO/statuses/$1" "${args[@]}" >/dev/null
 }
-# A failed removal leaves the request open, so the next review or sweep tries
-# again. Say so instead of hiding it.
+# Through clear-request-label's script, which this checkout of the repo holds
+# beside this action: a label already gone is silent, any other failed removal
+# warns that the request stays on, so the next review or sweep tries again.
 unlabel() {
-  local err
-  err=$(gh api -X DELETE "/repos/$REPO/issues/$1/labels/$LABEL" 2>&1 >/dev/null) ||
-    echo "::warning title=agent:judge not removed::#$1 keeps $LABEL: ${err:-no reason given}"
+  NUMBER="$1" LABEL="$LABEL" "$(dirname "${BASH_SOURCE[0]}")/../clear-request-label/clear.sh"
 }
 
 run() {

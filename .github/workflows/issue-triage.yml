@@ -590,14 +590,7 @@ jobs:
       # labeled run must still free the request.
       - name: Clear the request label
         if: always() && (!cancelled() || github.event.action == 'labeled')
-        env:
-          GH_TOKEN: ${{ github.token }}
-          REPO:     ${{ github.repository }}
-          NUM:      ${{ inputs.issue-number || github.event.issue.number }}
-        run: |
-          # Percent-encoded: the colon is part of the label name. A 404 is a
-          # label that was not there; any other failure leaves the request on.
-          if ! err=$(gh api -X DELETE "/repos/$REPO/issues/$NUM/labels/agent%3Atriage" 2>&1 >/dev/null) \
-             && [[ $err != *"HTTP 404"* ]]; then
-            echo "::warning title=agent:triage not removed::#$NUM keeps agent:triage, so applying it again will not re-run triage: ${err//$'\n'/ }"
-          fi
+        uses: dodi-smart/.github/actions/clear-request-label@v1
+        with:
+          number: ${{ inputs.issue-number || github.event.issue.number }}
+          label:  agent:triage

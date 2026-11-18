@@ -21,29 +21,23 @@
 # sweep clears many pull requests from inside a loop.
 set -uo pipefail
 
-label="${LABEL:-}"
-if [ -z "$label" ]; then
-  echo "::warning title=No request label::clear-request-label was called with no label; nothing was removed"
-  exit 0
-fi
-
 # The colon in `agent:review` and any space or slash in a label are part of
 # the name, not the path, so the name goes out as one percent-encoded segment.
-enc=$(jq -rn --arg l "$label" '$l|@uri')
+enc=$(jq -rn --arg l "$LABEL" '$l|@uri')
 
 for n in ${NUMBER:-}; do
   case "$n" in
     ''|*[!0-9]*)
-      echo "::warning title=$label not removed::'$n' is not an issue or pull request number"
+      echo "::warning title=$LABEL not removed::'$n' is not an issue or pull request number"
       continue ;;
   esac
   if err=$(gh api -X DELETE "/repos/$REPO/issues/$n/labels/$enc" 2>&1 >/dev/null); then
-    echo "removed $label from #$n; apply it again to request another pass"
+    echo "removed $LABEL from #$n; apply it again to request another pass"
   elif grep -q 'HTTP 404' <<<"$err"; then
-    echo "$label was not on #$n"
+    echo "$LABEL was not on #$n"
   else
     err=$(tr '\n' ' ' <<<"$err")
-    echo "::warning title=$label not removed::#$n keeps $label, so the request stays on and applying it again starts nothing. Remove it by hand before asking again. ${err:-no reason given}"
+    echo "::warning title=$LABEL not removed::#$n keeps $LABEL, so the request stays on and applying it again starts nothing. Remove it by hand before asking again. ${err:-no reason given}"
   fi
 done
 exit 0

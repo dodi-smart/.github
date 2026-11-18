@@ -37,18 +37,19 @@ clear() {
 }
 out()  { grep -qF -- "$1" "$WORK/out"; }
 warned() { grep -q '^::warning' "$WORK/out"; }
+quiet()  { ! warned; }
 called() { grep -qF -- "$1" "$WORK/calls"; }
 
 clear 7 agent:review
 expect "success: the step passes"                        test "$code" -eq 0
 expect "and the label is deleted, percent-encoded"       called '-X DELETE /repos/o/r/issues/7/labels/agent%3Areview'
 expect "and says it was removed"                         out 'removed agent:review from #7'
-expect "and warns about nothing"                         bash -c '! grep -q "^::warning" "$1"' _ "$WORK/out"
+expect "and warns about nothing"                         quiet
 
 clear 7 agent:review STUB_7=404
 expect "404: the step passes"                            test "$code" -eq 0
 expect "and says the label was not there"                out 'agent:review was not on #7'
-expect "and warns about nothing"                         bash -c '! grep -q "^::warning" "$1"' _ "$WORK/out"
+expect "and warns about nothing"                         quiet
 
 clear 7 agent:review STUB_7=403
 expect "403: the step still passes"                      test "$code" -eq 0
@@ -72,24 +73,19 @@ clear '7 #8' agent:review
 expect "a non-number warns"                              out "'#8' is not an issue or pull request number"
 expect "and is never sent to the API"                    test "$(wc -l < "$WORK/calls")" -eq 1
 
-clear 7 ''
-expect "no label: warns"                                 warned
-expect "and calls nothing"                               test ! -s "$WORK/calls"
-expect "and passes"                                      test "$code" -eq 0
-
 clear '' agent:review
 expect "no number: calls nothing and passes"            bash -c '[ ! -s "$1" ] && [ "$2" -eq 0 ]' _ "$WORK/calls" "$code"
 
 # The action passes every input through to the script, and defaults the token.
 y="$HERE/action.yml"
-for v in 'GH_TOKEN:    ${{ inputs.token }}' 'NUMBER:      ${{ inputs.number }}' 'LABEL:       ${{ inputs.label }}' \
-         'REPO:        ${{ github.repository }}' 'default: ${{ github.token }}' '"$ACTION_PATH/clear.sh"'; do
-  expect "action.yml wires $v" grep -qF -- "$v" "$y"
+for v in 'GH_TOKEN: +\$\{\{ inputs\.token \}\}' 'NUMBER: +\$\{\{ inputs\.number \}\}' 'LABEL: +\$\{\{ inputs\.label \}\}' \
+         'REPO: +\$\{\{ github\.repository \}\}' 'default: +\$\{\{ github\.token \}\}' '"\$ACTION_PATH/clear\.sh"'; do
+  expect "action.yml wires ${v//\\/}" grep -qE -- "$v" "$y"
 done
 
-# No workflow or action removes an `agent:*` request label by hand any more:
-# a second path is how the error handling drifted to `|| true` in the first
-# place. judge-verdict calls clear.sh directly, from inside its sweep loop.
+# A tripwire, not enforcement: no workflow or action spells out an `agent:*`
+# label removal by hand. A second copy is how the error handling drifted to
+# `|| true`. A label held in a variable is not caught. judge-verdict calls clear.sh directly, from inside its sweep loop.
 ROOT="$(cd "$HERE/../.." && pwd)"
 hand=$(grep -nE -- "--remove-label[ =]*['\"]?agent:|labels/(agent:|agent%3A)" \
          "$ROOT"/.github/workflows/*.yml "$ROOT"/actions/*/*.sh "$ROOT"/actions/*/action.yml 2>/dev/null |

@@ -1,7 +1,5 @@
-# Take an `agent:*` request label off an issue or pull request. Every workflow
-# that clears its request label goes through here, so the error handling is one
-# edit. Each caller keeps its own `if:`: when a request ends differs per
-# workflow. Thin wrapper; the outcomes and the reasoning are in clear.sh.
+# Each caller keeps its own `if:`: when a request ends differs per workflow.
+# The outcomes and the reasoning are in clear.sh.
 name: Clear request label
 description: Remove an agent:* request label. A label already gone is silent; any other failure warns that the request stays on.
 

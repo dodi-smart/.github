@@ -150,6 +150,31 @@ case_ false "reject: app/some-org-app"          '[]' pull_request opened '' agen
 case_ false "only: github-actions[bot]"         '[]' pull_request opened '' agent:review 'github-actions[bot]' false '' '' only true ''
 case_ true  "reject: human"                     '[]' pull_request opened '' agent:review alice false '' '' reject true ''
 
+# `requested` is written before every rule, so a refused request still says it
+# was one, and the caller can clear the label. $1 want, $2 labels, $3 action,
+# $4 label, $5 request-label, $6 author, $7 draft, $8 bots
+req_() {
+  local want="$1" desc="$2"; shift 2
+  export GITHUB_OUTPUT="$TMP/out"; : > "$GITHUB_OUTPUT"
+  LABELS="$1" EVENT=pull_request ACTION="$2" LABEL="$3" REQUEST="$4" AUTHOR="$5" DRAFT="$6" \
+  COMMENT='' COMMANDS='' BOTS="$7" SKIPDRAFT=true FILES='' \
+    bash "$HERE/gate.sh" >"$TMP/log" 2>&1
+  local got mark
+  got=$(grep '^requested=' "$GITHUB_OUTPUT" | tail -1 | cut -d= -f2)
+  if [ "$got" = "$want" ]; then mark="ok  "; pass=$((pass+1))
+  else mark="FAIL"; fail=$((fail+1)); fi
+  printf '  %s %-46s requested=%s\n' "$mark" "$desc" "$got"
+}
+echo "== requested =="
+req_ true  "labeled agent:review, proceeds"        '["agent:review"]' labeled agent:review agent:review alice false allow
+req_ true  "labeled agent:review on a draft"       '["agent:review"]' labeled agent:review agent:review alice true allow
+req_ true  "labeled agent:review, no-touch on"     '["agent:no-touch","agent:review"]' labeled agent:review agent:review alice false allow
+req_ true  "labeled agent:review, bot refused"     '["agent:review"]' labeled agent:review agent:review 'claude[bot]' false only
+req_ false "labeled another label"                 '["bug"]' labeled bug agent:review alice false allow
+req_ false "ready_for_review, label present"       '["agent:review"]' ready_for_review '' agent:review alice false allow
+req_ false "labeled, no request-label configured"  '["agent:review"]' labeled agent:review '' alice false allow
+req_ false "label differs in case only"            '["Agent:Review"]' labeled Agent:Review agent:review alice false allow
+
 # The list callers hand to claude-code-action names every dependency login.
 export GITHUB_OUTPUT="$TMP/out"; : > "$GITHUB_OUTPUT"
 LABELS='[]' EVENT=pull_request ACTION=opened LABEL='' REQUEST='' AUTHOR=alice DRAFT=false \

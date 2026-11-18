@@ -98,6 +98,13 @@ outputs:
       other bot) | human. Written before every rule, so it is set even on a run
       the kill switch stopped, and a caller may use the gate to classify alone.
     value: ${{ steps.gate.outputs.author-kind }}
+  requested:
+    description: >-
+      "true" when this event is `labeled` with `request-label`, whatever the
+      gate then decides. Written before every rule, the kill switch included,
+      so a caller can clear a request the gate refused. Case-sensitive, unlike
+      a job-level `if:`.
+    value: ${{ steps.gate.outputs.requested }}
   dependency-bots:
     description: 'Comma-separated dependency-bot logins, for claude-code-action allowed_bots'
     value: ${{ steps.gate.outputs.dependency-bots }}

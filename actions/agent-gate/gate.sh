@@ -67,9 +67,19 @@ author_kind() {
 }
 if [ "${1:-}" = kind ]; then author_kind "${2:-}"; exit 0; fi
 kind="$(author_kind "${AUTHOR:-}")"
+# `requested`: this event applied this workflow's request label. Written before
+# every rule, like author-kind, so a caller can tell a refused request (true,
+# proceed=false) from traffic the gate merely ignored, and clear the label. A
+# label already present emits no `labeled` event, so one left on a refused
+# request makes asking again do nothing. It decides nothing here.
+requested=false
+if [ "${ACTION:-}" = labeled ] && [ -n "${REQUEST:-}" ] && [ "${LABEL:-}" = "$REQUEST" ]; then
+  requested=true
+fi
 {
   echo "author-kind=$kind"
   echo "dependency-bots=$DEPENDENCY_BOTS"
+  echo "requested=$requested"
 } >> "$GITHUB_OUTPUT"
 
 # ------------------------------------------------------------------

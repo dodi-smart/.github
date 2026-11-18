@@ -1,3 +1,9 @@
+## [1.52.3](https://github.com/dodi-smart/.github/compare/v1.52.2...v1.52.3) (2026-11-18)
+
+### 🐛 Bug Fixes
+
+* **pr-review,deps-verify:** clear a refused or unserved agent:review request ([#247](https://github.com/dodi-smart/.github/issues/247)) ([bbe69a4](https://github.com/dodi-smart/.github/commit/bbe69a406280f5ddf3ec62aa1c3455fbcaf2d990)), closes [#246](https://github.com/dodi-smart/.github/issues/246)
+
 ## [1.52.2](https://github.com/dodi-smart/.github/compare/v1.52.1...v1.52.2) (2026-11-18)
 
 ### 🐛 Bug Fixes

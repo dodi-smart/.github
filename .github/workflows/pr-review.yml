@@ -659,12 +659,9 @@ jobs:
             echo "agent:review was not on this PR"
           fi
 
-  # `agent:review` is a REQUEST, never a record, and a label already present
-  # emits no `labeled` event. The review job clears it when it runs. This job
-  # clears it on every path where it did not: the gate refused (agent:no-touch
-  # included, as issue-implement does), the gate job was skipped by its `if:`
-  # (a draft, a bot's PR a person labelled), or the run was cancelled first.
-  # The gate stays read-only; this job holds the one write it needs.
+  # Clears `agent:review` on every labelled run the `review` job did not finish:
+  # a gate refusal (agent:no-touch included), a gate job skipped by its `if:`,
+  # or a cancel. The gate stays read-only; this job holds the one write.
   release:
     needs: [gate, review]
     if: >-
@@ -682,56 +679,10 @@ jobs:
         with:
           selector: light
 
-      # Classification only: `requested` and `author-kind` are written before
-      # every rule, so they are set whatever the gate decides. Nothing here
-      # depends on `proceed`.
-      - id: gate
-        uses: dodi-smart/.github/actions/agent-gate@v1
+      - uses: dodi-smart/.github/actions/release-request@v1
         with:
-          labels:        ${{ toJson(github.event.pull_request.labels.*.name) }}
-          event-name:    ${{ github.event_name }}
-          event-action:  ${{ github.event.action }}
-          label:         ${{ github.event.label.name }}
-          request-label: 'agent:review'
-          author:        ${{ github.event.pull_request.user.login }}
-          draft:         ${{ github.event.pull_request.draft }}
-          bots:          'allow'
-
-      - id: clear
-        name: Clear the request label
-        env:
-          GH_TOKEN:  ${{ github.token }}
-          REPO:      ${{ github.repository }}
-          PR:        ${{ github.event.pull_request.number }}
-          REQUESTED: ${{ steps.gate.outputs.requested }}
-          KIND:      ${{ steps.gate.outputs.author-kind }}
-          SENDER:    ${{ github.event.sender.login }}
-          OWNER:     pr-review
-        run: |
-          set -euo pipefail
-          if [ "$REQUESTED" != true ]; then
-            echo "this event did not apply agent:review, nothing to clear"; exit 0
-          fi
-          # One owner per request, so neither workflow strips the label while
-          # the other is still serving it. A person's request on a dependency
-          # bot's PR is deps-verify's (pr-review's gate skips it); every other
-          # request is pr-review's, a bot's on a dependency PR included.
-          deps=false
-          if [ "$KIND" = dependency ]; then
-            case "$SENDER" in *'[bot]'|app/*) ;; *) deps=true ;; esac
-          fi
-          if [ "$OWNER" = pr-review ] && [ "$deps" = true ]; then
-            echo "deps-verify serves and clears this request"; exit 0
-          fi
-          if [ "$OWNER" = deps-verify ] && [ "$deps" != true ]; then
-            echo "pr-review serves and clears this request"; exit 0
-          fi
-          # Percent-encoded: the colon is part of the label name. Only a 404
-          # (the label is already gone) is silent.
-          if err="$(gh api -X DELETE "/repos/$REPO/issues/$PR/labels/agent%3Areview" --silent 2>&1)"; then
-            echo "removed agent:review, apply it again to request another pass"
-          elif printf '%s' "$err" | grep -q 'HTTP 404'; then
-            echo "agent:review was not on this PR"
-          else
-            echo "::warning title=Request label kept::could not remove agent:review from #$PR, so applying it again starts nothing until someone removes it: $err"
-          fi
+          owner:  pr-review
+          label:  agent:review
+          number: ${{ github.event.pull_request.number }}
+          author: ${{ github.event.pull_request.user.login }}
+          sender: ${{ github.event.sender.login }}

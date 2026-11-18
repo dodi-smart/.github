@@ -1,0 +1,39 @@
+# Clear a request label from a job that runs on every labelled event, whatever
+# the gate decided. The reasoning and the owner rule are in release.sh.
+name: Release request label
+description: Remove a request label after a refused, skipped or finished request, if this workflow owns it. A label already gone is silent; any other failure warns.
+
+inputs:
+  owner:
+    description: '`pr-review` or `deps-verify`: which workflow this job belongs to.'
+    required: true
+  label:
+    description: 'The request label, for example agent:review'
+    required: true
+  number:
+    description: 'The pull request number'
+    required: true
+  author:
+    description: "The pull request author's login"
+    required: true
+  sender:
+    description: "The login that applied the label"
+    required: true
+  token:
+    description: 'Removes the label. Needs pull-requests: write. GITHUB_TOKEN activity starts no workflow, so this cannot loop.'
+    default: ${{ github.token }}
+
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      env:
+        GH_TOKEN:    ${{ inputs.token }}
+        REPO:        ${{ github.repository }}
+        OWNER:       ${{ inputs.owner }}
+        LABEL:       ${{ inputs.label }}
+        PR:          ${{ inputs.number }}
+        AUTHOR:      ${{ inputs.author }}
+        SENDER:      ${{ inputs.sender }}
+        ACTION_PATH: ${{ github.action_path }}
+      run: '"$ACTION_PATH/release.sh"'

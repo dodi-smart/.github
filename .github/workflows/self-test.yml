@@ -1394,15 +1394,11 @@ jobs:
           print('agent gates filter on the payload, report their selector and check agent:no-touch first')
           PY
 
-      # A request label is a request, never a record, and a label already
-      # present emits no `labeled` event. One left on a refused or unserved
-      # request makes asking again do nothing: 17 closed PRs still carried
-      # `agent:review` when pr-review cleared it only in a job the gate could
-      # skip, and deps-verify never cleared it. Every workflow that passes
-      # `request-label:` clears it from an `always()` job keyed on the labelled
-      # event and on agent-gate's `requested`, never on `proceed`. The ones not
-      # yet on that shape are listed with the reason, and an entry that stops
-      # being true is an error, so the list only shrinks.
+      # A request label left on a refused or unserved request makes asking
+      # again do nothing. Every workflow passing `request-label:` clears it
+      # from an `always()` job through actions/release-request, keyed on the
+      # labelled event and never on `proceed`. The others are listed with the
+      # reason; an entry that stops being true is an error, so the list shrinks.
       - name: Every request label is cleared on the paths that do not serve it
         run: |
           set -euo pipefail
@@ -1413,7 +1409,7 @@ jobs:
               'issue-implement.yml': "clears in the gate's check step on every stop, and its gate if: never skips the labelled request",
               'issue-decompose.yml': 'clears in an always() step of its only job',
               'issue-triage.yml':    'not yet: a refused triage request keeps its label',
-              'pr-iterate.yml':      'not yet: the loop unlabels per decision, never on a gate refusal',
+              'pr-iterate.yml':      'exempt: agent:iterate is loop state the App removes and re-adds; a refusal must not end the loop',
           }
           bad, shaped = [], set()
           for path in sorted(glob.glob('.github/workflows/*.yml')):
@@ -1422,18 +1418,12 @@ jobs:
               labels = {str((s.get('with') or {}).get('request-label', '')) for j in jobs.values() for s in (j.get('steps') or [])
                         if 'actions/agent-gate@' in uses(s)} - {''}
               for label in sorted(labels):
-                  enc = label.replace(':', '%3A')
                   ok = False
                   for jid, job in jobs.items():
-                      if jid == 'gate':
+                      if not any('actions/release-request@' in uses(s) and (s.get('with') or {}).get('label') == label
+                                 for s in (job.get('steps') or [])):
                           continue
-                      terms = conjuncts(job.get('if', ''))
-                      steps = job.get('steps') or []
-                      gate = [s for s in steps if 'actions/agent-gate@' in uses(s) and (s.get('with') or {}).get('request-label') == label]
-                      clear = [s for s in steps if enc in str(s.get('run', '')) or ('labels/' + label) in str(s.get('run', ''))]
-                      if not (gate and clear):
-                          continue
-                      where = '%s: job %s' % (f, jid)
+                      terms, where = conjuncts(job.get('if', '')), '%s: job %s' % (f, jid)
                       if 'always()' not in terms:
                           bad.append(where + ' clears ' + label + ' but is not always(), so a skipped or failed gate skips it')
                       if "github.event.label.name == '%s'" % label not in terms or "github.event.action == 'labeled'" not in terms:
@@ -1442,12 +1432,8 @@ jobs:
                           bad.append(where + ' depends on proceed, which is false on exactly the path it exists for')
                       if 'gate' not in (job.get('needs') or []):
                           bad.append(where + ' does not wait for the gate')
-                      perms = job.get('permissions') or {}
-                      if perms != {'pull-requests': 'write'} and perms != {'issues': 'write'}:
-                          bad.append(where + ' holds more than the one write it needs: %r' % perms)
-                      env = clear[0].get('env') or {}
-                      if 'steps.%s.outputs.requested' % gate[0].get('id') not in str(env.get('REQUESTED', '')):
-                          bad.append(where + ' clears without reading the gate output requested')
+                      if (job.get('permissions') or {}) not in ({'pull-requests': 'write'}, {'issues': 'write'}):
+                          bad.append(where + ' holds more than the one write it needs: %r' % job.get('permissions'))
                       ok = True
                   gp = (jobs.get('gate') or {}).get('permissions') or {}
                   if ok and any(v == 'write' for k, v in gp.items() if k in ('issues', 'pull-requests')):
@@ -1568,11 +1554,11 @@ jobs:
           bad = []
           if sorted(jobs) != ['gate', 'release', 'verify']:
               bad.append('deps-verify must have exactly the gate, verify and release jobs, found %s: another job is how a waiting job comes back' % sorted(jobs))
-          # release only clears the request label: three fixed steps, no checkout, no wait.
+          # release only clears the request label: two fixed steps, no checkout, no wait.
           rel = jobs.get('release') or {}
-          kinds = [str(s.get('uses', '')).split('@')[0] or 'run:' + str(s.get('id')) for s in rel.get('steps', [])]
-          if kinds != ['dodi-smart/.github/actions/runner-report', 'dodi-smart/.github/actions/agent-gate', 'run:clear'] or int(rel.get('timeout-minutes', 99)) > 5:
-              bad.append('the release job must be runner-report, agent-gate and the clear step, within 5 minutes, found %s' % kinds)
+          kinds = [str(s.get('uses', '')).split('@')[0] for s in rel.get('steps', [])]
+          if kinds != ['dodi-smart/.github/actions/runner-report', 'dodi-smart/.github/actions/release-request'] or int(rel.get('timeout-minutes', 99)) > 5:
+              bad.append('the release job must be runner-report and release-request, within 5 minutes, found %s' % kinds)
           if 'sleep ' in src:
               bad.append('deps-verify must not sleep: it reads a finished pr-checks run, it never polls one')
           gate, verify = jobs.get('gate') or {}, jobs.get('verify') or {}

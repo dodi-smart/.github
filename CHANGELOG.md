@@ -1,3 +1,9 @@
+## [1.53.0](https://github.com/dodi-smart/.github/compare/v1.52.4...v1.53.0) (2026-11-18)
+
+### ✨ Features
+
+* **supabase:** run the deploy and checks workflows on Supabase CLI 3 ([#248](https://github.com/dodi-smart/.github/issues/248)) ([a4b0c10](https://github.com/dodi-smart/.github/commit/a4b0c109f964db20b9b517faaf66b9d00a76f873))
+
 ## [1.52.4](https://github.com/dodi-smart/.github/compare/v1.52.3...v1.52.4) (2026-11-18)
 
 ### ⬆️ Dependencies

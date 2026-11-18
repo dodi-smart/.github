@@ -179,14 +179,20 @@ jobs:
         env:
           TYPES_PATH: ${{ inputs.types-path }}
         run: |
-          # `supabase gen types --local` spins a pinned postgres-meta container;
-          # pulling it can hit public-registry rate limits (toomanyrequests) on
+          # CLI 3 generates from the local stack by default and deprecates
+          # `--local`; CLI 2 needs it.
+          major="$(supabase --version | sed -n 's/^v\{0,1\}\([0-9]*\)\..*/\1/p' | head -1)"
+          target="--local"
+          if [ "${major:-0}" -ge 3 ]; then target=""; fi
+          # Generating against the local stack spins a pinned postgres-meta
+          # container; pulling it can hit public-registry rate limits (toomanyrequests) on
           # a shared runner IP. Retry the generation with backoff before
           # diffing. A real type mismatch still fails the diff below; this only
           # retries the flaky image pull, never masks stale types.
           generated=false
           for attempt in 1 2 3 4 5; do
-            if supabase gen types typescript --local > types.gen.ts 2> gen.err; then
+            # shellcheck disable=SC2086 # empty on CLI 3, one word on CLI 2
+            if supabase gen types typescript $target > types.gen.ts 2> gen.err; then
               generated=true
               break
             fi
@@ -202,7 +208,7 @@ jobs:
             exit 1
           fi
           if ! diff -q types.gen.ts "$TYPES_PATH" > /dev/null 2>&1; then
-            echo "::error::TypeScript types are out of date for $TYPES_PATH. Run: supabase gen types typescript --local > $TYPES_PATH"
+            echo "::error::TypeScript types are out of date for $TYPES_PATH. Run: supabase gen types typescript${target:+ $target} > $TYPES_PATH"
             diff types.gen.ts "$TYPES_PATH" || true
             exit 1
           fi

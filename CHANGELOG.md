@@ -1,3 +1,9 @@
+## [1.52.4](https://github.com/dodi-smart/.github/compare/v1.52.3...v1.52.4) (2026-11-18)
+
+### ⬆️ Dependencies
+
+* **deps:** update dtolnay/rust-toolchain digest to df2a88e ([#240](https://github.com/dodi-smart/.github/issues/240)) ([d458b7b](https://github.com/dodi-smart/.github/commit/d458b7b270ecd34d810d4b341552e29f78bd68a3))
+
 ## [1.52.3](https://github.com/dodi-smart/.github/compare/v1.52.2...v1.52.3) (2026-11-18)
 
 ### 🐛 Bug Fixes

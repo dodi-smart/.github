@@ -112,6 +112,7 @@ jobs:
       risk:     ${{ steps.decide.outputs.risk }}
       effort:   ${{ steps.decide.outputs.effort }}
       priority: ${{ steps.decide.outputs.priority }}
+      severity: ${{ steps.decide.outputs.severity }}
       signals:  ${{ steps.decide.outputs.signals }}
       run-id:   ${{ steps.decide.outputs.run-id }}
       runner:   ${{ steps.pick.outputs.runner }}
@@ -511,6 +512,7 @@ jobs:
           round:    ${{ steps.facts.outputs.round }}
           effort:   ${{ needs.gate.outputs.effort }}
           priority: ${{ needs.gate.outputs.priority }}
+          severity: ${{ needs.gate.outputs.severity }}
           risk:     ${{ needs.gate.outputs.risk }}
           signals:  ${{ needs.gate.outputs.signals }}
           model:    ${{ inputs.model }}

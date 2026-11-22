@@ -83,6 +83,7 @@ jobs:
       risk:     ${{ steps.fields.outputs.risk }}
       effort:   ${{ steps.fields.outputs.effort }}
       priority: ${{ steps.fields.outputs.priority }}
+      severity: ${{ steps.fields.outputs.severity }}
       branch:  ${{ steps.branch.outputs.branch }}
       app-bot: ${{ steps.check.outputs.proceed == 'true' && github.event.sender.type == 'Bot' && steps.app.outputs.login || '' }}
     steps:
@@ -288,6 +289,7 @@ jobs:
           stage:    implement
           effort:   ${{ needs.gate.outputs.effort }}
           priority: ${{ needs.gate.outputs.priority }}
+          severity: ${{ needs.gate.outputs.severity }}
           risk:     ${{ needs.gate.outputs.risk }}
           model:    ${{ inputs.model }}
           model-pin: ${{ vars.AGENT_MODEL_PIN }}

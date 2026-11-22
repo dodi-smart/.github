@@ -7,10 +7,10 @@
 # this file. A model bump is one line below plus its price row, and
 # self-test fails any workflow that names an id itself.
 #
-# Reads STAGE, EFFORT, PRIORITY, RISK (the issue fields, empty when unknown),
-# SIGNALS (space-separated facts the gate passes as it has them: red, an update
-# kind major|minor|patch|lockfile|unknown, a review mode full|scoped, elevated,
-# lint-only; an unknown word fails), ROUND
+# Reads STAGE, EFFORT, PRIORITY, RISK, SEVERITY (the issue fields, empty when
+# unknown), SIGNALS (space-separated facts the gate passes as it has them: red,
+# an update kind major|minor|patch|lockfile|unknown, a review mode full|scoped,
+# elevated, lint-only; an unknown word fails), ROUND
 # (the fix round about to run, 1 is the first), MODEL (a caller override), PIN
 # (the org's emergency pin) and MAX_TURNS (a caller's cap).
 #
@@ -26,7 +26,7 @@ HAIKU='claude-haiku-5-5'
 
 lc() { printf '%s' "${1:-}" | tr '[:upper:]' '[:lower:]'; }
 STAGE=$(lc "${STAGE:-}")
-EFFORT=$(lc "${EFFORT:-}"); PRIORITY=$(lc "${PRIORITY:-}"); RISK=$(lc "${RISK:-}")
+EFFORT=$(lc "${EFFORT:-}"); PRIORITY=$(lc "${PRIORITY:-}"); RISK=$(lc "${RISK:-}"); SEVERITY=$(lc "${SEVERITY:-}")
 SIGNALS=" $(lc "${SIGNALS:-}") "
 ROUND="${ROUND:-}"
 case "$ROUND" in ''|*[!0-9]*) ROUND=1 ;; esac
@@ -39,11 +39,13 @@ for w in $SIGNALS; do
 done
 has() { case "$SIGNALS" in *" $1 "*) return 0 ;; esac; return 1; }
 
-# The fields that make a change expensive to get wrong. Priority only
-# escalates when it is Urgent: triage leaves it unset whenever it cannot
-# justify a level, so unset says nothing.
+# The fields that make a change expensive to get wrong. Severity escalates
+# only on S or P1, the two that start a client's SLA clock, and Priority only
+# on Urgent. Triage leaves a field unset when it cannot justify a level, so
+# unset, like a lower level, says nothing.
 stakes() {
   case "$RISK" in high|critical) echo "Risk $RISK"; return ;; esac
+  case "$SEVERITY" in s|p1) echo "Severity $SEVERITY"; return ;; esac
   [ "$EFFORT" = high ] && { echo "Effort high"; return; }
   [ "$PRIORITY" = urgent ] && { echo "Priority urgent"; return; }
   true

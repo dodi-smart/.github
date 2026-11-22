@@ -20,7 +20,7 @@
 set -euo pipefail
 
 # renovate: datasource=github-releases depName=google/osv-scanner
-OSV_SCANNER_VERSION=2.7.0
+OSV_SCANNER_VERSION=2.7.1
 
 case "${RUNNER_OS:-}" in
   Linux) os=linux ;;

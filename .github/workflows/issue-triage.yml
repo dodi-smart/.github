@@ -343,7 +343,7 @@ jobs:
               The specific thing that could break. Omit this section when
               there is nothing worth naming.
 
-            Under 40 lines. Do not write an Effort, Priority or Risk level line.
+            Under 40 lines. Do not write a line for any field's level.
             Those are fields, you set them below, and a fact written in two
             places disagrees with itself within weeks.
             Then set:
@@ -434,11 +434,25 @@ jobs:
 
             ## Fields
 
-            Set Priority, Effort and Risk only where you can justify them from what
-            you read. Leave a field unset rather than guessing. Triage output is
-            read as evidence, and an unjustified value is worse than an empty one.
-            Risk is at least High for auth, payments, RLS, migrations, or anything
-            that loses data.
+            Set Priority, Effort, Risk and Severity only where you can justify them
+            from what you read. Leave a field unset rather than guessing. Triage
+            output is read as evidence, and an unjustified value is worse than an
+            empty one. Risk is at least High for auth, payments, RLS, migrations,
+            or anything that loses data.
+
+            Severity is how bad the problem is for the client under the maintenance
+            contract, and it starts the SLA clock. Priority is the internal order of
+            work. Set each from its own evidence: a P3 can be Urgent before a demo.
+
+              S   an exploitable weakness or exposed data
+              P1  the product is down, or a core flow is broken for everyone
+              P2  an important feature is broken, and there is a workaround
+              P3  a small error that does not block work
+              P4  a change or a question, not a defect
+
+            A maintainer confirms S and P1 before their clock is reported to a
+            client. When you set either, add one line to the comment: "Severity
+            needs a maintainer's confirmation", then the evidence in one sentence.
 
             Never invent an option name. The valid ones, exactly:
 
@@ -447,6 +461,7 @@ jobs:
               Priority      Urgent | High | Medium | Low
               Effort        High | Medium | Low
               Risk          Low | Medium | High | Critical
+              Severity      S | P1 | P2 | P3 | P4
 
             Set them with the GraphQL setIssueFieldValue mutation. Resolve the ids
             from the REPOSITORY, not the organisation:
@@ -475,7 +490,7 @@ jobs:
               entry is `fieldId`, not `issueFieldId`. Easy to misread, and the
               error it produces does not point at the cause.
 
-            A worked call, both fields in one mutation:
+            A worked call, every field you set in one mutation:
 
               gh api graphql -f query='mutation{ setIssueFieldValue(input:{
                 issueId:"<issue node id>", issueFields:[

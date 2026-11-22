@@ -1,3 +1,9 @@
+## [1.54.0](https://github.com/dodi-smart/.github/compare/v1.53.1...v1.54.0) (2026-11-22)
+
+### ✨ Features
+
+* **triage:** propose the Severity field on every triaged issue ([fff929a](https://github.com/dodi-smart/.github/commit/fff929a0267223e463b0d677423b5984f0074dea))
+
 ## [1.53.1](https://github.com/dodi-smart/.github/compare/v1.53.0...v1.53.1) (2026-11-22)
 
 ### 🐛 Bug Fixes

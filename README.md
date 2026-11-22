@@ -441,7 +441,7 @@ Renovate marker, and a bump releases as `chore(deps)`.
 | `actions/android-distribute` | The steps after a signed Android build: resolves the APK glob (an unsigned APK never counts), attaches every APK to the tag's GitHub Release, and hands one to Firebase App Distribution with the Release body as its notes. What `android-deploy.yml` runs |
 | `actions/zavet-check` | Verifies a repo's `.zavet/` knowledge layer: decision checks, guard trailers, an optional audit, and a comment only on failure. What `zavet-check.yml` and `pr-checks.yml`'s zavet step run. The caller checks out with full history first. `env-file` reuses a job's own setup and install; `comment: false` writes the report to a directory instead of posting it |
 | `actions/react-doctor` | Checks out with full history and runs React Doctor. What `react-doctor.yml` and `pr-checks.yml`'s React Doctor step run. `checkout: false` uses the caller's checkout; `comment: false` posts nothing (no comment, review comment or commit status) and writes a short report instead |
-| `actions/pick-model` | The model policy as one script, `pick.sh`: an agent stage, the issue's Effort, Priority and Risk, and the run's signals in, a model id and a turn cap out. run-agent runs it on every agent run; see [Models](#models). |
+| `actions/pick-model` | The model policy as one script, `pick.sh`: an agent stage, the issue's Effort, Priority, Risk and Severity, and the run's signals in, a model id and a turn cap out. run-agent runs it on every agent run; see [Models](#models). |
 | `actions/pick-runner` | Resolves a runner weight to a selector, statically: no API call, no token, no fleet listing. What `pick-runner.yml` calls, and what a job that already exists (like `pr-checks.yml`'s `pick`) calls directly to pick more than once without another job. |
 
 `actions/changed-files` needs no checkout. It takes `patterns` (newline-separated
@@ -1412,8 +1412,8 @@ that matches wins.
 | Stage | Opus when | Otherwise | Turn cap |
 |---|---|---|---|
 | triage, assist | always | | action default |
-| implement | Effort High, Risk High or Critical, Priority Urgent, or Risk or Effort unset | Sonnet | action default |
-| fix-ci | round 2 or later, Risk High or Critical, Effort High, Priority Urgent | Haiku on round 1 when only `hk check --all` failed, else Sonnet | 30 Haiku, 60 else |
+| implement | Effort High, Risk High or Critical, Severity S or P1, Priority Urgent, or Risk or Effort unset | Sonnet | action default |
+| fix-ci | round 2 or later, Risk High or Critical, Severity S or P1, Effort High, Priority Urgent | Haiku on round 1 when only `hk check --all` failed, else Sonnet | 30 Haiku, 60 else |
 | fix-review | always | | 60 |
 | review | full review, sensitive paths or a `sec:` label | Sonnet for a review scoped to trailered commits | action default |
 | deps-verify | CI red, or a major update | Haiku for a green patch or lockfile update, Sonnet for a green minor | 80 red, 40 major or Sonnet, 30 Haiku |

@@ -77,6 +77,9 @@ inputs:
   priority:
     description: "The issue's Priority field, empty when unknown."
     default: ''
+  severity:
+    description: "The issue's Severity field, empty when unknown."
+    default: ''
   risk:
     description: "The issue's Risk field, empty when unknown."
     default: ''
@@ -278,6 +281,7 @@ runs:
         STAGE:     ${{ inputs.stage }}
         EFFORT:    ${{ inputs.effort }}
         PRIORITY:  ${{ inputs.priority }}
+        SEVERITY:  ${{ inputs.severity }}
         RISK:      ${{ inputs.risk }}
         SIGNALS:   ${{ inputs.signals }}
         ROUND:     ${{ inputs.round }}

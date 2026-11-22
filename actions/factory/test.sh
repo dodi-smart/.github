@@ -289,7 +289,7 @@ scenario() {
   api graphql-issue "{\"data\":{\"repository\":{\"issue\":{\"issueType\":$itype,\"createdAt\":\"2026-11-01T09:00:00Z\",\"title\":\"CSV export\",\"issueFieldValues\":{\"nodes\":[
     {\"name\":\"$m\",\"field\":{\"name\":\"Agent mode\"}},{\"name\":\"$r\",\"field\":{\"name\":\"Risk\"}},
     {\"name\":\"$e\",\"field\":{\"name\":\"Effort\"}},{\"name\":\"Plan ready\",\"field\":{\"name\":\"Triage state\"}},
-    {\"name\":\"Medium\",\"field\":{\"name\":\"Priority\"}}]}}}}}"
+    {\"name\":\"Medium\",\"field\":{\"name\":\"Priority\"}},{\"name\":\"P2\",\"field\":{\"name\":\"Severity\"}}]}}}}}"
   local msgs='[{"commit":{"message":"feat: x\n\nFactory-Round: 0"}}'
   for ((i = 1; i <= rounds; i++)); do msgs="$msgs,{\"commit\":{\"message\":\"fix: y\n\nFactory-Round: $i\"}}"; done
   api /repos/o/r/pulls/5/commits "$msgs]"
@@ -319,7 +319,7 @@ expect "a green, approved Dependabot PR is not landed" test "$(decide)" = stop
 scenario 'Autonomous Low Low' 'completed failure' ''
 expect "red checks start a fix round"         test "$(decide)" = fix-ci
 expect "and the failed run is named"          test "$(val run-id)" = 77
-expect "and the fields the model policy reads are out" bash -c 'grep -qx "risk=Low" "$1" && grep -qx "effort=Low" "$1" && grep -qx "priority=Medium" "$1"' _ "$WORK/out"
+expect "and the fields the model policy reads are out" bash -c 'grep -qx "risk=Low" "$1" && grep -qx "effort=Low" "$1" && grep -qx "priority=Medium" "$1" && grep -qx "severity=P2" "$1"' _ "$WORK/out"
 expect "a run with no jobs to read is not lint-only" test -z "$(val signals)"
 jobs() { api /repos/o/r/actions/runs/77/jobs "{\"jobs\":$1}"; }
 hk='{"name":"hk check --all","conclusion":"failure"}'

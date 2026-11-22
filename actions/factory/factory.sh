@@ -6,7 +6,7 @@
 #
 #   factory.sh tier     MODE RISK EFFORT        -> tier=merge|ready|draft
 #   factory.sh branch   TYPE NUM TITLE          -> branch=<feat|fix|chore>/<n>-<slug>
-#   factory.sh fields   (REPO, ISSUE)           -> state, mode, risk, effort, priority, tier
+#   factory.sh fields   (REPO, ISSUE)           -> state, mode, risk, effort, priority, severity, tier
 #   factory.sh state    (REPO, ISSUE, STATE)    -> written: Triage state set to STATE, or why not
 #   factory.sh push     (env, see push())       -> pushed, refused, record, sha (round 0)
 #   factory.sh holdout  (BASE_SHA, ISSUE)       -> refuse-paths for a fix round,
@@ -92,7 +92,7 @@ read_fields() {
   fi
   get() { jq -r --arg f "$1" '.fields[$f] // empty' <<<"$values"; }
   F_STATE=$(get "Triage state"); F_MODE=$(get "Agent mode"); F_RISK=$(get "Risk"); F_EFFORT=$(get "Effort")
-  F_PRIORITY=$(get "Priority"); F_TYPE=$(get "Issue type")
+  F_PRIORITY=$(get "Priority"); F_SEVERITY=$(get "Severity"); F_TYPE=$(get "Issue type")
   F_CREATED=$(jq -r '.created // empty' <<<"$values"); F_TITLE=$(jq -r '.title // empty' <<<"$values")
 }
 
@@ -364,7 +364,7 @@ decide() {
   # read of our own output, not a guess at a person's wording.
   issue=$(printf '%s' "$body" | closes_of)
   out issue "${issue:-}"
-  F_STATE=''; F_MODE=''; F_RISK=''; F_EFFORT=''; F_PRIORITY=''; F_TYPE=''; F_CREATED=''; F_TITLE=''
+  F_STATE=''; F_MODE=''; F_RISK=''; F_EFFORT=''; F_PRIORITY=''; F_SEVERITY=''; F_TYPE=''; F_CREATED=''; F_TITLE=''
   if [ -n "$issue" ]; then
     if gh api "/repos/$REPO/issues/$issue/labels?per_page=100" --jq '[.[].name]' 2>/dev/null | grep -q '"agent:no-touch"'; then
       finish stop "agent:no-touch on issue #$issue"
@@ -374,7 +374,7 @@ decide() {
   tier=$(tier_of "$F_MODE" "$F_RISK" "$F_EFFORT")
   out tier "$tier"
   # The model policy reads these. See actions/pick-model.
-  out risk "$F_RISK"; out effort "$F_EFFORT"; out priority "$F_PRIORITY"; out type "$F_TYPE"
+  out risk "$F_RISK"; out effort "$F_EFFORT"; out priority "$F_PRIORITY"; out severity "$F_SEVERITY"; out type "$F_TYPE"
 
   # Every round number on the branch, in commit order: rounds after 0 are fix
   # rounds, and the last one says whether the head is a fix round.
@@ -787,7 +787,7 @@ case "$cmd" in
   fields)
     read_fields
     out read "$F_READ"; out state "$F_STATE"; out mode "$F_MODE"; out risk "$F_RISK"; out effort "$F_EFFORT"
-    out priority "$F_PRIORITY"; out type "$F_TYPE"
+    out priority "$F_PRIORITY"; out severity "$F_SEVERITY"; out type "$F_TYPE"
     out tier "$(tier_of "$F_MODE" "$F_RISK" "$F_EFFORT")" ;;
   push)    push_round ;;
   holdout)

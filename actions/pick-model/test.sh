@@ -18,7 +18,7 @@ pass=0; fail=0
 pick() {
   local desc="$1" want="$2" wantturns="$3"; shift 3
   export GITHUB_OUTPUT="$TMP/out"; : > "$GITHUB_OUTPUT"
-  env STAGE= EFFORT= PRIORITY= RISK= SIGNALS= ROUND= MODEL= PIN= MAX_TURNS= "$@" \
+  env STAGE= EFFORT= PRIORITY= RISK= SEVERITY= SIGNALS= ROUND= MODEL= PIN= MAX_TURNS= "$@" \
     bash "$HERE/pick.sh" >"$TMP/log" 2>&1
   local got turns
   got=$(sed -n 's/^model=//p' "$GITHUB_OUTPUT"); turns=$(sed -n 's/^max-turns=//p' "$GITHUB_OUTPUT")
@@ -38,6 +38,9 @@ pick "implement Risk High"                      "$OPUS"   ""  STAGE=implement RI
 pick "implement Risk Critical"                  "$OPUS"   ""  STAGE=implement RISK=Critical EFFORT=Low
 pick "implement Priority Urgent"                "$OPUS"   ""  STAGE=implement RISK=Low EFFORT=Low PRIORITY=Urgent
 pick "implement with no fields"                 "$OPUS"   ""  STAGE=implement
+pick "implement Severity S"                     "$OPUS"   ""  STAGE=implement RISK=Low EFFORT=Low SEVERITY=S
+pick "implement Severity P1"                    "$OPUS"   ""  STAGE=implement RISK=Low EFFORT=Low SEVERITY=P1
+pick "implement Severity P2 changes nothing"    "$SONNET" ""  STAGE=implement RISK=Low EFFORT=Low SEVERITY=P2
 pick "implement with Risk unset"                "$OPUS"   ""  STAGE=implement EFFORT=Low
 
 echo "== fix rounds =="
@@ -45,6 +48,7 @@ pick "fix-ci round 1, Risk Low"                 "$SONNET" 60  STAGE=fix-ci ROUND
 pick "fix-ci round 1, lint only"                "$HAIKU"  30  STAGE=fix-ci ROUND=1 RISK=Low EFFORT=Low SIGNALS=lint-only
 pick "fix-ci round 2, lint only"                "$OPUS"   60  STAGE=fix-ci ROUND=2 RISK=Low EFFORT=Low SIGNALS=lint-only
 pick "fix-ci round 1, lint only, Risk High"     "$OPUS"   60  STAGE=fix-ci ROUND=1 RISK=High SIGNALS=lint-only
+pick "fix-ci round 1, lint only, Severity S"   "$OPUS"   60  STAGE=fix-ci ROUND=1 RISK=Low EFFORT=Low SEVERITY=S SIGNALS=lint-only
 pick "fix-ci with no round given is round 1"    "$SONNET" 60  STAGE=fix-ci RISK=Low EFFORT=Low
 pick "fix-review round 1"                       "$OPUS"   60  STAGE=fix-review ROUND=1 RISK=Low
 

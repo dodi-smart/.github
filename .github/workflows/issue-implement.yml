@@ -369,9 +369,8 @@ jobs:
               that is true.
 
             An honest "I could not verify X" is worth more than a confident
-            summary. Do not restate the issue's Priority, Effort or Risk
-            fields. Those live on the issue. Do not add `Closes`; the step
-            that opens the PR adds it.
+            summary. Do not restate the issue's fields. Those live on the
+            issue. Do not add `Closes`; the step that opens the PR adds it.
 
             Do not change labels or `Triage state`. The steps after you do
             what is needed.

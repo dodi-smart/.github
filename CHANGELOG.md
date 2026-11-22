@@ -1,3 +1,9 @@
+## [1.53.1](https://github.com/dodi-smart/.github/compare/v1.53.0...v1.53.1) (2026-11-22)
+
+### 🐛 Bug Fixes
+
+* **renovate:** bump hk in every hk.pkl, not only the root one ([#252](https://github.com/dodi-smart/.github/issues/252)) ([9788f06](https://github.com/dodi-smart/.github/commit/9788f06f91bcc61f1f7ec5fb0af763a200c43b99))
+
 ## [1.53.0](https://github.com/dodi-smart/.github/compare/v1.52.4...v1.53.0) (2026-11-18)
 
 ### ✨ Features

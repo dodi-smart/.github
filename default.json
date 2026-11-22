@@ -68,11 +68,13 @@
   // hk is the org's git-hook runner. hk.pkl pins the schema it amends in a
   // package URL that no built-in manager reads, so without this the binary in
   // mise.toml moves and hk.pkl stays behind, and deps-verify stops on it.
+  // Every hk.pkl, not only the root one: a repo that ships a template copy
+  // keeps it at the same pin, and a check fails when the two differ.
   "customManagers": [
     {
       "description": "The hk schema hk.pkl amends, pinned in its package URL",
       "customType": "regex",
-      "managerFilePatterns": ["/^hk\\.pkl$/"],
+      "managerFilePatterns": ["/(^|/)hk\\.pkl$/"],
       "matchStrings": [
         "package://github\\.com/jdx/hk/releases/download/v(?<currentValue>\\d+\\.\\d+\\.\\d+)/hk@\\d+\\.\\d+\\.\\d+#"
       ],

@@ -11,9 +11,9 @@ pass=0; fail=0
 ok()  { printf '  ok   %s\n' "$1"; pass=$((pass + 1)); }
 bad() { printf '  FAIL %s (%s)\n' "$1" "$2"; fail=$((fail + 1)); }
 
-# run NEEDS IGNORE DOCS_ONLY: sets $STATUS and $OUT (stdout and stderr).
+# run NEEDS IGNORE DOCS_ONLY LABEL: sets $STATUS and $OUT (stdout and stderr).
 run() {
-  OUT="$(NEEDS="$1" IGNORE="$2" DOCS_ONLY="${3:-false}" "$SCRIPT" 2>&1)"
+  OUT="$(NEEDS="$1" IGNORE="$2" DOCS_ONLY="${3:-false}" LABEL="${4:-}" "$SCRIPT" 2>&1)"
   STATUS=$?
 }
 # expect NAME STATUS TEXT: the exit status, and that TEXT is in the output.
@@ -29,6 +29,9 @@ expect "every job green passes" 0 "pr-checks: all required jobs passed"
 
 run '{"pick":{"result":"success"},"checks":{"result":"skipped"},"test":{"result":"skipped"},"all":{"result":"success"}}' ""
 expect "skipped jobs never fail the verdict" 0 "all required jobs passed"
+
+run '{"plan":{"result":"success"},"lanes":{"result":"failure"}}' "" false supabase-checks
+expect "a label names the workflow in the verdict" 1 "::error::supabase-checks: failed jobs: lanes(failure)"
 
 run "$GREEN" "" true
 expect "docs-only only changes the message" 0 "pr-checks: docs-only change, checks skipped"

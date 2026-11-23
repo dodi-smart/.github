@@ -1659,7 +1659,7 @@ jobs:
         run: |
           set -euo pipefail
           python3 - <<'PY'
-          import glob, os, sys
+          import glob, os, re, sys
           from lib import load, first_step_is_report, D
           bad = []
           LIGHT = load('.github/workflows/pick-runner.yml')['jobs']['pick']['runs-on']
@@ -1683,9 +1683,6 @@ jobs:
               ('publish-release.yml', 'release'): 'the public repo releases itself, so hosted like self-test',
               ('promote.yml', 'promote'): 'the public repo moves its own tag, so hosted like self-test',
               ('release-canary.yml', 'result'): 'the public repo posts its own status, so hosted like self-test',
-              ('supabase-checks.yml', 'types'): 'starts Postgres, which needs the runner whose localhost the CLI polls',
-              ('supabase-checks.yml', 'deno'): 'starts Postgres, which needs the runner whose localhost the CLI polls',
-              ('supabase-checks.yml', 'pgtap'): 'starts Postgres, which needs the runner whose localhost the CLI polls',
               ('supabase-deploy.yml', 'deploy'): 'holds a production Supabase token, which belongs on a throwaway VM',
           }
           # The iOS half: Apple targets link on macOS only, and these jobs run only
@@ -1714,8 +1711,11 @@ jobs:
                   if not first_step_is_report(job):
                       bad.append(where + ' must start with actions/runner-report')
                   want = POOLS.get((f, jid), 'light')
-                  # pr-checks' lanes run where the plan says: light, heavy or, for iOS, the Mac.
-                  lanes = (f, jid) == ('pr-checks.yml', 'lanes') and ro == D + 'fromJSON(matrix.runs_on) }}'
+                  # A matrix job fed by a plan job's lanes runs where the plan says (pr-checks:
+                  # light, heavy or the Mac; supabase-checks: hosted or light). The plan picks
+                  # each runner through pick-runner, so the rule is the shape, not a name list.
+                  inc = str(((job.get('strategy') or {}).get('matrix') or {}).get('include', ''))
+                  lanes = ro == D + 'fromJSON(matrix.runs_on) }}' and re.fullmatch(re.escape(D) + r'fromJSON\(needs\.[\w-]+\.outputs\.lanes\) }}', inc) is not None
                   if ro != pool(want) and 'needs.' not in str(ro) and not lanes:
                       bad.append(where + ' runs-on is not the %s expression, character for character: %r' % (want, ro))
               # Nothing else in the file may name the hosted runner (pick-runner.yml's
@@ -2277,39 +2277,48 @@ jobs:
           print('the deps-verify gate keeps its permissions and its shape-only pre-filter')
           PY
 
-      # migration-lint starts no database, so it alone leaves ubuntu-latest (the runner
-      # step holds the other supabase-checks jobs to it).
-      - name: migration-lint is opt-in, asks for no permission and pins what it pulls in
+      # supabase-checks follows DODI-00056: a plan job decides the lanes, a
+      # matrix job guarded against an empty matrix runs them, and one summary
+      # row reports. An off feature or an untouched path books no runner.
+      - name: supabase-checks plans its lanes through tested actions, every feature off by default
         run: |
           set -euo pipefail
-          python3 - <<'MIGLINT'
+          python3 - <<'SUPA'
           import re, sys
           from lib import load, D
           bad = []
-          path = '.github/workflows/supabase-checks.yml'
-          doc = load(path)
-          job = doc['jobs'].get('migration-lint')
-          if job is None:
-              sys.exit('::error::supabase-checks.yml has no migration-lint job')
-          if str(job.get('if')) != D + 'inputs.migration-lint }}':
-              bad.append('the migration-lint if: must read inputs.migration-lint and nothing else, so an off job reports skipped')
-          if 'permissions' in job:
-              bad.append('migration-lint asks for a permission of its own; it relies on the ones its siblings do')
+          doc = load('.github/workflows/supabase-checks.yml')
+          jobs = doc['jobs']
+          if set(jobs) != {'plan', 'lanes', 'supabase-checks'}:
+              sys.exit('::error::supabase-checks.yml must have exactly plan, lanes and supabase-checks, found %s' % sorted(jobs))
+          lanes, summary = jobs['lanes'], jobs['supabase-checks']
+          if str(lanes.get('if')) != D + "needs.plan.outputs.lanes != '[]' }}" or lanes.get('name') != D + 'matrix.name }}':
+              bad.append('lanes must be guarded against an empty matrix and nothing else, under the lane name')
+          if summary.get('if') != 'always()' or summary.get('needs') != ['plan', 'lanes'] or summary.get('name') != 'Supabase Checks':
+              bad.append('the Supabase Checks summary must need plan and lanes and run always()')
+          bad += ['%s asks for a permission of its own; the caller grants contents and pull-requests read' % n
+                  for n, job in jobs.items() if 'permissions' in job]
+          uses = lambda job: [str(st.get('uses', '')).split('@')[0] for st in job['steps']]
+          if 'dodi-smart/.github/actions/supabase-checks-plan' not in uses(jobs['plan']):
+              bad.append('the lane rules must come from actions/supabase-checks-plan, where test.sh covers them')
+          if 'dodi-smart/.github/actions/schema-drift' not in uses(lanes):
+              bad.append('the drift check must run through actions/schema-drift, where test.sh covers it')
           inputs = doc[True]['workflow_call']['inputs']
-          for name, want in (('migration-lint', False), ('migration-lint-blocking', False),
-                             ('migrations-path', 'supabase/migrations'), ('migration-lint-excluded-rules', '')):
+          for name, want in (('types-path', ''), ('deno-dir', ''), ('pgtap', False), ('seed-check', False),
+                             ('migration-lint', False), ('migration-lint-blocking', False),
+                             ('migrations-path', 'supabase/migrations'), ('migration-lint-excluded-rules', ''),
+                             ('schema-drift', False), ('schema-path', 'supabase/schemas'),
+                             ('schema-drift-strict-coverage', True), ('runtime', 'docker')):
               if name not in inputs or inputs[name].get('default') != want:
-                  bad.append('input %s must exist with default %r: off, advisory and the standard path unless a caller opts in' % (name, want))
+                  bad.append('input %s must exist with default %r' % (name, want))
           for step in load('actions/migration-lint/action.yml')['runs']['steps']:
-              uses = step.get('uses', '')
-              if not uses or uses.startswith(('actions/', 'dodi-smart/', './')):
-                  continue
-              if not re.search(r'@[0-9a-f]{40}$', uses):
-                  bad.append('actions/migration-lint uses %s, which is not pinned to a full commit SHA' % uses)
+              u = step.get('uses', '')
+              if u and not u.startswith(('actions/', 'dodi-smart/', './')) and not re.search(r'@[0-9a-f]{40}$', u):
+                  bad.append('actions/migration-lint uses %s, which is not pinned to a full commit SHA' % u)
           if bad:
               sys.exit('::error::' + '; '.join(bad))
-          print('migration-lint is opt-in, asks for no permission and is pinned')
-          MIGLINT
+          print('supabase-checks plans its lanes through tested actions and keeps every feature off by default')
+          SUPA
 
       # shellcheck, jactionlint, typos and the whitespace checks all run
       # from hk.pkl, the same definition the local git hooks use. mise.toml

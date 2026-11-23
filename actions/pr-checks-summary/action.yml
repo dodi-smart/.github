@@ -17,6 +17,9 @@ inputs:
   docs-only:
     description: "'true' for a docs-only change. It only changes the closing message."
     default: 'false'
+  label:
+    description: The workflow the verdict is for, as its messages name it.
+    default: pr-checks
 
 runs:
   using: composite
@@ -26,5 +29,6 @@ runs:
         NEEDS:       ${{ inputs.needs }}
         IGNORE:      ${{ inputs.ignore }}
         DOCS_ONLY:   ${{ inputs.docs-only }}
+        LABEL:       ${{ inputs.label }}
         ACTION_PATH: ${{ github.action_path }}
       run: '"$ACTION_PATH/summarize.sh"'

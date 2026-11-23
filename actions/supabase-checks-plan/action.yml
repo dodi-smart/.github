@@ -1,0 +1,46 @@
+# The plan job of `supabase-checks.yml`. Thin wrapper; the rules and the
+# reasoning are in plan.sh, the rows in test.sh.
+name: Supabase Checks plan
+description: Decide which supabase-checks lanes (matrix legs) a run needs, each with its runner.
+
+inputs:
+  types:            { description: "'true' when the types check is on", default: 'false' }
+  seed-check:       { description: "'true' when the seed re-run is on", default: 'false' }
+  pgtap:            { description: "'true' when pgTAP is on", default: 'false' }
+  schema-drift:     { description: "'true' when the drift check is on", default: 'false' }
+  migration-lint:   { description: "'true' when the migration lint is on", default: 'false' }
+  deno-dir:         { description: 'The Deno source directory; empty is off', default: '' }
+  migrations-paths: { description: 'Paths that start a database check; blank is no filter', default: '' }
+  migrations-path:  { description: 'The directory the lint reads', default: 'supabase/migrations' }
+  schema-path:      { description: 'The declarative schema directory', default: 'supabase/schemas' }
+  files-path:       { description: 'changed-files `files-path`', default: '' }
+  complete:         { description: 'changed-files `complete`', default: 'false' }
+  hosted:           { description: 'The hosted runner selector, as JSON (pick-runner `runner`)', default: '' }
+  light:            { description: 'The light runner selector, as JSON (pick-runner `runner`)', default: '' }
+
+outputs:
+  lanes:
+    description: 'A compact JSON array of lanes, for `strategy.matrix.include`. `[]` when nothing runs.'
+    value: ${{ steps.plan.outputs.lanes }}
+
+runs:
+  using: composite
+  steps:
+    - id: plan
+      shell: bash
+      env:
+        TYPES:            ${{ inputs.types }}
+        SEED:             ${{ inputs.seed-check }}
+        PGTAP:            ${{ inputs.pgtap }}
+        DRIFT:            ${{ inputs.schema-drift }}
+        LINT:             ${{ inputs.migration-lint }}
+        DENO_DIR:         ${{ inputs.deno-dir }}
+        MIGRATIONS_PATHS: ${{ inputs.migrations-paths }}
+        MIGRATIONS_PATH:  ${{ inputs.migrations-path }}
+        SCHEMA_PATH:      ${{ inputs.schema-path }}
+        FILES_PATH:       ${{ inputs.files-path }}
+        COMPLETE:         ${{ inputs.complete }}
+        HOSTED:           ${{ inputs.hosted }}
+        LIGHT:            ${{ inputs.light }}
+        ACTION_PATH:      ${{ github.action_path }}
+      run: '"$ACTION_PATH/plan.sh"'

@@ -1,0 +1,12 @@
+# Thin wrapper; the rules are in ensure.sh, the cases in test.sh. Run it after
+# `supabase/setup-cli` and a checkout, before anything loads the config.
+name: Supabase signing key
+description: Write a throwaway development JWT signing key where supabase/config.toml's signing_keys_path points, when a clean checkout lacks it.
+
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      env:
+        ACTION_PATH: ${{ github.action_path }}
+      run: '"$ACTION_PATH/ensure.sh"'

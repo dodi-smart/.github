@@ -238,6 +238,13 @@ jobs:
         with:
           version: ${{ inputs.cli-version }}
 
+      # A config whose [auth] signing_keys_path names a git-ignored file does not
+      # load on a clean checkout, so neither the stack nor the drift check could
+      # start. This writes a throwaway development key there, and nothing else.
+      - name: Prepare the local signing key
+        if: matrix.lane == 'database'
+        uses: dodi-smart/.github/actions/supabase-signing-key@v1
+
       - name: Start Supabase (local)
         id: start
         if: matrix.lane == 'database' && (inputs.types-path != '' || inputs.seed-check || inputs.pgtap)

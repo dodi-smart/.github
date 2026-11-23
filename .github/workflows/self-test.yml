@@ -2303,6 +2303,10 @@ jobs:
               bad.append('the lane rules must come from actions/supabase-checks-plan, where test.sh covers them')
           if 'dodi-smart/.github/actions/schema-drift' not in uses(lanes):
               bad.append('the drift check must run through actions/schema-drift, where test.sh covers it')
+          u = uses(lanes)
+          key = 'dodi-smart/.github/actions/supabase-signing-key'
+          if key not in u or u.index(key) > min(u.index(a) for a in ('dodi-smart/.github/actions/supabase-start', 'dodi-smart/.github/actions/schema-drift')):
+              bad.append('the lanes must prepare the signing key before the stack starts and before the drift check')
           inputs = doc[True]['workflow_call']['inputs']
           for name, want in (('types-path', ''), ('deno-dir', ''), ('pgtap', False), ('seed-check', False),
                              ('migration-lint', False), ('migration-lint-blocking', False),

@@ -161,26 +161,26 @@ jobs:
     outputs:
       lanes: ${{ steps.plan.outputs.lanes }}
     steps:
-      - uses: dodi-smart/.github/actions/runner-report@v1
+      - uses: dodi-smart/.github/actions/runner-report@pinned/v1.56.1
 
       # One read of the pull request's file list; the plan matches each check's
       # own paths against it. Any doubt (no pull request, an API error, the
       # cap) leaves `complete` false, and every check that is on runs.
       - id: files
-        uses: dodi-smart/.github/actions/changed-files@v1
+        uses: dodi-smart/.github/actions/changed-files@pinned/v1.56.1
 
       # Database runs hosted (see the header); the file-only lanes take light.
       - id: hosted
-        uses: dodi-smart/.github/actions/pick-runner@v1
+        uses: dodi-smart/.github/actions/pick-runner@pinned/v1.56.1
         with:
           weight: hosted
       - id: light
-        uses: dodi-smart/.github/actions/pick-runner@v1
+        uses: dodi-smart/.github/actions/pick-runner@pinned/v1.56.1
         with:
           weight: light
 
       - id: plan
-        uses: dodi-smart/.github/actions/supabase-checks-plan@v1
+        uses: dodi-smart/.github/actions/supabase-checks-plan@pinned/v1.56.1
         with:
           types: ${{ inputs.types-path != '' }}
           seed-check: ${{ inputs.seed-check }}
@@ -207,7 +207,7 @@ jobs:
       matrix:
         include: ${{ fromJSON(needs.plan.outputs.lanes) }}
     steps:
-      - uses: dodi-smart/.github/actions/runner-report@v1
+      - uses: dodi-smart/.github/actions/runner-report@pinned/v1.56.1
 
       - uses: actions/checkout@v7
         with: { persist-credentials: false }
@@ -243,12 +243,12 @@ jobs:
       # start. This writes a throwaway development key there, and nothing else.
       - name: Prepare the local signing key
         if: matrix.lane == 'database'
-        uses: dodi-smart/.github/actions/supabase-signing-key@v1
+        uses: dodi-smart/.github/actions/supabase-signing-key@pinned/v1.56.1
 
       - name: Start Supabase (local)
         id: start
         if: matrix.lane == 'database' && (inputs.types-path != '' || inputs.seed-check || inputs.pgtap)
-        uses: dodi-smart/.github/actions/supabase-start@v1
+        uses: dodi-smart/.github/actions/supabase-start@pinned/v1.56.1
         with:
           runtime: ${{ inputs.runtime }}
 
@@ -318,7 +318,7 @@ jobs:
       # throwaway databases in stack mode for its own step, with no Docker.
       - name: Compare migrations with the declarative schema
         if: ${{ !cancelled() && matrix.lane == 'database' && inputs.schema-drift }}
-        uses: dodi-smart/.github/actions/schema-drift@v1
+        uses: dodi-smart/.github/actions/schema-drift@pinned/v1.56.1
         with:
           schema-path: ${{ inputs.schema-path }}
           strict-coverage: ${{ inputs.schema-drift-strict-coverage }}
@@ -326,7 +326,7 @@ jobs:
       # --- Migration Lint ------------------------------------------------------
       - name: Lint changed migrations
         if: matrix.lane == 'migration-lint'
-        uses: dodi-smart/.github/actions/migration-lint@v1
+        uses: dodi-smart/.github/actions/migration-lint@pinned/v1.56.1
         with:
           migrations-path: ${{ inputs.migrations-path }}
           excluded-rules: ${{ inputs.migration-lint-excluded-rules }}
@@ -341,10 +341,10 @@ jobs:
     runs-on: ${{ fromJSON((github.event.repository.private && !github.event.pull_request.head.repo.fork) && '["self-hosted","Linux","light"]' || '"ubuntu-latest"') }}
     timeout-minutes: 5
     steps:
-      - uses: dodi-smart/.github/actions/runner-report@v1
+      - uses: dodi-smart/.github/actions/runner-report@pinned/v1.56.1
       - name: Summarize
         if: ${{ !cancelled() }}
-        uses: dodi-smart/.github/actions/pr-checks-summary@v1
+        uses: dodi-smart/.github/actions/pr-checks-summary@pinned/v1.56.1
         with:
           needs: ${{ toJSON(needs) }}
           label: supabase-checks

@@ -1,3 +1,9 @@
+## [1.56.0](https://github.com/dodi-smart/.github/compare/v1.55.0...v1.56.0) (2026-11-23)
+
+### ✨ Features
+
+* **supabase-checks:** plan lanes per DODI-00056 and add a declarative schema drift check ([c7df5e4](https://github.com/dodi-smart/.github/commit/c7df5e429bc390e9d8a2ef6b97b20aceb1e6e5f7))
+
 ## [1.55.0](https://github.com/dodi-smart/.github/compare/v1.54.0...v1.55.0) (2026-11-23)
 
 ### ✨ Features

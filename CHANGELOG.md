@@ -1,3 +1,9 @@
+## [1.55.0](https://github.com/dodi-smart/.github/compare/v1.54.0...v1.55.0) (2026-11-23)
+
+### ✨ Features
+
+* **pick-model:** escalate implement and fix-ci to Opus on Severity S or P1 ([bdcf7b9](https://github.com/dodi-smart/.github/commit/bdcf7b9e090066f234687356a7448b3122a7cf45))
+
 ## [1.54.0](https://github.com/dodi-smart/.github/compare/v1.53.1...v1.54.0) (2026-11-22)
 
 ### ✨ Features

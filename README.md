@@ -79,7 +79,7 @@ caller keeps working.
 | `android-deploy.yml` | called after `release.yml` | Builds the signed release APK for the tag a release just cut, attaches it to the GitHub Release and, if asked, distributes it through Firebase App Distribution. Signing material comes from 1Password |
 | `react-doctor.yml` | pull request, React repos | **Deprecated, removed at v2:** use `pr-checks.yml`'s `react-doctor` input. Static analysis of React/TS source. Advisory by default, on a pinned React Doctor version that Renovate bumps here (`version` overrides it). `pr-checks.yml` can run it as a job instead (`react-doctor: true`) |
 | `zavet-check.yml` | pull request | Knowledge-layer checks, for repos that have one. Report-only on dependency and automation bot PRs. `pr-checks.yml` can run it as a job instead (`zavet: true`) |
-| `supabase-checks.yml` | pull request, Supabase repos | Deno edge-function check, generated-types check, pgTAP tests, and an opt-in squawk lint of the migrations a pull request changed. The jobs that start Postgres are hosted only; the lint runs on the light pool |
+| `supabase-checks.yml` | pull request, Supabase repos | Deno edge-function check, generated-types check, pgTAP tests, an opt-in check that the migrations match a declarative `supabase/schemas`, and an opt-in squawk lint of the migrations a pull request changed. The jobs that start Postgres are hosted only; the lint runs on the light pool |
 | `pick-runner.yml` | called by the others | Resolves a runner weight to a `runs-on` selector. Static: no API call, no token |
 
 `release.yml` reports what it did through `workflow_call` outputs, so a caller
@@ -426,7 +426,7 @@ Renovate marker, and a bump releases as `chore(deps)`.
 | `actions/lcov-report` | Overall and changed-file line coverage from an LCOV file, posted as a sticky comment, with optional floors. What `pr-checks.yml`'s `coverage: lcov` calls |
 | `actions/kover-floor` | Fails when `kover-report`'s overall coverage is below a minimum, or missing, since that action only marks a breached minimum in its comment. What `pr-checks.yml`'s `coverage: kover` runs |
 | `actions/pr-checks-plan` | Decides which lanes (legs of the `lanes` matrix job) a `pr-checks.yml` run needs, each with its runner, phases and opt-in steps, from the inputs and what `pick` found. Bash and jq, no checkout. Internal to that workflow |
-| `actions/pr-checks-summary` | The verdict of `pr-checks.yml`'s `PR Checks` job: fails when a job in the `needs` context failed or was cancelled, leaves out named advisory jobs, and prints the result. Internal to that workflow |
+| `actions/pr-checks-summary` | The verdict of `pr-checks.yml`'s `PR Checks` job: fails when a job in the `needs` context failed or was cancelled, leaves out named advisory jobs, and prints the result. `supabase-checks.yml`'s `Supabase Checks` job calls it too, with `label: supabase-checks` |
 | `actions/hk-check` | Installs the repo's mise tools, runs `hk check --all --sarif`, appends the output to the job summary, warns on a SARIF file that is not valid JSON, and keeps the SARIF as an artifact. What `pr-checks.yml`'s `hk: true` runs |
 | `actions/changed-files` | A pull request's changed files through the API, with no checkout, and whether any, or every one, match a set of globs. Pure bash: it needs `gh` and nothing else |
 | `actions/target-guard` | Fails a pull request into the release branch (`main`, when it is not the default branch) unless it is the default branch merged in, or a security patch (`fix/security-*` or Renovate's `[SECURITY]` update, a conventional `fix`, no `feat` or breaking commit) in a repo whose `security_hotfix` property is `enabled`. Outputs `verdict` (`skip`, `release`, `lane`, `reject`) and `reason`. Anything it cannot read is a reject. Needs `gh`, `jq` and metadata plus pull-requests read. What `pr-checks.yml`'s `pick` job runs; see [The release branch only gets releases](#the-release-branch-only-gets-releases) |
@@ -438,6 +438,8 @@ Renovate marker, and a bump releases as `chore(deps)`.
 | `actions/run-phases` | Runs a job's install, lint, design-lint, typecheck, test, build and smoke commands as timed phases, each in its own shell, and writes a timing and peak-memory table to the job summary. `log-dir` also writes each phase's output to a file; `keep-going: true` runs every phase and the `failed` output lists the ones that failed. The `peak-rss` output is the largest per-phase peak memory in MiB. What `pr-checks.yml` and `deps-verify.yml` run their commands with |
 | `actions/wait-for-deployment` | Waits for the frontend host's successful GitHub Deployment of the checked-out commit, or for a route to report its sha. What `supabase-deploy.yml`'s health check calls |
 | `actions/supabase-start` | Starts the local Supabase database with the stack's Docker images restored from the cache, saved on a miss. What both jobs of `supabase-checks.yml` call |
+| `actions/supabase-checks-plan` | The plan job of `supabase-checks.yml`: from the inputs and one read of the pull request's file list, the lanes a run needs (Database, Edge Functions, Migration Lint), each with its runner. A check runs on a change to its own paths only; a list not read in full runs every check that is on. The rules are `plan.sh`, the rows `test.sh` |
+| `actions/schema-drift` | Runs `supabase db schema declarative sync --no-apply` (strict coverage by default) on the clean checkout and fails when it writes a migration, printing it to the log and the job summary. Stack mode for its own step only, so it runs on the native runtime with no Docker, and caches the native downloads under its own exact key. What the Database lane of `supabase-checks.yml` calls after `supabase/setup-cli` |
 | `actions/android-distribute` | The steps after a signed Android build: resolves the APK glob (an unsigned APK never counts), attaches every APK to the tag's GitHub Release, and hands one to Firebase App Distribution with the Release body as its notes. What `android-deploy.yml` runs |
 | `actions/zavet-check` | Verifies a repo's `.zavet/` knowledge layer: decision checks, guard trailers, an optional audit, and a comment only on failure. What `zavet-check.yml` and `pr-checks.yml`'s zavet step run. The caller checks out with full history first. `env-file` reuses a job's own setup and install; `comment: false` writes the report to a directory instead of posting it |
 | `actions/react-doctor` | Checks out with full history and runs React Doctor. What `react-doctor.yml` and `pr-checks.yml`'s React Doctor step run. `checkout: false` uses the caller's checkout; `comment: false` posts nothing (no comment, review comment or commit status) and writes a short report instead |
@@ -1271,52 +1273,78 @@ does not. The rest of `.next` is never cached.
 ## Supabase checks
 
 `supabase-checks.yml` covers the Supabase-side checks a bun/node `pr-checks.yml`
-run never touches: a Deno edge-function check, a generated-types check, and
-pgTAP tests, plus an opt-in lint of the migrations a pull request changes. The
-jobs that start Postgres run on `ubuntu-latest` only, with no runner picker —
-the self-hosted fleet runs jobs inside containers on a shared daemon, so
-`supabase db start` publishes postgres's ports on the HOST while the CLI polls
-the CONTAINER's own localhost. `migration-lint` starts no database and only
-reads files, so it runs on the light pool of a private repo and on hosted
-otherwise. `concurrency`, `paths:` and the dispatch-aware draft gate stay with
-you, same as `pr-checks.yml`.
+run never touches: a Deno edge-function check, a generated-types check, pgTAP
+tests, a declarative schema drift check, and a lint of the migrations a pull
+request changes. Every one is off until you turn it on. `concurrency`, `paths:`
+and the dispatch-aware draft gate stay with you, same as `pr-checks.yml`.
+
+The job graph has the shape of `pr-checks.yml` (DODI-00056). `Plan` reads the
+inputs and the pull request's file list and emits the lanes this run needs.
+`lanes` runs them, one matrix leg each. `Supabase Checks` is the one row to
+require: a lane that failed or was cancelled fails it, and no lane at all passes
+it. A feature left off, or a pull request that touches none of its paths, books
+no runner and leaves no row.
+
+| Lane | Runs when | Steps | Runner |
+|---|---|---|---|
+| Database | a database check is on and the pull request touches its paths: `migrations-paths` for types and the seed, plus `supabase/tests` for pgTAP, plus `schema-path` and `supabase/config.toml` for the drift check | one CLI install, at most one local stack, then each enabled check; a failing check does not stop the next | hosted: on the fleet a job runs in a container on a shared daemon, where `db start` publishes ports on the host and the CLI polls the container |
+| Edge Functions | `deno-dir` is set and the pull request touches it, the root `deno.json`/`deno.jsonc`/`import_map.json`, or `supabase/config.toml` | `deno check`, `deno lint` | light pool on a private repo, hosted otherwise |
+| Migration Lint | `migration-lint` is on and the pull request touches `migrations-path` | squawk over the changed migrations | light pool on a private repo, hosted otherwise |
 
 | Input | Default | Meaning |
 |---|---|---|
 | `cli-version` | *(required)* | Supabase CLI version, pinned exact with a `renovate: datasource=npm depName=supabase` marker tracking the same `supabase` devDependency the repo installs from. Generated types must come from that same CLI or the diff below fails on formatting, not schema. |
-| `types-path` | `""` | Path of the committed generated types. Empty disables the `types` job (reported skipped, not failed). |
-| `migrations-paths` | `supabase/migrations`, `supabase/seed.sql` | Newline-separated paths (a directory covers what is under it) or globs whose change triggers the heavy steps of the `types` and `pgtap` jobs on a pull request (`pgtap` also on a change under `supabase/tests`). Any event that is not a pull request always runs them. |
+| `types-path` | `""` | Path of the committed generated types. Empty turns the types check off. |
+| `migrations-paths` | `supabase/migrations`, `supabase/seed.sql` | Newline-separated paths (a directory covers what is under it) or globs whose change starts the database checks on a pull request: types and the seed on these, pgTAP also on `supabase/tests`, the drift check also on `schema-path` and `supabase/config.toml`. Blank means no filter. Any event that is not a pull request always runs them. |
 | `seed-check` | `false` | Re-apply `supabase/seed.sql` after `db start` to prove it is re-runnable. |
-| `deno-dir` | `""` | Directory of Deno-only source, e.g. `supabase/functions`. Empty disables the `deno` job. |
-| `pgtap` | `false` | Run `supabase test db` in its own job. |
-| `migration-lint` | `false` | Lint the migrations a pull request adds or changes with [squawk](https://squawkhq.com), in its own job. Off reports the job as skipped. |
-| `migrations-path` | `supabase/migrations` | The one directory `migration-lint` lints. Not `migrations-paths` (plural): that is the list of paths whose change starts the `types` and `pgtap` jobs. Only `*.sql` files the pull request added, modified or renamed under this path are linted, so a migration already applied never fails a pull request. |
+| `deno-dir` | `""` | Directory of Deno-only source, e.g. `supabase/functions`. Empty turns the Edge Functions lane off. |
+| `pgtap` | `false` | Run `supabase test db` in the Database lane. |
+| `migration-lint` | `false` | Lint the migrations a pull request adds or changes with [squawk](https://squawkhq.com), in the Migration Lint lane. |
+| `migrations-path` | `supabase/migrations` | The one directory the Migration Lint lane lints. Not `migrations-paths` (plural): that is the list of paths whose change starts the Database lane. Only `*.sql` files the pull request added, modified or renamed under this path are linted, so a migration already applied never fails a pull request. |
 | `migration-lint-excluded-rules` | `""` | squawk rule names to skip, separated by commas or whitespace. Passed as `--exclude`, which replaces `excluded_rules` in the repo's `.squawk.toml`; every other setting in that file (`pg_version`, `assume_in_transaction`, `excluded_paths`) still applies. |
-| `migration-lint-blocking` | `false` | `false` reports findings as warnings and the job stays green, so the baseline is visible first. `true` fails the job on any finding. squawk failing to install or run fails it either way. |
+| `migration-lint-blocking` | `false` | `false` reports findings as warnings and the lane stays green, so the baseline is visible first. `true` fails the lane on any finding. squawk failing to install or run fails it either way. |
+| `schema-drift` | `false` | For a repo whose schema lives in `supabase/schemas` and whose migrations are generated from it: fail when `supabase db schema declarative sync` would write a new migration. Needs CLI 3. A step of the Database lane, always on the native runtime. |
+| `schema-path` | `supabase/schemas` | The declarative schema directory. A change to it, to `migrations-paths` or to `supabase/config.toml` starts the drift check on a pull request. |
+| `schema-drift-strict-coverage` | `true` | Pass `--strict-coverage`, so an object the diff engine cannot manage fails the check instead of being left out with a warning. |
 | `deno-version` | `v2.x` | Passed straight to `denoland/setup-deno`. |
-| `timeout-minutes` | `30` | Per job. |
+| `timeout-minutes` | `30` | Per lane. |
 
-The `types` and `pgtap` jobs read the pull request's file list through the API
-instead of cloning the history, and always report success, never skipped, when
-nothing relevant changed. Reading it needs `pull-requests: read` on the token; a
-caller that narrows `permissions:` must keep it, and without it the jobs run
-everything rather than skip. The local stack's Docker images are cached between
+`Plan` reads the pull request's file list through the API instead of cloning the
+history. Reading it needs `pull-requests: read` on the token; a caller that
+narrows `permissions:` must keep it, and without it every enabled lane runs
+rather than none. The local stack's Docker images are cached between
 runs under an exact key: CLI version, runner OS and architecture, and a hash of
 `supabase/config.toml` and any `supabase/.temp/*-version`. A pull request's first
 run pulls them, since a cache saved on a pull request is visible to that pull
 request alone. Run these checks on pushes to the default branch as well, and every
 pull request reads what those runs saved.
 
-`migration-lint` reads the same file list, installs one pinned squawk binary
+The Migration Lint lane reads the same file list, installs one pinned squawk binary
 (checked against the release's sha256 digest) into the runner's temp directory,
 and lints the changed migrations only. Findings are annotations on the file and
 line, plus a table in the job summary. Turn `migration-lint-blocking` on once the
-baseline is clean. When no file under `migrations-path` changed it succeeds before
-the checkout. On any event but a pull request there is no diff, so it
-reports success without linting. When the file list cannot be read in full
-(an API error, or the 3000-file cap) it lints every `*.sql` under the path rather
-than none. It adds no permission: it needs the `pull-requests: read` the other
-jobs already use.
+baseline is clean. When no file under `migrations-path` changed the lane does
+not run. On any event but a pull request there is no diff, so it reports success
+without linting. When the file list cannot be read in full (an API error, or the
+3000-file cap) it lints every `*.sql` under the path rather than none. It needs
+only the `pull-requests: read` the plan already uses.
+
+The drift check (`schema-drift`) is for a repo that declares its schema in
+`supabase/schemas` and generates every DDL migration from it. Its unit tests
+often load the schema files straight into a database, so nothing else notices a
+schema edit committed without its migration, or a migration hand-written without
+the schema change, and `db push` would deploy a schema nobody declared. The step
+runs the command the repo's `db:sync` script runs, `supabase db schema
+declarative sync --no-apply --strict-coverage`, on a clean checkout: the CLI
+replays the migrations into one throwaway database, loads the schema files into
+another and diffs them. Any migration it writes is the drift: the step prints it
+to the log and the job summary and fails. It always runs on the CLI's native
+runtime (stack mode, every service a host process), whatever `runtime` says, so
+it needs no Docker daemon and caches only the services the diff uses. Stack mode
+is set for that step alone, so a Docker stack in the same lane keeps working.
+`supabase/config.toml` must be one stack mode accepts, which a native local stack
+needs anyway. dev-standards' `repo-triage-setup` holds the fleet convention it
+checks (`references/declarative-schemas.md`).
 
 ```yaml
 jobs:
@@ -1333,6 +1361,8 @@ jobs:
       # Opt in advisory first; add `migration-lint-blocking: true` once clean.
       migration-lint: true
       migration-lint-excluded-rules: require-concurrent-index-creation
+      # The repo keeps its schema in supabase/schemas and generates migrations.
+      schema-drift: true
 ```
 
 ## Runners

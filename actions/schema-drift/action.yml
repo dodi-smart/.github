@@ -1,0 +1,43 @@
+# The drift step of `supabase-checks.yml`'s Database lane. Thin wrapper; the
+# check is drift.sh, its cases test.sh. Run it after `supabase/setup-cli` and a
+# checkout.
+#
+# It owns its native runtime: stack mode for its own step only, so a Docker
+# stack the job started keeps answering the steps before and after it, and the
+# service downloads cached under an exact key (CLI version, OS, architecture, a
+# hash of `supabase/config.toml` and `supabase/.temp/*-version`), with no
+# `restore-keys`, the rule `supabase-start` follows.
+name: Schema drift
+description: Fail when the committed migrations do not match the declarative schema, on the CLI's native runtime.
+
+inputs:
+  schema-path:
+    description: The declarative schema directory.
+    default: supabase/schemas
+  strict-coverage:
+    description: "'true' adds --strict-coverage: an object the diff engine cannot manage fails the check."
+    default: 'true'
+
+runs:
+  using: composite
+  steps:
+    - id: key
+      shell: bash
+      run: |
+        set -euo pipefail
+        command -v supabase > /dev/null || { echo "::error::schema-drift needs the Supabase CLI on PATH; run supabase/setup-cli first"; exit 1; }
+        pins="$({ cat supabase/config.toml supabase/.temp/*-version 2>/dev/null || true; } | sha256sum | cut -c1-16)"
+        echo "key=supabase-native-drift-v1-${RUNNER_OS}-${RUNNER_ARCH}-$(supabase --version)-${pins}" >> "$GITHUB_OUTPUT"
+
+    - uses: actions/cache@v6
+      with:
+        path: ~/.supabase/cache/stack
+        key: ${{ steps.key.outputs.key }}
+
+    - shell: bash
+      env:
+        SUPABASE_EXPERIMENTAL_STACK: "1"
+        SCHEMA_PATH: ${{ inputs.schema-path }}
+        STRICT: ${{ inputs.strict-coverage }}
+        ACTION_PATH: ${{ github.action_path }}
+      run: '"$ACTION_PATH/drift.sh"'

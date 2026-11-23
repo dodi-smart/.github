@@ -10,22 +10,22 @@
 # all three depend on that repo's branches and layout. A caller that also runs
 # `pr-checks.yml` should gate both jobs with the same `if:`.
 #
-# Every job that starts Postgres stays on `ubuntu-latest`, with no runner
-# picker: the self-hosted fleet runs jobs INSIDE containers on a shared daemon,
-# so `supabase db start` publishes postgres's ports on the HOST's localhost
-# while the CLI polls the CONTAINER's own 127.0.0.1, where nothing listens.
-# `ubuntu-latest` is the only runner class here where the CLI's own localhost is
-# the one postgres bound. `runtime: native` runs no containers at all, which
-# removes that reason; moving native jobs onto the fleet is a separate change,
-# once a native run is proven.
+# The job graph follows DODI-00056, the shape `pr-checks.yml` has: `plan` reads
+# the inputs and the pull request's file list and emits the lanes this run
+# needs; `lanes` runs them, one matrix leg each, with one checkout and one
+# install per lane; `Supabase Checks` is the one row a caller requires. A
+# feature left off, or a pull request that touches none of its paths, books no
+# runner and leaves no row. The lanes:
 #
-# `migration-lint` is the exception: it starts no database and only reads files,
-# so it runs on the light pool of a private repo and on hosted otherwise.
-#
-# Each job's `if:` is written so a disabled feature reports `skipped`, never
-# `failure`. A caller can require `types` / `deno` / `pgtap` / `migration-lint`
-# as status checks on every repo that uses this workflow without breaking the
-# ones that leave a job off.
+# - Database: one CLI install and at most one local stack for the generated
+#   types, the seed re-run, pgTAP and the declarative schema drift check, each a
+#   step. Hosted: the self-hosted fleet runs jobs inside containers on a shared
+#   daemon, so `supabase db start` publishes postgres's ports on the host while
+#   the CLI polls the container's own localhost. The native runtime runs no
+#   containers, which removes that reason; moving the lane onto the fleet is a
+#   separate change, once a native run there is proven.
+# - Edge Functions and Migration Lint read files only, so they run on the light
+#   pool of a private repo and hosted otherwise.
 name: Supabase Checks
 
 on:
@@ -43,16 +43,16 @@ on:
       types-path:
         description: >-
           Path of the committed generated types file, e.g.
-          `src/lib/supabase/database.types.ts`. Empty disables the `types` job
-          entirely, reported as skipped.
+          `src/lib/supabase/database.types.ts`. Empty turns the types check off.
         type: string
         default: ""
       migrations-paths:
         description: >-
-          Newline-separated paths whose change triggers the heavy steps of the
-          `types` and `pgtap` jobs on a pull request (`pgtap` also runs on a
-          change under `supabase/tests`). Any event that is not a pull request
-          ignores this and always runs them.
+          Newline-separated paths whose change starts the database checks on a
+          pull request: types and the seed on these, pgTAP also on
+          `supabase/tests`, the drift check also on `schema-path` and
+          `supabase/config.toml`. Blank means no filter. Any event that is not a
+          pull request ignores this and always runs them.
         type: string
         default: |
           supabase/migrations
@@ -66,17 +66,17 @@ on:
         default: false
       deno-dir:
         description: >-
-          Directory of Deno-only source, e.g. `supabase/functions`. Empty
-          disables the `deno` job entirely, reported as skipped.
+          Directory of Deno-only source, e.g. `supabase/functions`. Empty turns
+          the Edge Functions lane off.
         type: string
         default: ""
       pgtap:
-        description: "Run `supabase test db` (pgTAP suite in supabase/tests/) in its own job."
+        description: "Run `supabase test db` (the pgTAP suite in supabase/tests/) in the Database lane."
         type: boolean
         default: false
       runtime:
         description: >-
-          How the `types` and `pgtap` jobs run the local stack. `docker` (the
+          How the Database lane runs the local stack for types, seed and pgTAP. `docker` (the
           default) is the CLI's `supabase db start` on the runner's Docker.
           `native` is the CLI's stack mode on its native runtime: every service
           is a host process, with no container engine, Postgres starts at once
@@ -84,39 +84,65 @@ on:
           directory. It needs `cli-version` 2.119 or later and a config stack
           mode accepts (no auth email `content_path` outside `[remotes.*]`).
           Generated types depend on `cli-version`, not on the runtime: bumping
-          the CLI to reach 2.119 can change the committed types file.
+          the CLI to reach 2.119 can change the committed types file. The drift
+          check always runs natively, whatever this says.
         type: string
         default: docker
       migration-lint:
         description: >-
           Lint the SQL migrations a pull request adds or changes with squawk, in
-          its own job that starts no database. Off reports the job as skipped.
+          a lane that starts no database.
         type: boolean
         default: false
       migrations-path:
         description: >-
-          Directory the `migration-lint` job lints. Singular, and not the same
+          Directory the Migration Lint lane lints. Singular, and not the same
           input as `migrations-paths`: that one is a list of paths whose change
-          starts the `types` and `pgtap` jobs, and this one is the single
-          directory of migrations squawk reads. Only `*.sql` files the pull
+          starts the Database lane, and this one is the single directory of
+          migrations squawk reads. Only `*.sql` files the pull
           request added, modified or renamed under it are linted.
         type: string
         default: supabase/migrations
       migration-lint-excluded-rules:
         description: >-
-          squawk rule names `migration-lint` skips, separated by commas or
+          squawk rule names the lint skips, separated by commas or
           whitespace. Passed as `--exclude`, which replaces `excluded_rules` in
           the repo's `.squawk.toml`; the rest of that file still applies.
         type: string
         default: ""
       migration-lint-blocking:
         description: >-
-          `false` (the default) reports findings as warnings and the job stays
+          `false` (the default) reports findings as warnings and the lane stays
           green, so the baseline is visible before anything can fail. `true`
-          fails the job on any finding. squawk failing to install or run fails
+          fails the lane on any finding. squawk failing to install or run fails
           it either way.
         type: boolean
         default: false
+      schema-drift:
+        description: >-
+          For a repo that keeps its schema declaratively under `schema-path` and
+          generates migrations from it with `supabase db schema declarative sync`:
+          run that sync against the committed migrations and fail when it would
+          write a new one, so a schema edit committed without its migration
+          cannot reach a deploy. Needs a CLI 3 `cli-version` that has the
+          command. A step of the Database lane, always on the native runtime.
+        type: boolean
+        default: false
+      schema-path:
+        description: >-
+          The declarative schema directory. A pull request that changes it starts
+          the drift check.
+        type: string
+        default: supabase/schemas
+      schema-drift-strict-coverage:
+        description: >-
+          Pass `--strict-coverage`, so an object the diff engine cannot manage
+          (a cast, an operator, a function of your own inside `auth` or
+          `storage`) fails the check instead of being left out of the diff
+          with a warning. Turn it off only while such an object moves to a
+          hand-written migration.
+        type: boolean
+        default: true
       deno-version:
         type: string
         default: "v2.x"
@@ -125,37 +151,96 @@ on:
         default: 30
 
 jobs:
-  types:
-    name: Database Types Check
-    if: ${{ inputs.types-path != '' }}
-    runs-on: ubuntu-latest
-    timeout-minutes: ${{ inputs.timeout-minutes }}
+  # Decides which lanes this run needs, so a disabled feature or an untouched
+  # path books no runner and leaves no row (DODI-00056). Reads the pull
+  # request's file list through the API, without a checkout.
+  plan:
+    name: Plan
+    runs-on: ${{ fromJSON((github.event.repository.private && !github.event.pull_request.head.repo.fork) && '["self-hosted","Linux","light"]' || '"ubuntu-latest"') }}
+    timeout-minutes: 10
+    outputs:
+      lanes: ${{ steps.plan.outputs.lanes }}
     steps:
+      - uses: dodi-smart/.github/actions/runner-report@v1
+
+      # One read of the pull request's file list; the plan matches each check's
+      # own paths against it. Any doubt (no pull request, an API error, the
+      # cap) leaves `complete` false, and every check that is on runs.
+      - id: files
+        uses: dodi-smart/.github/actions/changed-files@v1
+
+      # Database runs hosted (see the header); the file-only lanes take light.
+      - id: hosted
+        uses: dodi-smart/.github/actions/pick-runner@v1
+        with:
+          weight: hosted
+      - id: light
+        uses: dodi-smart/.github/actions/pick-runner@v1
+        with:
+          weight: light
+
+      - id: plan
+        uses: dodi-smart/.github/actions/supabase-checks-plan@v1
+        with:
+          types: ${{ inputs.types-path != '' }}
+          seed-check: ${{ inputs.seed-check }}
+          pgtap: ${{ inputs.pgtap }}
+          schema-drift: ${{ inputs.schema-drift }}
+          migration-lint: ${{ inputs.migration-lint }}
+          deno-dir: ${{ inputs.deno-dir }}
+          migrations-paths: ${{ inputs.migrations-paths }}
+          migrations-path: ${{ inputs.migrations-path }}
+          schema-path: ${{ inputs.schema-path }}
+          files-path: ${{ steps.files.outputs.files-path }}
+          complete: ${{ steps.files.outputs.complete }}
+          hosted: ${{ steps.hosted.outputs.runner }}
+          light: ${{ steps.light.outputs.runner }}
+
+  lanes:
+    name: ${{ matrix.name }}
+    needs: plan
+    if: ${{ needs.plan.outputs.lanes != '[]' }}
+    runs-on: ${{ fromJSON(matrix.runs_on) }}
+    timeout-minutes: ${{ inputs.timeout-minutes }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.plan.outputs.lanes) }}
+    steps:
+      - uses: dodi-smart/.github/actions/runner-report@v1
+
       - uses: actions/checkout@v7
         with: { persist-credentials: false }
 
-      # Only a pull request has a diff to read. Any other event (a dispatch, a
-      # push) matches everything, since someone pressing the button wants the
-      # checks, not a filter. So does a diff the API could not return.
-      - name: Check for migration or seed changes
-        id: changes
-        uses: dodi-smart/.github/actions/changed-files@v1
+      # --- Edge Functions -----------------------------------------------------
+      - if: matrix.lane == 'deno'
+        uses: denoland/setup-deno@v2
         with:
-          patterns: ${{ inputs.migrations-paths }}
+          deno-version: ${{ inputs.deno-version }}
 
-      - name: Skip (no migration or seed changes)
-        if: steps.changes.outputs.matched != 'true'
-        run: echo "No migration or seed changes detected, skipping database checks."
+      - name: Type check edge functions
+        if: matrix.lane == 'deno'
+        working-directory: ${{ inputs.deno-dir }}
+        run: deno check --allow-import ./**/*.ts
 
+      - name: Lint edge functions
+        if: ${{ !cancelled() && matrix.lane == 'deno' }}
+        working-directory: ${{ inputs.deno-dir }}
+        run: deno lint
+
+      # --- Database -----------------------------------------------------------
+      # One CLI install and at most one stack for every database check. Each
+      # check runs while the stack is up, even when an earlier one failed, so a
+      # pull request sees every failure at once.
       - name: Setup Supabase CLI
-        if: steps.changes.outputs.matched == 'true'
+        if: matrix.lane == 'database'
         uses: supabase/setup-cli@v3.0.1
         with:
           version: ${{ inputs.cli-version }}
 
       - name: Start Supabase (local)
         id: start
-        if: steps.changes.outputs.matched == 'true'
+        if: matrix.lane == 'database' && (inputs.types-path != '' || inputs.seed-check || inputs.pgtap)
         uses: dodi-smart/.github/actions/supabase-start@v1
         with:
           runtime: ${{ inputs.runtime }}
@@ -167,7 +252,7 @@ jobs:
       # The URL comes from the start step: a stack-mode project (either runtime,
       # or a config with `stack = true`) listens on a port the CLI picked.
       - name: Verify the seed is re-runnable
-        if: steps.changes.outputs.matched == 'true' && inputs.seed-check
+        if: ${{ !cancelled() && inputs.seed-check && steps.start.outcome == 'success' }}
         env:
           DB_URL: ${{ steps.start.outputs.db-url }}
         run: |
@@ -175,7 +260,7 @@ jobs:
           echo "Seed re-applied cleanly."
 
       - name: Verify types (local)
-        if: steps.changes.outputs.matched == 'true'
+        if: ${{ !cancelled() && inputs.types-path != '' && steps.start.outcome == 'success' }}
         env:
           TYPES_PATH: ${{ inputs.types-path }}
         run: |
@@ -214,104 +299,45 @@ jobs:
           fi
           echo "TypeScript types are up-to-date"
 
-  deno:
-    name: Edge Functions Check
-    if: ${{ inputs.deno-dir != '' }}
-    runs-on: ubuntu-latest
-    timeout-minutes: ${{ inputs.timeout-minutes }}
-    steps:
-      - uses: actions/checkout@v7
-        with: { persist-credentials: false }
-
-      - uses: denoland/setup-deno@v2
-        with:
-          deno-version: ${{ inputs.deno-version }}
-
-      - name: Type check edge functions
-        working-directory: ${{ inputs.deno-dir }}
-        run: deno check --allow-import ./**/*.ts
-
-      - name: Lint edge functions
-        working-directory: ${{ inputs.deno-dir }}
-        run: deno lint
-
-  pgtap:
-    name: Database Tests
-    if: ${{ inputs.pgtap }}
-    runs-on: ubuntu-latest
-    timeout-minutes: ${{ inputs.timeout-minutes }}
-    steps:
-      - uses: actions/checkout@v7
-        with: { persist-credentials: false }
-
-      # Reports success, not skipped, when nothing relevant changed, the way the
-      # `types` job does, so a caller can require it on every pull request.
-      - name: Check for migration, seed or test changes
-        id: changes
-        uses: dodi-smart/.github/actions/changed-files@v1
-        with:
-          # The same paths as the `types` job, plus the tests themselves. A blank
-          # `migrations-paths` means no filter, so the tests path is left out then:
-          # it would turn "always run" into "run when a test changed".
-          patterns: ${{ inputs.migrations-paths != '' && format('{0}{1}supabase/tests', inputs.migrations-paths, fromJSON('"\n"')) || '' }}
-
-      - name: Skip (no migration, seed or test changes)
-        if: steps.changes.outputs.matched != 'true'
-        run: echo "No migration, seed or test changes detected, skipping database tests."
-
-      - name: Setup Supabase CLI
-        if: steps.changes.outputs.matched == 'true'
-        uses: supabase/setup-cli@v3.0.1
-        with:
-          version: ${{ inputs.cli-version }}
-
-      - name: Start Supabase (local)
-        if: steps.changes.outputs.matched == 'true'
-        uses: dodi-smart/.github/actions/supabase-start@v1
-        with:
-          runtime: ${{ inputs.runtime }}
-
       # `supabase test db` runs pg_prove over supabase/tests/*.sql against the
       # local database. Every file is expected to be self-contained (begin ...
       # rollback), so order does not matter and the seed `db start` applied is
       # left untouched.
       - name: Run pgTAP suite
-        if: steps.changes.outputs.matched == 'true'
+        if: ${{ !cancelled() && inputs.pgtap && steps.start.outcome == 'success' }}
         run: supabase test db --debug
 
-  # No database, so no reason to be on a hosted runner: this runs on the light
-  # pool of a private repo, through the same expression as the other light jobs.
-  # `runner-report` is first and needs no permission. The job asks for none of
-  # its own: it reads the file list with the `pull-requests: read` the `types`
-  # and `pgtap` jobs already rely on.
-  migration-lint:
-    name: Migration Lint
-    if: ${{ inputs.migration-lint }}
-    runs-on: ${{ fromJSON((github.event.repository.private && !github.event.pull_request.head.repo.fork) && '["self-hosted","Linux","light"]' || '"ubuntu-latest"') }}
-    timeout-minutes: ${{ inputs.timeout-minutes }}
-    steps:
-      - uses: dodi-smart/.github/actions/runner-report@v1
-
-      # Reports success, not skipped, when no migration changed, the way `types`
-      # and `pgtap` do, and without a checkout: the file list comes from the API.
-      - name: Check for migration changes
-        id: changes
-        uses: dodi-smart/.github/actions/changed-files@v1
+      # Always native, whatever `runtime` says: the action runs the sync's
+      # throwaway databases in stack mode for its own step, with no Docker.
+      - name: Compare migrations with the declarative schema
+        if: ${{ !cancelled() && matrix.lane == 'database' && inputs.schema-drift }}
+        uses: dodi-smart/.github/actions/schema-drift@v1
         with:
-          patterns: ${{ inputs.migrations-path }}
+          schema-path: ${{ inputs.schema-path }}
+          strict-coverage: ${{ inputs.schema-drift-strict-coverage }}
 
-      - name: Skip (no migration changes)
-        if: steps.changes.outputs.matched != 'true'
-        run: echo "No migration changes detected, nothing to lint."
-
-      - uses: actions/checkout@v7
-        if: steps.changes.outputs.matched == 'true'
-        with: { persist-credentials: false }
-
+      # --- Migration Lint ------------------------------------------------------
       - name: Lint changed migrations
-        if: steps.changes.outputs.matched == 'true'
+        if: matrix.lane == 'migration-lint'
         uses: dodi-smart/.github/actions/migration-lint@v1
         with:
           migrations-path: ${{ inputs.migrations-path }}
           excluded-rules: ${{ inputs.migration-lint-excluded-rules }}
           blocking: ${{ inputs.migration-lint-blocking }}
+
+  # The one row a caller requires. A lane that failed or was cancelled fails it;
+  # no lane at all (nothing enabled, nothing changed) passes it.
+  supabase-checks:
+    name: Supabase Checks
+    needs: [plan, lanes]
+    if: always()
+    runs-on: ${{ fromJSON((github.event.repository.private && !github.event.pull_request.head.repo.fork) && '["self-hosted","Linux","light"]' || '"ubuntu-latest"') }}
+    timeout-minutes: 5
+    steps:
+      - uses: dodi-smart/.github/actions/runner-report@v1
+      - name: Summarize
+        if: ${{ !cancelled() }}
+        uses: dodi-smart/.github/actions/pr-checks-summary@v1
+        with:
+          needs: ${{ toJSON(needs) }}
+          label: supabase-checks

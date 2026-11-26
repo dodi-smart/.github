@@ -1,3 +1,9 @@
+## [1.57.0](https://github.com/dodi-smart/.github/compare/v1.56.1...v1.57.0) (2026-11-26)
+
+### ✨ Features
+
+* **merge-gate:** add the change-request policy ([0dad947](https://github.com/dodi-smart/.github/commit/0dad947c58a5ac38cbdafe65833959b2cab657df))
+
 ## [1.56.1](https://github.com/dodi-smart/.github/compare/v1.56.0...v1.56.1) (2026-11-23)
 
 ### 🐛 Bug Fixes

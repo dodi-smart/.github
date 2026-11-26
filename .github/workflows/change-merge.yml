@@ -64,11 +64,11 @@ jobs:
       checks: read          # the required check run
       statuses: read        # change / recomputed, change / judge-skipped and judge / verdict
     steps:
-      - uses: dodi-smart/.github/actions/runner-report@v1
+      - uses: dodi-smart/.github/actions/runner-report@pinned/v1.57.0
         with:
           selector: '["self-hosted","Linux","light"]'
 
-      - uses: dodi-smart/.github/actions/merge-gate@v1
+      - uses: dodi-smart/.github/actions/merge-gate@pinned/v1.57.0
         with:
           policy:         change-request
           required-check: ${{ inputs.required-check }}

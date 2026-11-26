@@ -484,6 +484,38 @@ jobs:
           print('android-deploy: permissions: {}, no persisted token, SHA-pinned secrets actions, cleanup last and always')
           PY
 
+      # A release must never go red because its watcher could not be told, and the token that tells it must reach
+      # one repository only, with only the permission a repository_dispatch needs.
+      - name: Release Completed only starts the watcher and never fails a release
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import sys, yaml
+          wf = yaml.safe_load(open('.github/workflows/release-completed.yml'))
+          job = wf['jobs']['notify']
+          bad = []
+          if job.get('permissions') != {}:
+              bad.append('the notify job asks for GITHUB_TOKEN permissions')
+          steps = {s.get('id') or s.get('name'): s for s in job['steps']}
+          tok = steps.get('app-token', {})
+          w = tok.get('with') or {}
+          perms = sorted(k for k in w if k.startswith('permission-'))
+          if perms != ['permission-contents'] or w.get('permission-contents') != 'write':
+              bad.append('the App token must ask for contents: write only (a repository_dispatch), got %s' % perms)
+          if not w.get('repositories'):
+              bad.append('the App token is not narrowed to the watcher repository')
+          if not tok.get('continue-on-error'):
+              bad.append('a missing App token would fail the release')
+          tell = steps.get('Tell the watcher', {})
+          if '::warning' not in tell.get('run', '') or 'exit 1' in tell.get('run', ''):
+              bad.append('a failed dispatch must warn, not fail')
+          if 'RELEASE_WATCH_REPO' not in str(job.get('if')):
+              bad.append('the job runs even when no watcher is configured')
+          if bad:
+              print('::error::' + '; '.join(bad)); sys.exit(1)
+          print('release-completed dispatches to one repository and never fails a release')
+          PY
+
       # `sticky-comment` is read only in tag mode, which a non-empty `prompt`
       # switches off. The pair costs a full agent run and posts nothing.
       # run-agent refuses it at runtime; this catches it at review time.

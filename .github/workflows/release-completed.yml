@@ -1,0 +1,93 @@
+# Reusable: tell the release watcher that a release run has finished delivering, so it checks this one
+# repository within minutes instead of at its next scheduled sweep.
+#
+# Add it as the LAST job of the release caller, after every job that delivers the release (an upload, a deploy,
+# a store build), and run it even when one of them failed, because a failed delivery is what the watcher is for:
+#
+#   release-completed:
+#     needs: [release, android, drive]          # release, then every deliver job
+#     if: ${{ !cancelled() }}
+#     uses: dodi-smart/.github/.github/workflows/release-completed.yml@v1
+#     with:
+#       released: ${{ needs.release.outputs.released }}
+#     secrets:
+#       GH_APP_CLIENT_ID: ${{ secrets.GH_APP_CLIENT_ID }}
+#       GH_APP_PRIVATE_KEY: ${{ secrets.GH_APP_PRIVATE_KEY }}
+#
+# It sends the watcher a `release-completed` repository_dispatch naming this repository. The watcher's repository
+# is the organisation variable RELEASE_WATCH_REPO (owner/name) and never written here; unset, nothing is sent.
+# The org App token is narrowed to that one repository; a repository_dispatch needs `contents: write` there,
+# the permission the App already holds for promote.yml's dispatch (it has no `actions: write` for a
+# workflow_dispatch). A run that released nothing sends nothing. A failed send only warns: the release stands,
+# and the watcher's scheduled sweep catches the run anyway.
+#
+# Cost: one call of the org App's API budget per release, none of a person's.
+name: Release Completed
+
+on:
+  workflow_call:
+    inputs:
+      released:
+        description: "needs.release.outputs.released of the caller; anything but 'true' sends nothing"
+        type: string
+        required: true
+    secrets:
+      GH_APP_CLIENT_ID:   { required: false }
+      GH_APP_PRIVATE_KEY: { required: false }
+
+permissions: {}
+
+jobs:
+  notify:
+    # Payload-only filter, so a run that released nothing, or an org without a watcher, books no runner.
+    if: inputs.released == 'true' && vars.RELEASE_WATCH_REPO != ''
+    runs-on: ${{ fromJSON((github.event.repository.private && !github.event.pull_request.head.repo.fork) && '["self-hosted","Linux","light"]' || '"ubuntu-latest"') }}
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      # No token: the job holds no `actions: read`, so the report names the runner without asking the jobs API.
+      - uses: dodi-smart/.github/actions/runner-report@v1
+        with:
+          selector: light
+          token: ""
+
+      - name: Split the watcher's name
+        id: target
+        env:
+          TARGET: ${{ vars.RELEASE_WATCH_REPO }}
+        run: |
+          set -euo pipefail
+          [[ $TARGET == */* ]] || { echo "::warning title=Release watcher not told::RELEASE_WATCH_REPO is not owner/name: $TARGET"; exit 0; }
+          echo "owner=${TARGET%%/*}" >> "$GITHUB_OUTPUT"
+          echo "name=${TARGET#*/}" >> "$GITHUB_OUTPUT"
+
+      # Not actions/app-token: it always adds this repository and the owner's, and this token is for the
+      # watcher's repository alone.
+      - name: Mint a token for the watcher's repository alone
+        id: app-token
+        if: steps.target.outputs.name != ''
+        continue-on-error: true
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ secrets.GH_APP_CLIENT_ID }}
+          private-key: ${{ secrets.GH_APP_PRIVATE_KEY }}
+          owner: ${{ steps.target.outputs.owner }}
+          repositories: ${{ steps.target.outputs.name }}
+          permission-contents: write
+
+      - name: Tell the watcher
+        if: steps.app-token.outputs.token != ''
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          TARGET: ${{ vars.RELEASE_WATCH_REPO }}
+          REPO: ${{ github.repository }}
+        run: |
+          if gh api "repos/$TARGET/dispatches" -f event_type=release-completed -f "client_payload[repo]=$REPO" >/dev/null; then
+            echo "Told the release watcher to check $REPO." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "::warning title=Release watcher not told::the dispatch to $TARGET failed. The release stands; the watcher's scheduled sweep checks this run."
+          fi
+
+      - name: Say why nothing was sent
+        if: steps.app-token.outcome == 'failure'
+        run: echo "::warning title=Release watcher not told::no org App token (GH_APP_CLIENT_ID and GH_APP_PRIVATE_KEY not passed?). The release stands."

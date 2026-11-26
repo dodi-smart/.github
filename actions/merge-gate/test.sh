@@ -232,6 +232,62 @@ check "squash-body keeps each round trailer, in order" \
   test "$body" = $'Factory-Round: 0\nFactory-Issue: 4\nDecision: D-1\nFactory-Round: 1\nCo-Authored-By: A <a@example.com>\nFactory-Round: 2'
 check "squash-body of nothing is empty" test -z "$(: | "$HERE/gate.sh" squash-body)"
 
+# change-request: the org App's change PR from the calling repository's
+# change-requests workflow. Its statuses are given as STATUSES, the way the API lists them:
+# `change / recomputed` (main's tools gave the PR's tree), `judge / verdict`
+# and `change / judge-skipped` (the owner skipped the judge), each counted only
+# when the org App (app[bot]) posted it.
+RC=$(st 'change / recomputed' success 'app[bot]' 1)
+JV=$(st 'judge / verdict' success 'app[bot]' 2)
+JS=$(st 'change / judge-skipped' success 'app[bot]' 3)
+CR=(POLICY=change-request 'LABELS=[]' HEAD_REF=change-request/0d1e AUTHOR='app[bot]' APP_BOT='app[bot]' "STATUSES=$(sts "$RC" "$JV")")
+decide "change: the base unreadable"                              false "${CR[@]}" BASE_REF=
+decide "change: the default branch unreadable"                    false "${CR[@]}" DEFAULT_BRANCH=
+decide "change: a bare change-request/ head"                      false "${CR[@]}" HEAD_REF=change-request/
+decide "change: the head ref unreadable"                          false "${CR[@]}" HEAD_REF=
+decide "change: the App's login unreadable"                       false "${CR[@]}" APP_BOT=
+decide "change: the required check failed"                        false "${CR[@]}" CHECK=failure
+decide "change: the required check has not reported"              false "${CR[@]}" CHECK=
+decide "change: no change / recomputed"                           false "${CR[@]}" "STATUSES=$(sts "$JV")"
+decide "change: change / recomputed failed"                       false "${CR[@]}" "STATUSES=$(sts "$(st 'change / recomputed' failure 'app[bot]' 1)" "$JV")"
+decide "change: change / recomputed pending"                      false "${CR[@]}" "STATUSES=$(sts "$(st 'change / recomputed' pending 'app[bot]' 1)" "$JV")"
+decide "change: change / recomputed by another identity"          false "${CR[@]}" "STATUSES=$(sts "$(st 'change / recomputed' success mallory 1)" "$JV")"
+decide "change: the App's newer recomputed failure wins"          false "${CR[@]}" "STATUSES=$(sts "$RC" "$JV" "$(st 'change / recomputed' failure 'app[bot]' 9)")"
+decide "change: no judge / verdict"                               false "${CR[@]}" "STATUSES=$(sts "$RC")"
+decide "change: the judge asks for changes"                       false "${CR[@]}" "STATUSES=$(sts "$RC" "$(st 'judge / verdict' failure 'app[bot]' 2)")"
+decide "change: the judge is still reading"                       false "${CR[@]}" "STATUSES=$(sts "$RC" "$(st 'judge / verdict' pending 'app[bot]' 2)")"
+decide "change: the judge timed out"                              false "${CR[@]}" "STATUSES=$(sts "$RC" "$(st 'judge / verdict' error 'app[bot]' 2)")"
+decide "change: judge / verdict by the judge's own login"         false "${CR[@]}" "STATUSES=$(sts "$RC" "$(st 'judge / verdict' success 'dodi-judge[bot]' 2)")"
+decide "change: judge skipped by someone else, no judge"          false "${CR[@]}" "STATUSES=$(sts "$RC" "$(st 'change / judge-skipped' success mallory 3)")"
+decide "change: judge skipped, but no change / recomputed"        false "${CR[@]}" "STATUSES=$(sts "$JS")"
+decide "change: judge skipped, recomputed by another identity"    false "${CR[@]}" "STATUSES=$(sts "$(st 'change / recomputed' success mallory 1)" "$JS")"
+decide "change: judge skipped pending"                            false "${CR[@]}" "STATUSES=$(sts "$RC" "$(st 'change / judge-skipped' pending 'app[bot]' 3)")"
+decide "change: judge skipped, but the judge asks for changes"    false "${CR[@]}" "STATUSES=$(sts "$RC" "$JS" "$(st 'judge / verdict' failure 'app[bot]' 2)")"
+decide "change: judge skipped, but the check failed"              false "${CR[@]}" "STATUSES=$(sts "$RC" "$JS")" CHECK=failure
+decide "change: recomputed and judged, green"                     true  "${CR[@]}"
+decide "change: recomputed, judge skipped by the App, green"      true  "${CR[@]}" "STATUSES=$(sts "$RC" "$JS")"
+decide "change: recomputed, the judge pending, skipped by the App" true "${CR[@]}" "STATUSES=$(sts "$RC" "$JS" "$(st 'judge / verdict' pending 'app[bot]' 2)")"
+says "change, frozen (the kill switch)" "the kill switch is 'false'" "${CR[@]}" KILL=false
+says "change, a wrong head" "the head branch is feat/x, not a change-request/* branch" "${CR[@]}" HEAD_REF=feat/x
+says "change, a wrong base" "the base is main, not the default branch develop" "${CR[@]}" BASE_REF=main
+says "change, not the App's PR" "the PR is by someone, not the org App (app[bot])" "${CR[@]}" AUTHOR=someone
+says "change, the login unreadable" \
+  "the org App's login could not be read, so the author cannot be checked (not counted: change / recomputed by app[bot], judge / verdict by app[bot]; the org App's login could not be read)" \
+  "${CR[@]}" APP_BOT=
+says "change, a conflict" "the change conflicts with develop: the change-requests workflow returns it" "${CR[@]}" MERGEABLE=dirty
+says "change, not recomputed" "change / recomputed is missing: the operation was not re-applied by main's tools" "${CR[@]}" "STATUSES=$(sts "$JV")"
+says "change, a forged recomputed" \
+  "change / recomputed is missing: the operation was not re-applied by main's tools (not counted: change / recomputed by mallory; only app[bot] posts these)" \
+  "${CR[@]}" "STATUSES=$(sts "$(st 'change / recomputed' success mallory 1)" "$JV")"
+says "change, the judge holds it" "judge / verdict asks for changes" "${CR[@]}" "STATUSES=$(sts "$RC" "$(st 'judge / verdict' failure 'app[bot]' 2)")"
+says "change, no judge" "waits for judge / verdict to approve (it is missing), or change / judge-skipped from the org App" "${CR[@]}" "STATUSES=$(sts "$RC")"
+says "change, a forged skip" \
+  "waits for judge / verdict to approve (it is missing), or change / judge-skipped from the org App (not counted: change / judge-skipped by mallory; only app[bot] posts these)" \
+  "${CR[@]}" "STATUSES=$(sts "$RC" "$(st 'change / judge-skipped' success mallory 3)")"
+says "change, a commit by someone else" "a commit is by an author this policy does not merge: someone" "${CR[@]}" FOREIGN=someone
+wants "a change PR never asks for a review"         false "${CR[@]}" "STATUSES=$(sts "$RC")"
+check "change: a conflict is never a rebase request" grep -qx 'rebase=false' <<<"$(gd "${CR[@]}" MERGEABLE=dirty)"
+
 # A status counts only from the identity that posts it.
 APPV=$(st 'review / verdict' success 'app[bot]' 5)
 FORGED=$(st 'review / verdict' success 'mallory' 6)
@@ -383,6 +439,27 @@ sy STUB_AUTHORS='app[bot] github-actions[bot]'
 check "run: a sync allows the App alone as a commit author"      grep -qxF 'reason=a commit is by an author this policy does not merge: github-actions[bot]' "$WORK/out"
 sy STUB_STATUSES="$(sts "$(st 'standards / verify' success 'app[bot]' 1)" "$(st 'standards / render' failure 'app[bot]' 2)")"
 check "run: an agent-touched sync is held, and asks for a review" bash -c 'grep -qx merge=false "$1" && grep -qx review-wanted=true "$1"' _ "$WORK/out"
+
+# cr [VAR=value ...]: the App's change PR into develop, recomputed and judged.
+JUDGED=$(sts "$(st 'change / recomputed' success 'app[bot]' 1)" "$(st 'judge / verdict' success 'app[bot]' 2)")
+cr() { run '[]' 'app[bot]' success '' '' POLICY=change-request HEAD_REF=change-request/0d1e AUTHOR='app[bot]' APP_BOT='app[bot]' \
+         STUB_STATUSES="$JUDGED" "$@"; }
+cr
+check "run: a recomputed, judged change merges"                  grep -qx 'merge=true' "$WORK/out"
+check "run: it reads the check, the authors and the statuses"    bash -c 'grep -q check-runs "$1" && grep -q "pulls/7/commits" "$1" && grep -q "/statuses" "$1"' _ "$WORK/calls"
+cr STUB_AUTHORS='app[bot] github-actions[bot]'
+check "run: a change allows the App alone as a commit author"    grep -qxF 'reason=a commit is by an author this policy does not merge: github-actions[bot]' "$WORK/out"
+cr STUB_STATUSES="$(sts "$(st 'change / recomputed' success 'app[bot]' 1)" "$(st 'change / judge-skipped' success 'app[bot]' 3)")"
+check "run: a change the owner let skip the judge merges"        grep -qx 'merge=true' "$WORK/out"
+cr KILL=false
+check "run: frozen reads nothing"                                test ! -s "$WORK/calls"
+check "run: and holds it"                                        grep -qx "reason=the kill switch is 'false'" "$WORK/out"
+cr HEAD_REF=feat/x
+check "run: another head reads no evidence"                      bash -c '! grep -qE "check-runs|statuses" "$1"' _ "$WORK/calls"
+cr AUTHOR=someone
+check "run: someone else's PR reads no evidence"                 bash -c '! grep -qE "check-runs|statuses" "$1"' _ "$WORK/calls"
+cr APP_BOT=
+check "run: no App login reads no evidence and is held"          bash -c '! grep -qE "check-runs|statuses" "$1" && grep -qx merge=false "$2"' _ "$WORK/calls" "$WORK/out"
 
 run '["backmerge:regenerated"]' '' success success '' POLICY=backmerge HEAD_REF=chore/backmerge-v1.2.3
 check "run: an approved regenerated back-merge merges"           grep -qx 'merge=true' "$WORK/out"

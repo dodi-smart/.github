@@ -7,7 +7,7 @@ description: Decide from labels, the required check, the review status and commi
 
 inputs:
   policy:
-    description: 'Which rule set decides: `deps` (a dependency bot''s minor, patch or lockfile update into the default branch), `factory` (an agent PR whose issue is on the merge tier), `backmerge` (the clean back-merge PR a hotfix release opens, merged with a merge commit), `hotfix` (an approved security patch on the hotfix lane into the release branch, squashed) or `standards-sync` (the org App''s pure, approved standards sync, squashed). Add a policy in gate.sh, never a second gate.'
+    description: 'Which rule set decides: `deps` (a dependency bot''s minor, patch or lockfile update into the default branch), `factory` (an agent PR whose issue is on the merge tier), `backmerge` (the clean back-merge PR a hotfix release opens, merged with a merge commit), `hotfix` (an approved security patch on the hotfix lane into the release branch, squashed), `standards-sync` (the org App''s pure, approved standards sync, squashed) or `change-request` (the org App''s recomputed, judged product change from the calling repository''s change-requests workflow, squashed with its trailers). Add a policy in gate.sh, never a second gate.'
     required: true
   number:
     description: 'PR number. Empty resolves it from a pull_request, workflow_run or status event.'
@@ -16,7 +16,7 @@ inputs:
     description: 'Check run name that must be success on the head commit'
     default: 'checks / PR Checks'
   kill-switch:
-    description: "An org variable's value. 'false' stops every merge through this gate."
+    description: "The caller's switch, usually a variable's value. 'false' stops every merge through this gate."
     default: ''
   release-branch:
     description: 'backmerge: the release branch whose commits the back-merge carries; its head must contain the merge commit''s second parent. hotfix: the base a security patch must have.'
@@ -110,12 +110,13 @@ runs:
 
     # Pinned to the commit the decision read: a push since then fails the
     # merge instead of merging what nobody verified. The App is the merge actor
-    # the org rulesets accept. A dependency PR is rebased; an agent PR is squashed
-    # under the PR's title with its trailers (gate.sh squash-body); a security
-    # patch and a standards sync are squashed under the PR's title (for a patch,
-    # the `fix:` title target-guard checked, so the release is a patch); a
-    # back-merge is merged with a merge commit, never squashed or rebased, so the
-    # release commit and its tag stay reachable from the default branch.
+    # the org rulesets accept. A dependency PR is rebased; an agent PR or a
+    # change request is squashed under the PR's title with its trailers
+    # (gate.sh squash-body); a security patch and a standards sync are squashed
+    # under the PR's title (for a patch, the `fix:` title target-guard checked,
+    # so the release is a patch); a back-merge is merged with a merge commit,
+    # never squashed or rebased, so the release commit and its tag stay
+    # reachable from the default branch.
     - id: merge
       if: steps.decide.outputs.merge == 'true'
       shell: bash
@@ -137,7 +138,7 @@ runs:
           exit 0
         fi
         case "$POLICY" in
-          factory)
+          factory|change-request)
             body=$(GH_TOKEN="$APP_TOKEN" gh api --paginate "/repos/$REPO/pulls/$PR/commits?per_page=100" --jq '.[].commit.message | @base64' \
                      | "$ACTION_PATH/gate.sh" squash-body)
             how=(--squash --subject "$TITLE (#$PR)" --body "$body") ;;

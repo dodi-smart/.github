@@ -1,3 +1,9 @@
+## [1.58.0](https://github.com/dodi-smart/.github/compare/v1.57.0...v1.58.0) (2026-11-26)
+
+### ✨ Features
+
+* **release-completed:** tell the release watcher when a release run has finished delivering ([#259](https://github.com/dodi-smart/.github/issues/259)) ([29f039e](https://github.com/dodi-smart/.github/commit/29f039e5c03a6785c5612d1f1f6ba92ea964d167))
+
 ## [1.57.0](https://github.com/dodi-smart/.github/compare/v1.56.1...v1.57.0) (2026-11-26)
 
 ### ✨ Features

@@ -1536,6 +1536,28 @@ jobs:
           if (len(rr) != 1 or 'steps.decide.outputs.review-wanted' not in str(rr[0].get('if'))
                   or 'steps.pr.outputs.number' not in str(w.get('number')) or 'steps.pr.outputs.head-sha' not in str(w.get('sha'))):
               bad.append('merge-gate must request a review once, when decide says review-wanted, for the PR and head it read')
+          # change-merge: one job, one merge-gate step on policy change-request,
+          # stopped by the caller's CHANGE_REQUESTS_FROZEN, only on change-request/
+          # branches, read-only, and no concurrency group (as deps-automerge).
+          cm = load('.github/workflows/change-merge.yml')
+          cjobs = cm['jobs']
+          if 'concurrency' in cm or set(cjobs) != {'merge'}:
+              bad.append('change-merge must be one merge job with no concurrency group')
+          else:
+              cjob = cjobs['merge']
+              csteps = [s for s in cjob['steps'] if 'actions/merge-gate@' in uses(s)]
+              cw = (csteps[0].get('with') or {}) if len(csteps) == 1 else {}
+              if cw.get('policy') != 'change-request' or 'vars.CHANGE_REQUESTS_FROZEN' not in str(cw.get('kill-switch')):
+                  bad.append('change-merge must call merge-gate once, policy change-request, its kill switch CHANGE_REQUESTS_FROZEN')
+              cond = str(cjob.get('if'))
+              for need in ('workflow_run.event == ', 'workflow_run.conclusion == ', 'head_repository.full_name == github.repository',
+                           'branches[0].name, \\'change-request/\\'', 'head_branch, \\'change-request/\\''):
+                  if need not in cond:
+                      bad.append('the change-merge job condition lacks ' + need)
+              if cjob.get('permissions') != {'contents': 'read', 'pull-requests': 'read', 'checks': 'read', 'statuses': 'read'}:
+                  bad.append('the change-merge job must hold read-only permissions')
+          if set(cm[True]['workflow_call'].get('secrets') or {}) != {'GH_APP_CLIENT_ID', 'GH_APP_PRIVATE_KEY'}:
+              bad.append('change-merge takes the two org App secrets and nothing else')
           preset = re.sub(r'^\\s*//.*$', '', open('default.json').read(), flags=re.M)
           for label in ('deps:minor', 'deps:patch', 'deps:lockfile', 'deps:major'):
               if label not in preset:

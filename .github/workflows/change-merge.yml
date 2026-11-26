@@ -1,0 +1,80 @@
+# Reusable: merge the org App's change-request PR once the evidence says it is
+# safe. Deterministic, no agent.
+#
+# A change request is a product change a person proposed and the
+# owner confirmed. The calling repository's change-requests workflow opens it
+# as the org App on a `change-request/<id>` branch, posts `change / recomputed`
+# (its own tools, run from the default branch, re-applied the operation to the
+# base and got the PR's tree) and asks the judge, whose verdict judge.yml posts
+# as `judge / verdict`; when the owner skipped the judge after a timeout it
+# posts `change / judge-skipped` instead. That workflow never merges. This one
+# does, through actions/merge-gate (policy `change-request`), the one place any
+# unattended merge in the org is decided; the rules and their order are in
+# actions/merge-gate/gate.sh.
+#
+# Kill switch: the calling repository's variable CHANGE_REQUESTS_FROZEN set to
+# 'true', the same variable its change-requests workflow reads, so one switch
+# stops both the next change and its merge. It stops nothing else.
+#
+# The caller listens for every event that can complete the evidence, and each
+# run decides once and exits. Nothing waits:
+#   status                      `change / recomputed`, `change / judge-skipped`
+#                               or `judge / verdict` turned `success`
+#   workflow_run (PR Checks)    the required check finished
+#
+# Only the two org App secrets, never `inherit`: the App reads the PR, its
+# commits and statuses, and merges.
+name: Change Merge
+
+on:
+  workflow_call:
+    inputs:
+      required-check:
+        type: string
+        default: "checks / PR Checks"   # check run name; the pr-checks summary job as a caller sees it
+    secrets:
+      GH_APP_CLIENT_ID:   { required: false }
+      GH_APP_PRIVATE_KEY: { required: false }
+
+# No concurrency group, as deps-automerge: a cancelled pending run leaves a red
+# check, and each run re-reads the PR and merges pinned to its head, so a
+# second run finds it merged and stops.
+
+permissions: {}
+
+jobs:
+  # A payload-only pre-filter on the branch the policy owns, so a person's push,
+  # another PR's status or a frozen repository never books a runner. The gate checks it all again
+  # from the live PR.
+  merge:
+    if: >-
+      vars.CHANGE_REQUESTS_FROZEN != 'true' && ((github.event_name == 'status' && github.event.state == 'success'
+        && contains(fromJson('["change / recomputed","change / judge-skipped","judge / verdict"]'), github.event.context)
+        && startsWith(github.event.branches[0].name, 'change-request/'))
+      || (github.event_name == 'workflow_run'
+        && github.event.workflow_run.event == 'pull_request'
+        && github.event.workflow_run.conclusion == 'success'
+        && github.event.workflow_run.head_repository.full_name == github.repository
+        && startsWith(github.event.workflow_run.head_branch, 'change-request/')))
+    runs-on: ${{ fromJSON((github.event.repository.private && !github.event.pull_request.head.repo.fork) && '["self-hosted","Linux","light"]' || '"ubuntu-latest"') }}
+    timeout-minutes: 10
+    permissions:
+      contents: read        # commits, statuses and the repository
+      pull-requests: read   # the pull request, its labels and its commits
+      checks: read          # the required check run
+      statuses: read        # change / recomputed, change / judge-skipped and judge / verdict
+    steps:
+      - uses: dodi-smart/.github/actions/runner-report@v1
+        with:
+          selector: '["self-hosted","Linux","light"]'
+
+      - uses: dodi-smart/.github/actions/merge-gate@v1
+        with:
+          policy:         change-request
+          required-check: ${{ inputs.required-check }}
+          # Frozen is the kill switch's 'false'. Actions compares strings
+          # ignoring case, so 'True' freezes too, but cannot trim: set the
+          # variable to exactly 'true', since ' true' would not freeze here.
+          kill-switch:    ${{ vars.CHANGE_REQUESTS_FROZEN == 'true' && 'false' || '' }}
+          client-id:      ${{ secrets.GH_APP_CLIENT_ID }}
+          private-key:    ${{ secrets.GH_APP_PRIVATE_KEY }}

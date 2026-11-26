@@ -65,6 +65,7 @@ caller keeps working.
 | `pr-checks.yml` | pull request | Lint, typecheck, test, build, per stack |
 | `deps-verify.yml` | Renovate/Dependabot PRs | Reads the PR checks result, reads upstream changelogs, fixes code the update broke, posts a one-comment verdict. Never merges. |
 | `deps-automerge.yml` | verdict labels, `review / verdict`, `renovate/stability-days`, PR Checks done | Merges a dependency bot's minor, patch or lock file PR once it is `deps:verified`, or `deps:fixed` and approved, and the required check is green, and only into the default branch. Three more policies, steps of the same one job, merge the clean back-merge PR a hotfix release opens on `chore/backmerge-*`, an approved security patch on the hotfix lane, and the org App's pure, approved standards sync. No agent decides a merge |
+| `change-merge.yml` | `change / recomputed`, `change / judge-skipped`, `judge / verdict`, PR Checks done | Merges the org App's `change-request/*` PR once the change was recomputed and judged (or the owner skipped the judge) and the required check is green. `CHANGE_REQUESTS_FROZEN` stops it. No agent decides a merge |
 | `pr-review.yml` | `ready_for_review`, `agent:review` | Second-opinion review, deeper on sensitive paths. Publishes the `review / verdict` status and a `review-verdict.json` artifact |
 | `issue-triage.yml` | issue opened or reopened, `agent:triage`, `@claude triage`, manual dispatch with `issue-number`, a plain comment on an issue in `Needs info` | Classifies, sets fields, then plans or asks blocking questions with a draft message for a person to send. The answer, commented on the issue, runs it again. On an Epic or an Initiative the plan proposes child issues in a ```` ```children ```` block |
 | `issue-decompose.yml` | `agent:decompose`, applied by a person | Creates the children triage proposed on an Epic or an Initiative as sub-issues, with a script, not an agent. Nothing is created when one entry is bad. The rules are in `actions/decompose/decompose.sh` |
@@ -412,7 +413,7 @@ Renovate marker, and a bump releases as `chore(deps)`.
 | `actions/release-request` | Removes a request label from a `release` job that runs on every labelled event, if this workflow owns the request (a person's `agent:review` on a dependency bot's PR is deps-verify's, every other one pr-review's). A 404 is silent; any other failure warns. Never fails the step |
 | `actions/request-review` | Applies `agent:review` with the App token when the head commit has no `review / verdict` from the org App yet |
 | `actions/clear-request-label` | Removes an `agent:*` request label from one or more issues or PRs. A label already gone is silent; any other failure is a `::warning` that the request stays on. Never fails the step. The one way a workflow clears its request label |
-| `actions/merge-gate` | The one unattended merge: resolves the PR, runs `agent-gate`, decides by policy (`deps`, `factory`, `backmerge`, `hotfix` or `standards-sync`) from labels, the required check, `review / verdict` (only the org App's counts), Renovate's release-age status, mergeability, the base branch, commit authors, for a back-merge the head commit's parents, for a security patch `target-guard`'s verdict, and for a standards sync `standards / verify` and `standards / render`, and merges with the App token (a dependency PR by rebase, an agent PR, a security patch and a standards sync by squash, a back-merge by merge commit). A conflicted Renovate PR gets its rebase box ticked instead; a conflicted agent PR waits for the fix loop. For `hotfix` it takes target-guard's verdict from `guard.sh verdict`, which prints it without failing. When the policy needs a review the head does not have, it applies `agent:review` through `request-review` |
+| `actions/merge-gate` | The one unattended merge: resolves the PR, runs `agent-gate`, decides by policy (`deps`, `factory`, `backmerge`, `hotfix`, `standards-sync` or `change-request`) from labels, the required check, `review / verdict` (only the org App's counts), Renovate's release-age status, mergeability, the base branch, commit authors, for a back-merge the head commit's parents, for a security patch `target-guard`'s verdict, for a standards sync `standards / verify` and `standards / render`, and for a change request `change / recomputed`, `judge / verdict` and `change / judge-skipped`, and merges with the App token (a dependency PR by rebase, an agent PR, a security patch, a standards sync and a change request by squash, a back-merge by merge commit). A conflicted Renovate PR gets its rebase box ticked instead; a conflicted agent PR waits for the fix loop. For `hotfix` it takes target-guard's verdict from `guard.sh verdict`, which prints it without failing. When the policy needs a review the head does not have, it applies `agent:review` through `request-review` |
 | `actions/push-round` | Checks an agent's commits on a PR branch, regenerates lockfiles, and pushes them as one trailered commit with the App token, or refuses with a reason; its merge mode pushes the update job's merge of the base. Every round, round 0 included, passes `guard.sh`, which refuses a deleted, skipped or loosened test, a deleted snapshot, and any edit to a workflow, the merge gate or lint, test or CI config |
 | `actions/app-token` | Mints the org App token for this repo, optionally narrowed; empty when no App is configured. Also outputs the App's `app-slug` and its `login` (`<slug>[bot]`), the creator of the statuses it posts |
 | `actions/factory` | The deterministic half of `issue-implement.yml` and `pr-iterate.yml`: the autonomy tier from `Agent mode`, `Risk` and `Effort`, the branch name, round 0's push, the holdout pattern fix rounds give `push-round` (one list per issue, `.factory/holdout.d/<issue>`), the fix loop's next step, and the dispatcher's pick (`next`) |
@@ -576,9 +577,11 @@ early return silently stops covering that path. One implementation in
 
 **No agent merges anything.** Dependency verification posts a verdict, and may
 push a fix commit for code the update broke. The implement workflow opens a
-draft pull request and stops. The one thing that merges is `deps-automerge.yml`,
-and it is not an agent: a deterministic rule over labels, the required check and
-the review status, for minor, patch and lock file updates only. Majors always
+draft pull request and stops. Every unattended merge goes through
+`actions/merge-gate` (`deps-automerge.yml`, `change-merge.yml` and the fix loop's
+merge), and it is not an agent: a deterministic rule over labels, the required
+check and the statuses. Dependency updates merge for minor, patch and lock file
+updates only. Majors always
 wait for a person.
 
 ## Labels are requests, fields are state
@@ -2141,8 +2144,8 @@ The gate reads every status on the head from the commit's statuses list, which
 names each one's creator. `review / verdict`, `standards / verify` and
 `standards / render` and `judge / verdict` count only when the org App posted
 them, and the newest of the App's decides; one from anyone else is treated as
-missing, and the reason says so. `judge / verdict` is read only by the `factory`
-policy, for an issue that is not a Chore.
+missing, and the reason says so. `judge / verdict` is read by the `factory`
+policy, for an issue that is not a Chore, and by `change-request` below.
 
 The caller listens for every event that can complete the evidence:
 
@@ -2180,6 +2183,63 @@ not `main` (the same value as `pr-checks.yml`'s `release-branch`): the hotfix
 lane's base, and the branch a back-merge carries. The file
 keeps its name although it now merges more than dependencies: every caller names
 it at `@v1`, and a rename would move each of them for no change in behaviour.
+
+### Change-request merge
+
+`change-merge.yml` merges the org App's change-request PR. A change request is
+a product change a person proposed and the owner confirmed; the
+calling repository's change-requests workflow opens it on a
+`change-request/<id>` branch, posts `change / recomputed` once its own tools,
+run from the default branch, re-applied the operation to the base and got the
+PR's tree, and labels it `agent:judge`. That workflow never merges. This one
+decides through `actions/merge-gate`, policy `change-request`, and merges when
+all of these hold:
+
+| Rule | Refused when |
+|---|---|
+| not frozen | the repository variable `CHANGE_REQUESTS_FROZEN` is `true` (any case, but no surrounding spaces: the expression cannot trim them) |
+| the head | is not `change-request/<something>` |
+| the base | is not the default branch, or either is unreadable |
+| the author | the PR or any commit is not the org App's, or the App's login is unreadable |
+| no conflict | `mergeable_state` is `dirty` (the opening workflow returns the request) |
+| the required check | is not `success` on the head |
+| `change / recomputed` | is not `success` from the org App |
+| `judge / verdict` | is not `success` from the org App, unless `change / judge-skipped` is `success` from the org App; a judge that asks for changes holds it either way |
+
+A status from anyone else counts as missing, and the reason names who posted
+it. No `review / verdict` is asked for. The merge is a squash under the PR's
+title with the commits' trailers (`Refs:`, `Change-Request:`), pinned to the
+head it read. `CHANGE_REQUESTS_FROZEN` is the same variable the change-requests
+workflow reads, so one switch stops the next change and its merge; it stops
+nothing else.
+
+The caller passes only the two org App secrets, never `inherit`:
+
+```yaml
+name: Change Merge
+on:
+  # change / recomputed, change / judge-skipped or judge / verdict turned green.
+  status:
+  # The required check finished after the statuses were posted.
+  workflow_run:
+    workflows: [PR Checks]
+    types: [completed]
+    branches: ['change-request/**']
+jobs:
+  merge:
+    uses: dodi-smart/.github/.github/workflows/change-merge.yml@v1
+    secrets:
+      GH_APP_CLIENT_ID: ${{ secrets.GH_APP_CLIENT_ID }}
+      GH_APP_PRIVATE_KEY: ${{ secrets.GH_APP_PRIVATE_KEY }}
+    permissions:
+      contents: read
+      pull-requests: read
+      checks: read
+      statuses: read
+```
+
+`required-check` takes another check run name when the repo's PR Checks caller
+job is not called `checks`.
 
 ## Issue templates
 

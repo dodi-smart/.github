@@ -5,7 +5,7 @@
 #
 # agent-gate has already stopped `agent:no-touch`, a draft and the wrong author
 # kind before this runs. Then, in order:
-#   1. the kill switch (the caller's org variable) is not 'false'
+#   1. the kill switch (the caller's variable) is not 'false'
 #   2. the policy's own rule:
 #        deps  the PR's base is the default branch (a security update opened
 #              against the production branch is merged by a person, and only the
@@ -47,6 +47,19 @@
 #              `standards / verify` and `standards / render` are `success` (no
 #              new verify failure, and a pure render the agent pass did not
 #              edit). Squashed. Kill switch SYNC_AUTOMERGE.
+#        change-request  the org App's change PR from the calling
+#              repository's change-requests workflow (a product change the owner
+#              confirmed): the head is
+#              `change-request/<id>`, the base is the default branch, the PR and
+#              every commit are by the org App, no conflict (the workflow returns
+#              the request; nothing here rebases it), `change / recomputed` is
+#              `success` (main's tools, re-applying the operation to the base,
+#              gave the PR's tree), and `judge / verdict` approves the head, or,
+#              when the owner skipped the judge, `change / judge-skipped` is
+#              `success`. A judge that asks for changes holds it even then. No
+#              `review / verdict`: the judge and the recomputation stand in.
+#              Squashed with the commits' trailers. change-merge.yml turns the
+#              repository's CHANGE_REQUESTS_FROZEN = 'true' into the kill switch.
 #   3. the required check is `success` on the head commit
 #   4. every commit on the PR is by an allowed author (not for `backmerge` or
 #      `hotfix`)
@@ -87,8 +100,13 @@ VERIFY_CONTEXT='standards / verify'
 RENDER_CONTEXT='standards / render'
 # The independent judge's verdict, which judge.yml posts with the org App.
 JUDGE_CONTEXT='judge / verdict'
+# What the calling repository's change-requests workflow posts on a change PR: main's
+# tools re-applied the operation to the base and got the PR's tree, and the
+# owner skipped the judge after it timed out.
+RECOMPUTED_CONTEXT='change / recomputed'
+SKIPPED_CONTEXT='change / judge-skipped'
 # The contexts that count only when the org App posted them.
-APP_CONTEXTS=("$REVIEW_CONTEXT" "$VERIFY_CONTEXT" "$RENDER_CONTEXT" "$JUDGE_CONTEXT")
+APP_CONTEXTS=("$REVIEW_CONTEXT" "$VERIFY_CONTEXT" "$RENDER_CONTEXT" "$JUDGE_CONTEXT" "$RECOMPUTED_CONTEXT" "$SKIPPED_CONTEXT")
 SYNC_BRANCH='chore/standards-sync'
 REGENERATED='backmerge:regenerated'
 
@@ -105,7 +123,8 @@ has() { grep -qxF "$1" <<<"$labels"; }
 # the parent is an ancestor of, or equal to, that branch), for factory TIER,
 # ISSUE_TYPE and ISSUE_NO_TOUCH, for hotfix RELEASE_BRANCH, LANE and LANE_REASON (target-guard's
 # verdict and reason), and for standards-sync AUTHOR, APP_BOT (the org App's
-# login), VERIFY and RENDER. decide runs it and sets review_wanted.
+# login), VERIFY and RENDER, and for change-request HEAD_REF, AUTHOR,
+# APP_BOT, RECOMPUTED, JUDGE and SKIPPED. decide runs it and sets review_wanted.
 rules() {
   labels=$(jq -r '.[]' <<<"$LABELS")
   merge=false rebase=false needs_review=''
@@ -156,8 +175,7 @@ rules() {
     standards-sync)
       if [ "${HEAD_REF:-}" != "$SYNC_BRANCH" ]; then reason="the head branch is ${HEAD_REF:-unreadable}, not $SYNC_BRANCH"; return; fi
       base_is "${DEFAULT_BRANCH:-}" 'the default branch' || return 0
-      if [ -z "${APP_BOT:-}" ]; then reason="the org App's login could not be read, so the author cannot be checked"; return; fi
-      if [ "${AUTHOR:-}" != "$APP_BOT" ]; then reason="the PR is by ${AUTHOR:-an unreadable author}, not the org App ($APP_BOT)"; return; fi
+      app_pr || return 0
       needs_review="a standards sync"
       if [ "${MERGEABLE:-}" = dirty ]; then reason="the sync conflicts with $BASE_REF: a person resolves it, or the next sync replaces the branch"; return; fi
       [ "${VERIFY:-}" = success ] || { reason="$VERIFY_CONTEXT is ${VERIFY:-missing}: the sync may add verify failures, so a person merges it"; return; }
@@ -178,6 +196,18 @@ rules() {
       else
         ok="tier merge and approved, and the required check passed"
       fi ;;
+    change-request)
+      [[ ${HEAD_REF:-} == change-request/?* ]] || { reason="the head branch is ${HEAD_REF:-unreadable}, not a change-request/* branch"; return; }
+      base_is "${DEFAULT_BRANCH:-}" 'the default branch' || return 0
+      app_pr || return 0
+      if [ "${MERGEABLE:-}" = dirty ]; then reason="the change conflicts with $BASE_REF: the change-requests workflow returns it"; return; fi
+      [ "${RECOMPUTED:-}" = success ] || { reason="$RECOMPUTED_CONTEXT is ${RECOMPUTED:-missing}: the operation was not re-applied by main's tools"; return; }
+      # The judge can hold a change, never wave one through alone; a skip
+      # replaces a verdict that never came, not one that asks for changes.
+      if [ "${JUDGE:-}" = failure ]; then reason="$JUDGE_CONTEXT asks for changes"; return; fi
+      [ "${JUDGE:-}" = success ] || [ "${SKIPPED:-}" = success ] \
+        || { reason="waits for $JUDGE_CONTEXT to approve (it is ${JUDGE:-missing}), or $SKIPPED_CONTEXT from the org App"; return; }
+      ok="a recomputed change, approved by the judge or with the judge skipped by the owner, and the required check passed" ;;
     *) reason="unknown policy '${POLICY}'"; return ;;
   esac
   if [ "$CHECK" != success ]; then reason="the required check is ${CHECK:-missing}"; return; fi
@@ -193,7 +223,7 @@ rules() {
   merge=true reason="$ok"
 }
 
-# pick: from STATUSES and APP_BOT, sets REVIEW, VERIFY, RENDER and JUDGE to the state
+# pick: from STATUSES and APP_BOT, sets REVIEW, VERIFY, RENDER, JUDGE, RECOMPUTED and SKIPPED to the state
 # of the newest status the org App posted for each (statuses.sh app, the rule
 # the fix loop and request-review share), AGE to pending when any poster's newest stability-days status is
 # pending and otherwise to the newest one's state, and DISCOUNTED to the App
@@ -203,7 +233,7 @@ rules() {
 pick() {
   app_state() { "$HERE/statuses.sh" app "$1" "${APP_BOT:-}" <<<"$STATUSES"; }
   REVIEW=$(app_state "$REVIEW_CONTEXT") VERIFY=$(app_state "$VERIFY_CONTEXT") RENDER=$(app_state "$RENDER_CONTEXT")
-  JUDGE=$(app_state "$JUDGE_CONTEXT")
+  JUDGE=$(app_state "$JUDGE_CONTEXT") RECOMPUTED=$(app_state "$RECOMPUTED_CONTEXT") SKIPPED=$(app_state "$SKIPPED_CONTEXT")
   AGE=$(jq -r --arg c "$AGE_CONTEXT" '[.[] | select(.context == $c)] | (group_by(.creator) | map(max_by(.id).state)) as $newest
                | if any($newest[]; . == "pending") then "pending" else (max_by(.id).state // empty) end' <<<"$STATUSES")
   DISCOUNTED=$(jq -r --arg by "${APP_BOT:-}" --args '[.[] | select((.context | IN($ARGS.positional[])) and ($by == "" or .creator != $by))
@@ -228,6 +258,12 @@ decide() {
 base_is() {
   if [ -z "${BASE_REF:-}" ] || [ -z "$1" ]; then reason="the base or $2 could not be read"; return 1; fi
   [ "$BASE_REF" = "$1" ] || { reason="${3:-the base is $BASE_REF, not $2 $1}"; return 1; }
+}
+
+# app_pr: the PR is the org App's own; an unreadable login is a no.
+app_pr() {
+  if [ -z "${APP_BOT:-}" ]; then reason="the org App's login could not be read, so the author cannot be checked"; return 1; fi
+  [ "${AUTHOR:-}" = "$APP_BOT" ] || { reason="the PR is by ${AUTHOR:-an unreadable author}, not the org App ($APP_BOT)"; return 1; }
 }
 
 # The author rule: not for backmerge (its parent rule replaces it) or hotfix (a
@@ -263,8 +299,8 @@ CHECK='' FOREIGN='' TIER='' ISSUE_TYPE='' ISSUE_NO_TOUCH='' MERGEABLE="${MERGEAB
 HEAD_REF="${HEAD_REF:-}" BASE_REF="${BASE_REF:-}" DEFAULT_BRANCH="${DEFAULT_BRANCH:-}"
 PARENTS='' P1_REL='' P2_REL='' LANE='' LANE_REASON='' STATUSES='[]'
 AUTHOR="${AUTHOR:-}" APP_BOT="${APP_BOT:-}"
-# A standards sync allows the org App alone as a commit author.
-[ "$POLICY" != standards-sync ] || ALLOWED_AUTHORS="$APP_BOT"
+# A standards sync and a change request allow the org App alone as a commit author.
+case "$POLICY" in standards-sync|change-request) ALLOWED_AUTHORS="$APP_BOT" ;; esac
 
 # Reads every input the policy can use. The kill switch is the first rule, so
 # with it off nothing is read.
@@ -314,7 +350,8 @@ read_inputs() {
     case "$POLICY" in
       backmerge) ;;
       hotfix) [ "$LANE" = lane ] ;;
-      standards-sync) [ "$HEAD_REF" = "$SYNC_BRANCH" ] && [ -n "$APP_BOT" ] && [ "$AUTHOR" = "$APP_BOT" ] ;;
+      standards-sync) [ "$HEAD_REF" = "$SYNC_BRANCH" ] && app_pr ;;
+      change-request) [[ $HEAD_REF == change-request/?* ]] && app_pr ;;
       *) has deps:verified || has deps:fixed || [ -n "$TIER" ] ;;
     esac
   }
@@ -340,5 +377,5 @@ decide
   echo "kind=$kind"
   echo "reason=$reason"
 } >> "$GITHUB_OUTPUT"
-echo "#$PR at $SHA: kind=$kind base=${BASE_REF:-unknown}/${DEFAULT_BRANCH:-unknown} parents=${PARENTS:-none}/${P1_REL:-none}/${P2_REL:-none} check=${CHECK:-missing} review=${REVIEW:-missing} age=${AGE:-none} mergeable=${MERGEABLE:-unknown} foreign=${FOREIGN:-none} tier=${TIER:-none} type=${ISSUE_TYPE:-none} judge=${JUDGE:-none} lane=${LANE:-none} verify=${VERIFY:-none} render=${RENDER:-none} discounted=${DISCOUNTED:-none} author=${AUTHOR:-unknown}"
+echo "#$PR at $SHA: kind=$kind base=${BASE_REF:-unknown}/${DEFAULT_BRANCH:-unknown} parents=${PARENTS:-none}/${P1_REL:-none}/${P2_REL:-none} check=${CHECK:-missing} review=${REVIEW:-missing} age=${AGE:-none} mergeable=${MERGEABLE:-unknown} foreign=${FOREIGN:-none} tier=${TIER:-none} type=${ISSUE_TYPE:-none} judge=${JUDGE:-none} lane=${LANE:-none} verify=${VERIFY:-none} render=${RENDER:-none} recomputed=${RECOMPUTED:-none} skipped=${SKIPPED:-none} discounted=${DISCOUNTED:-none} author=${AUTHOR:-unknown}"
 echo "merge=$merge: $reason"

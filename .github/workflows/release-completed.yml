@@ -46,7 +46,7 @@ jobs:
     permissions: {}
     steps:
       # No token: the job holds no `actions: read`, so the report names the runner without asking the jobs API.
-      - uses: dodi-smart/.github/actions/runner-report@v1
+      - uses: dodi-smart/.github/actions/runner-report@pinned/v1.58.0
         with:
           selector: light
           token: ""
